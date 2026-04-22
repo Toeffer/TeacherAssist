@@ -1,0 +1,137 @@
+# OpenClaw Konfiguration für LehrerAgent
+# Kopiere diese Datei nach ~/.openclaw/config.yaml und passe die Pfade an
+
+# OpenClaw Gateway-Konfiguration
+gateway:
+  port: 18789
+  host: "localhost"
+  cors: true
+  allowed_origins:
+    - "http://localhost:*"
+    - "http://127.0.0.1:*"
+    - "http://192.168.*:*"
+    - "https://lehreragent.local:*"
+
+# Brain (LLM) Konfiguration – Unterstützt mehrere Provider
+brain:
+  # Provider: "anthropic", "openai", "openrouter", "google", "local" (Ollama/LM Studio)
+  provider: "anthropic"
+  
+  # Modell je nach Provider:
+  # - Anthropic: "claude-3-5-sonnet-20241022", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"
+  # - OpenAI: "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"
+  # - OpenRouter: "openai/gpt-4-turbo", "anthropic/claude-3-5-sonnet", "google/gemini-pro"
+  # - Google: "gemini-pro", "gemini-ultra"
+  # - Local: "llama2", "mistral", "codellama" (via Ollama/LM Studio)
+  model: "claude-3-5-sonnet-20241022"
+  
+  # API-Key – kann aus Umgebungsvariable oder direkt gesetzt werden
+  # Für OpenRouter: OPENROUTER_API_KEY Umgebungsvariable setzen
+  api_key: "${ANTHROPIC_API_KEY}"  # Aus Umgebungsvariable laden
+  
+  # Alternative: API-Key direkt setzen (nicht empfohlen für Version Control)
+  # api_key: "sk-..."
+  
+  # OpenRouter-spezifische Einstellungen
+  openrouter:
+    # OpenRouter Base URL (Standard: https://openrouter.ai/api/v1)
+    base_url: "https://openrouter.ai/api/v1"
+    
+    # OpenRouter Referer (optional, für Tracking)
+    # referer: "https://lehreragent.local"
+    
+    # OpenRouter Website (optional)
+    # website: "https://lehreragent.local"
+    
+    # OpenRouter Model-Priorität (kostengünstigste, schnellste, beste)
+    priority: "cost"  # "cost", "speed", "quality"
+  
+  # Allgemeine LLM-Einstellungen
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 0.9
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  
+  # Timeout-Einstellungen
+  timeout: 30  # Sekunden
+  max_retries: 3
+  
+  # Fallback-Strategie bei API-Fehlern
+  fallback:
+    enabled: true
+    # Fallback zu kostengünstigerem Modell bei Fehlern
+    fallback_model: "claude-3-haiku-20240307"
+    # Fallback zu lokalem Modell (Ollama) bei Netzwerkproblemen
+    local_fallback: false
+    local_model: "llama2:7b"
+
+# Memory-Konfiguration
+memory:
+  path: "~/.openclaw/memory"
+  auto_save: true
+  save_interval: 300  # Sekunden
+
+# Skills-Konfiguration
+skills:
+  path: "~/.openclaw/skills"
+  auto_reload: true
+  watch_interval: 5  # Sekunden
+
+# Tools-Konfiguration für LehrerAgent
+tools:
+  # Absoluter Pfad zum LehrerAgent Tools-Verzeichnis
+  path: "/absoluter/pfad/zu/lehreragent/tools"
+  
+  # Python-Interpreter für die Tools (virtuelle Umgebung)
+  python: "/absoluter/pfad/zu/lehreragent/tools/.venv/bin/python"
+  
+  # Timeout für Tool-Aufrufe (in Sekunden)
+  timeout: 30
+  
+  # Tool-Registrierungen (werden automatisch aus dem Verzeichnis geladen)
+  # Keine manuelle Registrierung nötig, wenn alle Tools im tools/-Verzeichnis sind
+
+# LehrerAgent-spezifische Konfiguration
+lehreragent:
+  # Standard-Sprache für Skills und Tools
+  default_language: "de"
+  
+  # DSGVO-Einstellungen
+  dsgvo:
+    anonymize_students: true
+    student_prefix: "SuS"
+    max_retention_days: 365
+    
+  # Lehrplan-Vektordatenbank
+  lehrplan_vectordb:
+    path: "~/.openclaw/memory/lehrplan_vectordb"
+    embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    chunk_size: 500
+    chunk_overlap: 50
+    
+  # OCR-Einstellungen
+  ocr:
+    default_language: "deu"
+    min_confidence: 60
+    fallback_to_pdf_reader: true
+
+# Logging-Konfiguration
+logging:
+  level: "info"
+  file: "~/.openclaw/logs/openclaw.log"
+  max_size: 10485760  # 10 MB
+  max_files: 5
+
+# Heartbeat für Desktop-Integration
+heartbeat:
+  enabled: true
+  interval: 30  # Sekunden
+  tray_icon: true  # System-Tray-Icon (nur Desktop)
+
+# WebSocket-Verbindung für Flutter-App
+websocket:
+  enabled: true
+  ping_interval: 30  # Sekunden
+  pong_timeout: 10   # Sekunden
+  max_message_size: 1048576  # 1 MB

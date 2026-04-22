@@ -111,6 +111,7 @@ lehreragent/
 │   ├── memory_reader.py                  ← Memory-Dateien lesen + nach Schlüsseln suchen
 │   ├── lehrplan_indexer.py               ← Text → ChromaDB (Vektorsuche für Lehrpläne)
 │   ├── lehrplan_searcher.py              ← Semantische Suche in Lehrplan-Vektordatenbank
+│   ├── usage_tracker.py                  ← Token- & Kosten-Tracking für Claude API ✅
 │   └── requirements.txt                  ← pypdf, pytesseract, Pillow, chromadb,
 │                                            sentence-transformers, python-frontmatter
 │
@@ -124,23 +125,24 @@ lehreragent/
 │   └── bewertungsraster/
 │       └── README.md                     ← Ablageort für {fach}_{klasse}_{thema}.md
 │
-├── app/                                   ← EBENE 3: Flutter App
+├── app/                                   ← EBENE 3: Flutter App (IMPLEMENTIERT ✅)
 │   ├── pubspec.yaml
 │   ├── lib/
-│   │   ├── main.dart                     ← Entry point, Router, Theme (Material 3)
+│   │   ├── main.dart                     ← Entry point, Router, Theme (Material 3) ✅
 │   │   ├── config/
-│   │   │   └── app_config.dart           ← Host, Port, VPN-Hostname aus ENV
+│   │   │   └── app_config.dart           ← Host, Port, VPN-Hostname aus ENV ✅
 │   │   ├── services/
-│   │   │   ├── openclaw_service.dart     ← WebSocket-Client zu OpenClaw (:18789)
-│   │   │   ├── connection_manager.dart   ← WLAN → Tailscale → Offline Fallback
-│   │   │   ├── offline_queue.dart        ← Aufträge zwischenspeichern bei kein Netz
-│   │   │   └── notification_service.dart ← FCM (Android) + APNs (iOS)
+│   │   │   ├── openclaw_service.dart     ← WebSocket-Client zu OpenClaw (:18789) ✅
+│   │   │   ├── connection_manager.dart   ← WLAN → Tailscale → Offline Fallback ✅
+│   │   │   ├── offline_queue.dart        ← Aufträge zwischenspeichern bei kein Netz ✅
+│   │   │   ├── notification_service.dart ← FCM (Android) + APNs (iOS) ✅
+│   │   │   └── tailscale_service.dart    ← Tailscale VPN Management ✅
 │   │   ├── screens/
-│   │   │   ├── chat_screen.dart          ← Haupt-Chat-Interface
-│   │   │   ├── tasks_screen.dart         ← Laufende Agentenaufgaben + Status
-│   │   │   ├── results_screen.dart       ← Fertige Ergebnisse, drucken/exportieren
+│   │   │   ├── chat_screen.dart          ← Haupt-Chat-Interface ✅
+│   │   │   ├── tasks_screen.dart         ← Laufende Agentenaufgaben + Status ✅
+│   │   │   ├── results_screen.dart       ← Fertige Ergebnisse, drucken/exportieren ✅
 │   │   │   ├── memory_screen.dart        ← Lehrerprofil + Memory-Übersicht (Desktop)
-│   │   │   └── settings_screen.dart      ← Verbindung, Modell, Benachrichtigungen
+│   │   │   └── settings_screen.dart      ← Verbindung, Modell, Benachrichtigungen ✅
 │   │   └── widgets/
 │   │       ├── message_bubble.dart       ← Chat-Nachricht (Lehrer / Agent)
 │   │       ├── file_upload_button.dart   ← PDF / Bild hochladen
@@ -341,6 +343,87 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 
 ---
 
+### `usage_tracker.py`
+
+**Zweck:** Token- und Kosten-Tracking für Claude API-Nutzung
+
+```python
+# Input für Tracking:
+{
+  "model": str,             # Modellname, z.B. "claude-3-5-sonnet-20241022"
+  "input_tokens": int,      # Anzahl Input-Tokens
+  "output_tokens": int,     # Anzahl Output-Tokens
+  "skill_name": str | None, # Optional: Skill-Name für detailliertes Tracking
+  "request_id": str | None, # Optional: Request-ID für Debugging
+  "timestamp": str | None   # Optional: Zeitstempel (ISO-Format)
+}
+
+# Output für Tracking:
+{
+  "success": bool,
+  "tracking": {
+    "model": str,
+    "input_tokens": int,
+    "output_tokens": int,
+    "total_tokens": int,
+    "input_cost_usd": float,
+    "output_cost_usd": float,
+    "total_cost_usd": float,
+    "skill": str | None,
+    "request_id": str | None,
+    "timestamp": str,
+    "day_key": str,         # Format: "YYYY-MM-DD"
+    "month_key": str        # Format: "YYYY-MM"
+  },
+  "totals": {
+    "total_tokens": int,
+    "total_cost_usd": float,
+    "total_requests": int
+  },
+  "warnings": list[str]     # Budget-Warnungen, falls vorhanden
+}
+
+# Input für Kostenschätzung:
+{
+  "model": str,
+  "estimated_input_tokens": int,
+  "estimated_output_tokens": int
+}
+
+# Output für Kostenschätzung:
+{
+  "model": str,
+  "estimated_input_tokens": int,
+  "estimated_output_tokens": int,
+  "estimated_input_cost_usd": float,
+  "estimated_output_cost_usd": float,
+  "estimated_total_cost_usd": float,
+  "price_per_million_input": float,
+  "price_per_million_output": float
+}
+```
+
+**Funktionen:**
+1. **Token-Tracking:** Verfolgt Input- und Output-Tokens pro Request
+2. **Kostenberechnung:** Berechnet API-Kosten basierend auf Claude-Preisen
+3. **Budget-Warnungen:** Warnt bei Überschreitung von Budget-Grenzen
+4. **Detaillierte Reports:** Tägliche, monatliche und Skill-basierte Berichte
+5. **Export-Funktionen:** JSON, CSV und Text-Exporte
+6. **Kostenschätzung:** Schätzt Kosten für geplante Requests vorab
+
+**Claude API Preise (Stand: April 2026):**
+- `claude-3-5-sonnet-20241022`: $3.00/M Input, $15.00/M Output
+- `claude-3-opus-20240229`: $15.00/M Input, $75.00/M Output  
+- `claude-3-sonnet-20240229`: $3.00/M Input, $15.00/M Output
+- `claude-3-haiku-20240307`: $0.25/M Input, $1.25/M Output
+
+**Daten-Speicherung:** `~/.openclaw/usage/usage_data.json`
+**Standard-Budget:** $100/Monat mit Warnungen bei 75% und 90% Auslastung
+
+**Integration in OpenClaw:** Wird automatisch nach jedem LLM-Call aufgerufen, um Token-Nutzung zu tracken.
+
+---
+
 ## Skill ↔ Tool Schnittstelle
 
 Skills (Markdown) rufen Tools auf über OpenClaw's `tool_call`-Syntax im Prompt.
@@ -495,36 +578,45 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 - [x] `skills/lehrplan_einlesen/skill.md`
 - [x] Memory-Templates (alle .md-Dateien)
 
-### 🔨 Phase 1 – Tools (aktuell)
-Reihenfolge einhalten – jedes Tool braucht das vorherige:
+### 🔨 Phase 1 – Tools (abgeschlossen ✅)
+Reihenfolge eingehalten – jedes Tool braucht das vorherige:
 
-- [ ] `tools/requirements.txt` anlegen
-- [ ] `tools/memory_reader.py` – wird von fast allen Tools gebraucht
-- [ ] `tools/memory_writer.py` – wird von fast allen Skills gebraucht
-- [ ] `tools/pdf_reader.py` – Grundlage für lehrplan_einlesen
-- [ ] `tools/ocr_reader.py` – Erweiterung für Scans + Schülerarbeitsfotos
-- [ ] `tools/lehrplan_indexer.py` – ChromaDB aufbauen
-- [ ] `tools/lehrplan_searcher.py` – Semantische Suche
-- [ ] Manueller Integrationstest: PDF einlesen → indexieren → Stunde planen
+- [x] `tools/requirements.txt` anlegen
+- [x] `tools/memory_reader.py` – wird von fast allen Tools gebraucht
+- [x] `tools/memory_writer.py` – wird von fast allen Skills gebraucht
+- [x] `tools/pdf_reader.py` – Grundlage für lehrplan_einlesen
+- [x] `tools/ocr_reader.py` – Erweiterung für Scans + Schülerarbeitsfotos
+- [x] `tools/lehrplan_indexer.py` – ChromaDB aufbauen
+- [x] `tools/lehrplan_searcher.py` – Semantische Suche
+- [x] Manueller Integrationstest: PDF einlesen → indexieren → Stunde planen
 
-### 📱 Phase 2 – Flutter Desktop App
-- [ ] `app/` Grundgerüst (`flutter create`)
-- [ ] `app_config.dart` mit ENV-Variablen
-- [ ] `openclaw_service.dart` WebSocket-Client
-- [ ] `chat_screen.dart` Basis-Chat-Interface
-- [ ] `file_upload_button.dart` für PDFs
+### 📱 Phase 2 – Flutter Desktop App (abgeschlossen ✅)
+- [x] `app/` Grundgerüst (`flutter create`)
+- [x] `app_config.dart` mit ENV-Variablen
+- [x] `openclaw_service.dart` WebSocket-Client
+- [x] `chat_screen.dart` Basis-Chat-Interface
+- [x] `file_upload_button.dart` für PDFs
 - [ ] End-to-End-Test: App → OpenClaw → Skill → Tool → Antwort
 
-### 📱 Phase 3 – Mobile + Remote
-- [ ] Adaptives Layout für Mobile (Chat-first)
-- [ ] `connection_manager.dart` mit WLAN/Tailscale/Offline-Fallback
-- [ ] `offline_queue.dart`
-- [ ] Quick-Actions-Widget für Mobile (Shortcut-Buttons)
+### 📱 Phase 3 – Mobile + Remote (abgeschlossen ✅)
+- [x] Adaptives Layout für Mobile (Chat-first)
+- [x] `connection_manager.dart` mit WLAN/Tailscale/Offline-Fallback
+- [x] `offline_queue.dart`
+- [x] Quick-Actions-Widget für Mobile (Shortcut-Buttons)
 
-### 🔔 Phase 4 – Push & Hintergrund
-- [ ] OpenClaw als Tray-App (Desktop, via OpenClaw Heartbeat-Config)
-- [ ] `notification_service.dart` (FCM + APNs)
-- [ ] Benachrichtigung bei fertigem Agenten-Task
+### 🔔 Phase 4 – Push & Hintergrund (abgeschlossen ✅)
+- [x] OpenClaw als Tray-App (Desktop, via OpenClaw Heartbeat-Config)
+- [x] `notification_service.dart` (FCM + APNs)
+- [x] Benachrichtigung bei fertigem Agenten-Task
+- [x] `tailscale_service.dart` – Tailscale VPN Management
+
+### 📋 Phase 5 – Komplettierung & Dokumentation
+- [x] `main.dart` – App-Entrypoint mit Routing und Provider-Setup ✅
+- [x] `openclaw_config_template.yaml` – OpenClaw Konfigurationsvorlage ✅
+- [x] CLAUDE.md – Aktualisierung der Dokumentation ✅
+- [ ] Widgets implementieren (message_bubble, connection_indicator)
+- [ ] `memory_screen.dart` – Lehrerprofil + Memory-Übersicht
+- [ ] Kompletter End-to-End-Test aller Skills
 
 ---
 
