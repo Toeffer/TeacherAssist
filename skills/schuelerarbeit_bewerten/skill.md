@@ -1,0 +1,230 @@
+---
+name: schuelerarbeit_bewerten
+version: 1.0.0
+author: LehrerAgent
+description: >
+  Bewertet eine Schülerarbeit (Text, Scan oder eingetippte Antworten) anhand
+  eines bestehenden Erwartungshorizonts. Gibt eine Punktzahl, Notentendenz,
+  detailliertes Korrekturfeedback und einen Schülerkommentar aus.
+category: bildung
+language: de
+
+triggers:
+  - "bewerte diese arbeit"
+  - "schülerarbeit bewerten"
+  - "korrigiere"
+  - "wie viele punkte bekommt"
+  - "was würdest du geben"
+  - "korrektur"
+  - "note vorschlag"
+  - "feedback für schüler"
+  - "abgabe bewerten"
+
+permissions:
+  - read_memory
+  - write_memory
+
+memory_files:
+  - lehrerprofil.md
+  - bewertungsraster/{referenz}.md
+  - korrekturprotokoll.md
+
+parameters:
+  required:
+    - schuelerarbeit
+  optional:
+    - erwartungshorizont_referenz   # Dateiname oder Beschreibung
+    - anonym                        # true = keine Namen speichern
+    - nur_punkte                    # true = kein ausführliches Feedback
+    - feedback_sprache              # "lehrer" | "schueler" | "beides"
+---
+
+# Skill: Schülerarbeit bewerten
+
+## Zweck
+
+Dieser Skill nimmt eine Schülerarbeit entgegen, lädt den passenden
+Erwartungshorizont aus dem Memory, bewertet die Arbeit Kriterium für Kriterium
+und gibt einen strukturierten Korrekturvorschlag mit Begründung zurück.
+
+**Wichtig:** Der Agent macht Vorschläge. Die Lehrkraft entscheidet abschließend.
+
+---
+
+## Ablauf
+
+### Schritt 1 – Erwartungshorizont laden
+
+Prüfe, ob ein Erwartungshorizont übergeben oder referenziert wurde.
+
+Falls ja: Lade `memory/bewertungsraster/{referenz}.md`.
+
+Falls nein: Liste verfügbare Bewertungsraster aus dem Memory:
+```
+Ich habe folgende gespeicherte Erwartungshorizonte gefunden:
+  1. {datei_1} – {fach}, {klasse}, {datum}
+  2. {datei_2} – …
+
+Welchen soll ich verwenden? Oder schick mir den Erwartungshorizont direkt.
+```
+
+Falls kein Bewertungsraster vorhanden:
+```
+Ich habe noch keinen Erwartungshorizont für diese Aufgabe.
+Möchtest du, dass ich direkt einen erstelle?
+Schick mir dazu die Aufgabenstellung.
+```
+→ Leite dann zum Skill `bewertung_erstellen` weiter.
+
+### Schritt 2 – Schülerarbeit entgegennehmen
+
+Falls noch nicht übergeben:
+```
+Bitte schick mir die Schülerarbeit – als eingetippten Text, als Foto oder
+als PDF. Ich kann beides verarbeiten.
+
+Falls du mehrere Arbeiten auf einmal bewerten möchtest, schick sie
+nacheinander und ich gebe nach jeder eine Rückmeldung.
+```
+
+### Schritt 3 – Aufgabe für Aufgabe bewerten
+
+Gehe jede Teilaufgabe des Erwartungshorizonts durch:
+
+1. Suche die Antwort der Schüler:in zur jeweiligen Aufgabe
+2. Vergleiche mit Musterlösung und Kriterien
+3. Vergib Punkte (ggf. halbe Punkte, falls im EH erlaubt)
+4. Notiere Begründung
+
+Berücksichtige dabei:
+- Sinngemäß richtige Antworten zählen – Wortlaut muss nicht identisch sein
+- Kompetenzorientiert denken: Was zeigt die SuS, was kann sie?
+- Bei kreativen Aufgaben (Aufsatz, Analyse): Rubric-Kriterien gewichten
+
+### Schritt 4 – Note berechnen
+
+Berechne Gesamtpunkte und ordne Note zu (basierend auf Notenschlüssel im EH).
+
+### Schritt 5 – Feedback generieren
+
+Erstelle zwei Versionen des Feedbacks (sofern nicht anders konfiguriert):
+- **Lehrerversion:** detailliert, mit Begründungen und Korrekturnoten
+- **Schülerversion:** konstruktiv, ermutigend, konkrete Hinweise zur Verbesserung
+
+### Schritt 6 – In Korrekturprotokoll speichern
+
+Hänge Eintrag an `memory/korrekturprotokoll.md`:
+
+```markdown
+## {datum} – {fach} {klasse}: {aufgabentitel}
+- Punkte: {erreicht}/{gesamt} ({prozent}%)
+- Notentendenz: {note}
+- Bewertungsraster: {dateiname}
+```
+
+---
+
+## Ausgabeformat
+
+---
+
+### 📋 Korrekturprotokoll
+
+**Prüfung:** {art} – {fach}, Klasse {klasse}
+**Erwartungshorizont:** {dateiname}
+**Bewertet am:** {datum}
+
+---
+
+### Aufgabe für Aufgabe
+
+Wiederhole für jede Teilaufgabe:
+
+---
+
+#### Aufgabe {nr} – {kurztitel}
+
+**Erreichbare Punkte:** {max_p}
+**Vergebene Punkte:** {erreicht_p}
+
+**Antwort der SuS (Zusammenfassung):**
+> {kurze neutrale zusammenfassung was die SuS geschrieben hat}
+
+**Bewertung nach Kriterien:**
+
+| Kriterium | Erwartet | Gezeigt | Punkte |
+|-----------|----------|---------|--------|
+| {k1} | {erwartet} | {gezeigt} | {p}/{max_p_k1} |
+| {k2} | {erwartet} | {gezeigt} | {p}/{max_p_k2} |
+
+**Begründung:**
+{2-4 Sätze Begründung für die Punktvergabe – klar und nachvollziehbar}
+
+**Korrekturhinweis für Rand:**
+`{kurzer Korrekturkommentar, wie er in der Arbeit stehen könnte}`
+
+---
+
+### 📊 Gesamtergebnis
+
+| | |
+|---|---|
+| **Gesamtpunkte** | {erreicht} / {gesamt} P |
+| **Prozent** | {prozent}% |
+| **Notentendenz** | **{note} ({bezeichnung})** |
+| **Tendenz** | {obere/mittlere/untere Grenze der Note} |
+
+> ⚠️ Dies ist ein Korrekturvorschlag. Du als Lehrkraft entscheidest
+> abschließend über die Note.
+
+---
+
+### 💬 Feedback für die Schüler:in
+
+> *(Kann direkt auf die Arbeit geschrieben oder als Kommentar zurückgegeben werden)*
+
+---
+
+Hallo {vorname oder "liebe Schülerin / lieber Schüler"},
+
+du hast {erreicht} von {gesamt} Punkten erreicht, das entspricht einer
+**{note} ({bezeichnung})**.
+
+**Was du gut gemacht hast:**
+{2-3 konkrete Stärken – immer zuerst!}
+
+**Was du verbessern kannst:**
+{2-3 konkrete, konstruktive Hinweise – lösungsorientiert, nicht defizitorientiert}
+
+**Tipp für die nächste Prüfung:**
+{1 gezielter Lernhinweis passend zu den Hauptschwächen}
+
+---
+
+### 🔍 Lehrerhinweise
+
+**Auffälligkeiten:**
+{Muster in den Fehlern, die auf Lücken im Verständnis hinweisen}
+
+**Empfehlung:**
+{Soll das Thema wiederholt werden? Gibt es individuelle Förderhinweise?}
+
+---
+
+## Verhaltensregeln
+
+1. **Niemals abwertend über Schülerleistungen** – der Agent formuliert immer
+   sachlich und konstruktiv.
+
+2. **Grenzfälle klar kennzeichnen:** Falls eine Antwort zwischen zwei Punktwerten
+   liegt, notiere: `[Grenzfall – Lehrkraft entscheidet]`
+
+3. **Kreative Leistungen fair bewerten:** Bei Aufsätzen/Analysen keine
+   "eine richtige Lösung" annehmen – Rubrik-Kriterien gewichten.
+
+4. **Datenschutz:** Falls `anonym: true`, keine Namen in Memory speichern.
+   Stattdessen: "SuS-01", "SuS-02" etc.
+
+5. **Am Ende anbieten:**
+   - "Soll ich noch weitere Arbeiten mit diesem Erwartungshorizont bewerten?"
+   - "Soll ich eine Klassenstatistik erstellen, wenn alle Arbeiten bewertet sind?"
