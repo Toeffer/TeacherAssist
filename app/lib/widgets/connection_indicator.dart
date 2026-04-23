@@ -2,6 +2,7 @@
 /// Zeigt Netzwerk- und Verbindungsstatus an
 library connection_indicator;
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/connection_manager.dart';
 
@@ -162,7 +163,7 @@ class _ConnectionIndicatorState extends State<ConnectionIndicator> {
     Color color,
     String tooltipText,
   ) {
-    final widget = Icon(
+    final iconWidget = Icon(
       icon,
       size: widget.iconSize,
       color: color,
@@ -171,11 +172,11 @@ class _ConnectionIndicatorState extends State<ConnectionIndicator> {
     if (widget.showTooltip) {
       return Tooltip(
         message: tooltipText,
-        child: widget,
+        child: iconWidget,
       );
     }
 
-    return widget;
+    return iconWidget;
   }
 
   /// Erweiterte Ansicht (Icon + Text)

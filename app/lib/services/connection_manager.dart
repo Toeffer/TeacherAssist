@@ -103,9 +103,9 @@ class ConnectionManager {
     // Initialen Status prüfen
     await _checkConnection();
 
-    // Listener für Netzwerk-Änderungen
-    _connectivity.onConnectivityChanged.listen((result) {
-      _handleConnectivityChange(result);
+    // Listener für Netzwerk-Änderungen (connectivity_plus v5: List)
+    _connectivity.onConnectivityChanged.listen((results) {
+      _handleConnectivityChange(results);
     });
 
     // Timer für regelmäßige Prüfungen starten
@@ -121,13 +121,13 @@ class ConnectionManager {
     );
   }
 
-  /// Netzwerk-Änderung behandeln
-  Future<void> _handleConnectivityChange(ConnectivityResult result) async {
-    if (result == ConnectivityResult.none) {
-      // Keine Netzwerkverbindung
+  /// Netzwerk-Änderung behandeln (connectivity_plus v5: List)
+  Future<void> _handleConnectivityChange(List<ConnectivityResult> results) async {
+    final isOffline = results.isEmpty ||
+        results.every((r) => r == ConnectivityResult.none);
+    if (isOffline) {
       await _updateStatus(ConnectionStatus.offline);
     } else {
-      // Netzwerk verfügbar, erneut prüfen
       await _checkConnection();
     }
   }
@@ -135,10 +135,12 @@ class ConnectionManager {
   /// Verbindung prüfen
   Future<void> _checkConnection() async {
     try {
-      // Netzwerk-Verfügbarkeit prüfen
-      final connectivityResult = await _connectivity.checkConnectivity();
-      
-      if (connectivityResult == ConnectivityResult.none) {
+      // Netzwerk-Verfügbarkeit prüfen (connectivity_plus v5: List)
+      final connectivityResults = await _connectivity.checkConnectivity();
+      final isOffline = connectivityResults.isEmpty ||
+          connectivityResults.every((r) => r == ConnectivityResult.none);
+
+      if (isOffline) {
         await _updateStatus(ConnectionStatus.offline);
         return;
       }

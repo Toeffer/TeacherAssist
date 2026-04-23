@@ -1,13 +1,13 @@
 /// Notification Service für LehrerAgent
-/// Implementiert Push-Benachrichtigungen für Android (FCM) und iOS (APNs)
+/// Lokale Push-Benachrichtigungen (kein Firebase – DSGVO-konform)
 library notification_service;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 
 /// Benachrichtigungstypen
 enum NotificationType {
@@ -68,9 +68,9 @@ class NotificationService {
   NotificationService._internal();
 
   late FlutterLocalNotificationsPlugin _localNotifications;
-  late FirebaseMessaging _firebaseMessaging;
   bool _initialized = false;
-  StreamController<NotificationData> _notificationStream = StreamController.broadcast();
+  final StreamController<NotificationData> _notificationStream =
+      StreamController.broadcast();
 
   /// Stream für eingehende Benachrichtigungen
   Stream<NotificationData> get notifications => _notificationStream.stream;
@@ -79,74 +79,36 @@ class NotificationService {
   Future<void> initialize() async {
     if (_initialized) return;
 
-    // Lokale Benachrichtigungen initialisieren
     _localNotifications = FlutterLocalNotificationsPlugin();
-    
-    const AndroidInitializationSettings androidSettings =
+
+    const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    
-    const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
+
+    const darwinSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
       requestSoundPermission: true,
     );
-    
-    final InitializationSettings settings = InitializationSettings(
+
+    const settings = InitializationSettings(
       android: androidSettings,
-      iOS: iosSettings,
+      iOS: darwinSettings,
+      macOS: darwinSettings,
     );
-    
+
     await _localNotifications.initialize(
       settings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
 
-    // Firebase Messaging initialisieren (nur wenn verfügbar)
-    try {
-      _firebaseMessaging = FirebaseMessaging.instance;
-      
-      // Berechtigungen anfordern
-      await _requestPermissions();
-      
-      // Token abrufen
-      final token = await _firebaseMessaging.getToken();
-      if (token != null) {
-        debugPrint('FCM Token: $token');
-      }
-      
-      // Hintergrund-Nachrichten konfigurieren
-      FirebaseMessaging.onMessage.listen(_onFirebaseMessage);
-      FirebaseMessaging.onMessageOpenedApp.listen(_onFirebaseMessageOpened);
-    } catch (e) {
-      debugPrint('Firebase Messaging nicht verfügbar: $e');
-    }
+    // iOS-Berechtigungen anfordern
+    await _localNotifications
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
 
     _initialized = true;
     debugPrint('Notification Service initialisiert');
-  }
-
-  /// Berechtigungen anfordern
-  Future<void> _requestPermissions() async {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      await _firebaseMessaging.requestPermission(
-        alert: true,
-        announcement: false,
-        badge: true,
-        carPlay: false,
-        criticalAlert: false,
-        provisional: false,
-        sound: true,
-      );
-    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-      await _localNotifications
-          .resolvePlatformSpecificImplementation<
-              IOSFlutterLocalNotificationsPlugin>()
-          ?.requestPermissions(
-            alert: true,
-            badge: true,
-            sound: true,
-          );
-    }
   }
 
   /// Lokale Benachrichtigung anzeigen
@@ -155,32 +117,31 @@ class NotificationService {
     required String body,
     required NotificationType type,
     Map<String, dynamic>? payload,
-    String? channelId,
-    String? channelName,
   }) async {
     if (!_initialized) await initialize();
 
-    const androidPlatformChannelSpecifics = AndroidNotificationDetails(
-      'lehreragent_channel', // Channel ID
-      'LehrerAgent Benachrichtigungen', // Channel Name
-      channelDescription: 'Benachrichtigungen für Agenten-Tasks und Systemmeldungen',
+    final androidDetails = AndroidNotificationDetails(
+      'lehreragent_channel',
+      'LehrerAgent Benachrichtigungen',
+      channelDescription:
+          'Benachrichtigungen für Agenten-Tasks und Systemmeldungen',
       importance: Importance.high,
       priority: Priority.high,
-      ticker: 'ticker',
       enableVibration: true,
       vibrationPattern: Int64List.fromList([0, 250, 250, 250]),
       playSound: true,
     );
 
-    const iosPlatformChannelSpecifics = DarwinNotificationDetails(
+    const darwinDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
     );
 
-    final platformChannelSpecifics = NotificationDetails(
-      android: androidPlatformChannelSpecifics,
-      iOS: iosPlatformChannelSpecifics,
+    final details = NotificationDetails(
+      android: androidDetails,
+      iOS: darwinDetails,
+      macOS: darwinDetails,
     );
 
     final notification = NotificationData(
@@ -196,11 +157,10 @@ class NotificationService {
       notification.id.hashCode,
       title,
       body,
-      platformChannelSpecifics,
+      details,
       payload: jsonEncode(notification.toJson()),
     );
 
-    // An Stream senden
     _notificationStream.add(notification);
   }
 
@@ -251,7 +211,7 @@ class NotificationService {
     final dueText = dueDate != null
         ? 'Fällig: ${dueDate.toLocal().toString().substring(0, 16)}'
         : '';
-    
+
     await showLocalNotification(
       title: reminderTitle,
       body: '$reminderText\n$dueText',
@@ -274,32 +234,13 @@ class NotificationService {
   void _onNotificationTapped(NotificationResponse response) {
     try {
       if (response.payload != null) {
-        final data = jsonDecode(response.payload!);
+        final data = jsonDecode(response.payload!) as Map<String, dynamic>;
         final notification = NotificationData.fromJson(data);
         _notificationStream.add(notification);
       }
     } catch (e) {
       debugPrint('Fehler beim Verarbeiten der Benachrichtigung: $e');
     }
-  }
-
-  /// Firebase Nachricht empfangen
-  void _onFirebaseMessage(RemoteMessage message) {
-    debugPrint('Firebase Message empfangen: ${message.notification?.title}');
-    
-    // Lokale Benachrichtigung anzeigen
-    showLocalNotification(
-      title: message.notification?.title ?? 'Neue Nachricht',
-      body: message.notification?.body ?? '',
-      type: NotificationType.system,
-      payload: message.data,
-    );
-  }
-
-  /// Firebase Nachricht geöffnet
-  void _onFirebaseMessageOpened(RemoteMessage message) {
-    debugPrint('Firebase Message geöffnet: ${message.data}');
-    // Hier könnte Navigation zu spezifischem Screen erfolgen
   }
 
   /// Service beenden

@@ -36,7 +36,7 @@ def get_all_collections(client) -> List[str]:
     try:
         collections = client.list_collections()
         return [col.name for col in collections]
-    except:
+    except Exception:
         return []
 
 

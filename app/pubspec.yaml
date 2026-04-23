@@ -10,6 +10,11 @@ dependencies:
     sdk: flutter
   web_socket_channel: ^2.4.0
   shared_preferences: ^2.2.0
+  connectivity_plus: ^5.0.0
+  flutter_local_notifications: ^17.0.0
+  path_provider: ^2.1.0
+  intl: ^0.19.0
+  file_picker: ^8.0.0
 
 dev_dependencies:
   flutter_test:

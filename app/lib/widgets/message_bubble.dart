@@ -13,7 +13,16 @@ enum MessageType {
   /// Nachricht vom Agenten (KI)
   agent,
 
-  /// System-Nachricht (Info, Fehler, Status)
+  /// Normaler Text (Alias für agent)
+  text,
+
+  /// Ergebnis eines Skills
+  result,
+
+  /// Fehlermeldung
+  error,
+
+  /// System-Nachricht (Info, Status)
   system,
 
   /// Datei-Upload-Nachricht
@@ -61,6 +70,18 @@ class MessageBubble extends StatelessWidget {
   /// Maximale Breite (für Desktop)
   final double? maxWidth;
 
+  /// Desktop-Layout (breitere Bubbles)
+  final bool isDesktop;
+
+  /// Callback: Nachricht kopieren
+  final VoidCallback? onCopy;
+
+  /// Callback: Nachricht teilen
+  final VoidCallback? onShare;
+
+  /// Callback: Nachricht speichern
+  final VoidCallback? onSave;
+
   /// Konstruktor
   const MessageBubble({
     Key? key,
@@ -76,6 +97,10 @@ class MessageBubble extends StatelessWidget {
     this.onErrorTap,
     this.onTap,
     this.maxWidth,
+    this.isDesktop = false,
+    this.onCopy,
+    this.onShare,
+    this.onSave,
   }) : super(key: key);
 
   /// Farbe basierend auf Nachrichtentyp
@@ -85,13 +110,18 @@ class MessageBubble extends StatelessWidget {
 
     switch (type) {
       case MessageType.user:
-        return isDark
-            ? Colors.blue.shade800
-            : Colors.blue.shade600;
+        return isDark ? Colors.blue.shade800 : Colors.blue.shade600;
       case MessageType.agent:
+      case MessageType.text:
+        return isDark ? Colors.grey.shade800 : Colors.grey.shade200;
+      case MessageType.result:
         return isDark
-            ? Colors.grey.shade800
-            : Colors.grey.shade200;
+            ? Colors.teal.shade900.withOpacity(0.4)
+            : Colors.teal.shade50;
+      case MessageType.error:
+        return isDark
+            ? Colors.red.shade900.withOpacity(0.4)
+            : Colors.red.shade50;
       case MessageType.system:
         return isDark
             ? Colors.orange.shade900.withOpacity(0.3)
@@ -116,7 +146,12 @@ class MessageBubble extends StatelessWidget {
       case MessageType.user:
         return Colors.white;
       case MessageType.agent:
+      case MessageType.text:
         return isDark ? Colors.white : Colors.black;
+      case MessageType.result:
+        return isDark ? Colors.teal.shade200 : Colors.teal.shade900;
+      case MessageType.error:
+        return isDark ? Colors.red.shade300 : Colors.red.shade900;
       case MessageType.system:
         return isDark ? Colors.orange.shade200 : Colors.orange.shade900;
       case MessageType.file:
@@ -132,7 +167,9 @@ class MessageBubble extends StatelessWidget {
 
     final icon = switch (type) {
       MessageType.user => Icons.person,
-      MessageType.agent => Icons.smart_toy,
+      MessageType.agent || MessageType.text => Icons.smart_toy,
+      MessageType.result => Icons.check_circle_outline,
+      MessageType.error => Icons.error_outline,
       MessageType.system => Icons.info,
       MessageType.file => Icons.attach_file,
       MessageType.tool => Icons.build,
@@ -140,7 +177,9 @@ class MessageBubble extends StatelessWidget {
 
     final color = switch (type) {
       MessageType.user => Colors.blue,
-      MessageType.agent => Colors.grey,
+      MessageType.agent || MessageType.text => Colors.grey,
+      MessageType.result => Colors.teal,
+      MessageType.error => Colors.red,
       MessageType.system => Colors.orange,
       MessageType.file => Colors.green,
       MessageType.tool => Colors.purple,
@@ -165,7 +204,9 @@ class MessageBubble extends StatelessWidget {
 
     return switch (type) {
       MessageType.user => 'Du',
-      MessageType.agent => 'LehrerAgent',
+      MessageType.agent || MessageType.text => 'LehrerAgent',
+      MessageType.result => 'LehrerAgent',
+      MessageType.error => 'Fehler',
       MessageType.system => 'System',
       MessageType.file => 'Datei',
       MessageType.tool => 'Tool',
@@ -265,9 +306,11 @@ class MessageBubble extends StatelessWidget {
     final avatar = _getAvatar(context);
     final formattedTime = _formatTimestamp();
 
+    final effectiveMaxWidth = maxWidth ?? (isDesktop ? 800.0 : 600.0);
+
     return ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: maxWidth ?? 600,
+        maxWidth: effectiveMaxWidth,
       ),
       child: GestureDetector(
         onTap: onTap,
@@ -375,6 +418,34 @@ class MessageBubble extends StatelessWidget {
                           ),
                         ),
                       ),
+
+                    // Aktions-Buttons (Kopieren / Teilen / Speichern)
+                    if (onCopy != null || onShare != null || onSave != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          mainAxisAlignment: isUserMessage
+                              ? MainAxisAlignment.end
+                              : MainAxisAlignment.start,
+                          children: [
+                            if (onCopy != null)
+                              _ActionButton(
+                                  icon: Icons.copy,
+                                  tooltip: 'Kopieren',
+                                  onTap: onCopy!),
+                            if (onShare != null)
+                              _ActionButton(
+                                  icon: Icons.share,
+                                  tooltip: 'Teilen',
+                                  onTap: onShare!),
+                            if (onSave != null)
+                              _ActionButton(
+                                  icon: Icons.bookmark_outline,
+                                  tooltip: 'Speichern',
+                                  onTap: onSave!),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -405,6 +476,34 @@ class MessageBubble extends StatelessWidget {
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Kleiner Icon-Button für Nachrichten-Aktionen
+class _ActionButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  const _ActionButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, size: 14, color: Theme.of(context).hintColor),
+        ),
       ),
     );
   }

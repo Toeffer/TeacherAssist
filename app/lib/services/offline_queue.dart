@@ -109,7 +109,7 @@ class QueueEntry {
 }
 
 /// Zufällige ID generieren
-static String _generateRandomId() {
+String _generateRandomId() {
   return DateTime.now().microsecondsSinceEpoch.toRadixString(36).substring(0, 6);
 }
 

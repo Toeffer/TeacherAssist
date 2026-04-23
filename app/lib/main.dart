@@ -5,12 +5,24 @@ import 'config/app_config.dart';
 import 'services/openclaw_service.dart';
 import 'services/notification_service.dart';
 import 'services/tailscale_service.dart';
+import 'services/connection_manager.dart';
 import 'screens/chat_screen.dart';
 import 'screens/tasks_screen.dart';
 import 'screens/results_screen.dart';
 import 'screens/settings_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Globalen ConnectionManager initialisieren (setzt _globalConnectionManager
+  // synchron bevor runApp() läuft — der erste await liegt innerhalb von initialize())
+  initializeConnectionManager(appConfig);
+
+  // Services starten (fire-and-forget, Fehler werden intern behandelt)
+  openClawService.initialize(appConfig);
+  tailscaleService.initialize();
+  notificationService.initialize();
+
   runApp(const TeacherAssistApp());
 }
 
@@ -25,19 +37,19 @@ class TeacherAssistApp extends StatelessWidget {
         Provider<AppConfig>(
           create: (_) => AppConfig.fromEnvironment(),
         ),
-        // OpenClaw Service
-        ChangeNotifierProvider<OpenClawService>(
-          create: (_) => OpenClawService(),
-          lazy: false, // Sofort initialisieren
+        // OpenClaw Service (Singleton, kein ChangeNotifier — nutzt Streams)
+        Provider<OpenClawService>(
+          create: (_) => openClawService,
+          lazy: false,
         ),
         // Notification Service
-        ChangeNotifierProvider<NotificationService>(
-          create: (_) => NotificationService(),
+        Provider<NotificationService>(
+          create: (_) => notificationService,
           lazy: false,
         ),
         // Tailscale Service
-        ChangeNotifierProvider<TailscaleService>(
-          create: (_) => TailscaleService(),
+        Provider<TailscaleService>(
+          create: (_) => tailscaleService,
           lazy: false,
         ),
       ],
@@ -69,7 +81,6 @@ class TeacherAssistApp extends StatelessWidget {
           '/settings': (context) => const SettingsScreen(),
         },
         onGenerateRoute: (settings) {
-          // Fallback für unbekannte Routen
           return MaterialPageRoute(
             builder: (context) => const ChatScreen(),
           );

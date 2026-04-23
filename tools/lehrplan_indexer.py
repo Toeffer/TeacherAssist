@@ -151,7 +151,7 @@ def main():
             # Collection existiert bereits - löschen und neu erstellen
             client.delete_collection(collection_name)
             collection = client.create_collection(collection_name)
-        except:
+        except Exception:
             # Collection existiert nicht - neu erstellen
             collection = client.create_collection(collection_name)
         

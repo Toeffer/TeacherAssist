@@ -3,6 +3,7 @@
 library tailscale_service;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 
@@ -153,25 +154,11 @@ class TailscaleService {
   /// Tailscale Status JSON parsen
   Map<String, dynamic> _parseStatusJson(String jsonString) {
     try {
-      // Einfache JSON-Parsing (ohne external package)
-      final cleaned = jsonString
-          .replaceAll('\\', '')
-          .replaceAll('\n', '')
-          .replaceAll('\r', '');
-      
-      final Map<String, dynamic> result = {};
-      final lines = cleaned.split(',');
-      
-      for (var line in lines) {
-        final parts = line.split(':');
-        if (parts.length == 2) {
-          final key = parts[0].trim().replaceAll('"', '');
-          final value = parts[1].trim().replaceAll('"', '');
-          result[key] = value;
-        }
+      final decoded = jsonDecode(jsonString);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
       }
-      
-      return result;
+      return {};
     } catch (e) {
       debugPrint('Fehler beim Parsen des Tailscale-Status: $e');
       return {};
@@ -181,24 +168,28 @@ class TailscaleService {
   /// Nodes aus Status-Daten parsen
   List<TailscaleNode> _parseNodesFromStatus(Map<String, dynamic> statusData) {
     final nodes = <TailscaleNode>[];
-    
     try {
-      // Tailscale Status enthält Peer-Informationen
-      // Hier müsste die tatsächliche Parsing-Logik implementiert werden
-      // basierend auf der tatsächlichen Tailscale Status-Ausgabe
-      
-      // Beispiel-Node für Demo-Zwecke
-      nodes.add(TailscaleNode(
-        hostname: 'openclaw-server',
-        ipAddress: '100.64.0.1',
-        isOnline: true,
-        lastSeen: DateTime.now(),
-      ));
-      
+      final peers = statusData['Peer'];
+      if (peers is Map) {
+        for (final entry in peers.entries) {
+          final peer = entry.value as Map<String, dynamic>;
+          final tailAddrs = peer['TailscaleIPs'] as List?;
+          final ip = tailAddrs != null && tailAddrs.isNotEmpty
+              ? tailAddrs.first as String
+              : 'unbekannt';
+          nodes.add(TailscaleNode(
+            hostname: peer['HostName'] as String? ?? entry.key,
+            ipAddress: ip,
+            isOnline: peer['Online'] as bool? ?? false,
+            lastSeen: peer['LastSeen'] != null
+                ? DateTime.tryParse(peer['LastSeen'] as String) ?? DateTime.now()
+                : DateTime.now(),
+          ));
+        }
+      }
     } catch (e) {
       debugPrint('Fehler beim Parsen der Nodes: $e');
     }
-    
     return nodes;
   }
 

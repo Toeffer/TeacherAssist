@@ -9,6 +9,8 @@ import 'package:web_socket_channel/io.dart';
 import 'package:flutter/foundation.dart';
 import '../config/app_config.dart';
 
+// Globale appConfig-Instanz aus app_config.dart ist direkt verfügbar
+
 /// OpenClaw Nachrichtentypen
 enum OpenClawMessageType {
   skillRequest,    // Skill-Ausführung anfordern

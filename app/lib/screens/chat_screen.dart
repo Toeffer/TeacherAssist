@@ -3,6 +3,7 @@
 library chat_screen;
 
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/openclaw_service.dart';
@@ -418,7 +419,9 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
           if (index < _messages.length) {
             final message = _messages[index];
             return MessageBubble(
-              message: message,
+              message: message.content,
+              type: message.isUser ? MessageType.user : message.type,
+              timestamp: message.timestamp,
               isDesktop: isDesktop,
               onCopy: () => _copyToClipboard(message.content),
               onShare: () => _shareMessage(message),
@@ -478,9 +481,10 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
             children: [
               Expanded(
                 child: FileUploadButton(
-                  onFileSelected: _handleFileUpload,
+                  onFileSelected: (File file, String fileType) =>
+                      _handleFileUpload(file, fileType),
                   maxFileSize: 10 * 1024 * 1024, // 10 MB
-                  allowedExtensions: const ['.pdf', '.jpg', '.jpeg', '.png', '.txt'],
+                  allowedExtensions: const ['pdf', 'jpg', 'jpeg', 'png', 'txt'],
                 ),
               ),
               if (isDesktop)
@@ -607,24 +611,6 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
         skillName: skill,
         parameters: parameters,
       );
-      
-      // Timeout nach 60 Sekunden
-      Future.delayed(const Duration(seconds: 60), () {
-        if (_isLoading) {
-          setState(() {
-            _isLoading = false;
-          });
-          _addMessage(
-            ChatMessage(
-              id: 'timeout_${DateTime.now().millisecondsSinceEpoch}',
-              content: 'Die Anfrage hat zu lange gedauert. Bitte versuchen Sie es erneut.',
-              timestamp: DateTime.now(),
-              isUser: false,
-              type: MessageType.error,
-            ),
-          );
-        }
-      });
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -677,20 +663,20 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
   }
 
   /// Datei-Upload verarbeiten
-  void _handleFileUpload(String filePath) {
+  void _handleFileUpload(File file, String fileType) {
+    final fileName = file.path.split('/').last.split('\\').last;
     _addMessage(
       ChatMessage(
         id: 'file_${DateTime.now().millisecondsSinceEpoch}',
-        content: 'Datei hochgeladen: ${filePath.split('/').last}',
+        content: 'Datei hochgeladen: $fileName',
         timestamp: DateTime.now(),
         isUser: true,
         type: MessageType.file,
-        metadata: {'file_path': filePath},
+        metadata: {'file_path': file.path, 'file_type': fileType},
       ),
     );
-    
-    // Automatisch Lehrplan einlesen, wenn es eine PDF ist
-    if (filePath.toLowerCase().endsWith('.pdf')) {
+
+    if (fileType == 'pdf') {
       _addMessage(
         ChatMessage(
           id: 'auto_${DateTime.now().millisecondsSinceEpoch}',

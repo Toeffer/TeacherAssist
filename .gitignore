@@ -1,23 +1,55 @@
-# Python
+# ─── Python ───────────────────────────────────────────────────────────────────
 tools/.venv/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+dist/
 
-# ChromaDB (auto-generiert beim Lehrplan-Indexieren)
+# ─── ChromaDB (wird beim Lehrplan-Indexieren auto-generiert) ──────────────────
 memory/lehrplan_vectordb/
 
-# Persönliche / Runtime Memory-Dateien
+# ─── Persönliche / Runtime Memory-Dateien ────────────────────────────────────
 memory/onboarding_complete.md
 memory/bewertungsraster/*.md
+!memory/bewertungsraster/README.md
 
-# Flutter / Dart
+# ─── OpenClaw Konfiguration (enthält API-Keys!) ───────────────────────────────
+openclaw_config.yaml
+.openclaw/
+
+# ─── Flutter / Dart ───────────────────────────────────────────────────────────
 app/.dart_tool/
 app/build/
 app/.flutter-plugins
 app/.flutter-plugins-dependencies
 app/*.g.dart
+app/.packages
 
-# Betriebssystem
+# Flutter Platform Build-Artefakte (generiert, kein Source-Code)
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+app/android/app/google-services.json
+app/ios/.symlinks/
+app/ios/Flutter/Generated.xcconfig
+app/ios/Flutter/flutter_export_environment.sh
+app/ios/Pods/
+app/windows/flutter/generated_plugins.cmake
+app/windows/flutter/generated_plugin_registrant.h
+app/windows/flutter/generated_plugin_registrant.cpp
+app/linux/flutter/generated_plugins.cmake
+app/linux/flutter/generated_plugin_registrant.h
+app/linux/flutter/generated_plugin_registrant.cc
+app/macos/Flutter/GeneratedPluginRegistrant.swift
+
+# ─── IDEs ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ─── Betriebssystem ───────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini

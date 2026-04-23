@@ -9,6 +9,7 @@ Sie speichert die Nutzungsdaten in einer JSON-Datei für die spätere Analyse.
 
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, date
@@ -225,9 +226,8 @@ class UsageTracker:
         if self.usage_file.exists():
             backup_file = self.data_dir / f"usage_backup_{int(time.time())}.json"
             try:
-                import shutil
                 shutil.copy2(self.usage_file, backup_file)
-            except:
+            except Exception:
                 pass
         
         # Speichere neue Datei
@@ -772,9 +772,69 @@ class UsageTracker:
             }
 
 
+def main_json(args: Dict) -> Dict:
+    """OpenClaw JSON-Interface (sys.argv[1] oder stdin)."""
+    tracker = UsageTracker()
+    action = args.get("action", "track")
+
+    if action == "track":
+        return tracker.track_usage(
+            model=args.get("model", DEFAULT_MODEL),
+            input_tokens=int(args.get("input_tokens", 0)),
+            output_tokens=int(args.get("output_tokens", 0)),
+            skill_name=args.get("skill_name"),
+            request_id=args.get("request_id"),
+            timestamp=args.get("timestamp"),
+            provider=args.get("provider"),
+        )
+    elif action == "summary":
+        return tracker.get_usage_summary(
+            period=args.get("period", "total"),
+            period_key=args.get("period_key"),
+        )
+    elif action == "estimate":
+        return tracker.get_cost_estimate(
+            model=args.get("model", DEFAULT_MODEL),
+            estimated_input_tokens=int(args.get("estimated_input_tokens", 0)),
+            estimated_output_tokens=int(args.get("estimated_output_tokens", 0)),
+            provider=args.get("provider"),
+        )
+    elif action == "export":
+        return tracker.export_report(
+            format=args.get("format", "json"),
+            output_path=args.get("output_path"),
+        )
+    elif action == "reset":
+        return tracker.reset_usage(confirm=bool(args.get("confirm", False)))
+    else:
+        return {"success": False, "error": f"Unbekannte Aktion: {action}"}
+
+
 def main():
-    """Hauptfunktion für Kommandozeilenaufruf."""
+    """Hauptfunktion – unterstützt OpenClaw JSON-Interface und CLI."""
     import argparse
+
+    # OpenClaw JSON-Modus: sys.argv[1] ist ein JSON-String
+    if len(sys.argv) > 1:
+        try:
+            json_args = json.loads(sys.argv[1])
+            if isinstance(json_args, dict):
+                result = main_json(json_args)
+                print(json.dumps(result, ensure_ascii=False))
+                return
+        except (json.JSONDecodeError, ValueError):
+            pass  # Kein JSON – normaler CLI-Modus via argparse
+
+    # OpenClaw stdin-Modus: kein sys.argv, JSON auf stdin
+    if len(sys.argv) == 1 and not sys.stdin.isatty():
+        try:
+            json_args = json.load(sys.stdin)
+            if isinstance(json_args, dict):
+                result = main_json(json_args)
+                print(json.dumps(result, ensure_ascii=False))
+                return
+        except (json.JSONDecodeError, ValueError):
+            pass
     
     parser = argparse.ArgumentParser(description="Usage-Tracker für LehrerAgent")
     parser.add_argument("--track", action="store_true", help="Tracke Nutzung")
