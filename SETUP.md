@@ -1,6 +1,9 @@
-# LehrerAgent – Setup-Anleitung
+# LehrerAgent – Technische Setup-Anleitung
 
-Vollständige Einrichtung auf einem neuen Rechner. Reihenfolge einhalten.
+> **Für Endnutzer:** Bitte [README.md](README.md) verwenden — dort reicht ein Doppelklick auf `install.bat`.
+> Diese Datei richtet sich an Entwickler und technisch versierte Nutzer.
+
+Vollständige manuelle Einrichtung auf einem neuen Rechner. Reihenfolge einhalten.
 
 ---
 
