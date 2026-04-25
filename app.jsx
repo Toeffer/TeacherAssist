@@ -881,6 +881,10 @@ function App() {
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <ProfileView profile={profile} onUpdate={setProfile} />
         </div>
+      ) : currentView === 'raster' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <RasterEditorView toolStatus={toolStatus} />
+        </div>
       ) : (
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <SettingsView

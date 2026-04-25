@@ -111,7 +111,132 @@ const Icons = {
       <line x1="12" y1="15" x2="12" y2="3"></line>
     </svg>
   ),
+  print: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 6 2 18 2 18 9"></polyline>
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+      <rect x="6" y="14" width="12" height="8"></rect>
+    </svg>
+  ),
+  grid: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7"></rect>
+      <rect x="14" y="3" width="7" height="7"></rect>
+      <rect x="3" y="14" width="7" height="7"></rect>
+      <rect x="14" y="14" width="7" height="7"></rect>
+    </svg>
+  ),
+  edit: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+    </svg>
+  ),
 };
+
+/* ---------- Markdown → Druck-HTML ---------- */
+function mdToHtml(md) {
+  // Tabellen-Blöcke zuerst (vor Zeilen-Regex)
+  let html = md.replace(/(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)+)/g, (block) => {
+    const lines = block.trim().split('\n');
+    const ths = lines[0].split('|').filter(s => s.trim()).map(h => `<th>${h.trim()}</th>`).join('');
+    const trs = lines.slice(2).map(row =>
+      '<tr>' + row.split('|').filter(s => s.trim()).map(d => `<td>${d.trim()}</td>`).join('') + '</tr>'
+    ).join('');
+    return `<table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>\n`;
+  });
+
+  // Code-Blöcke (vor Inline-Ersetzungen)
+  html = html.replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) =>
+    `<pre><code>${code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+  );
+  html = html.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>`);
+
+  // Überschriften
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Horizontale Linie
+  html = html.replace(/^---+$/gm, '<hr>');
+
+  // Fett / Kursiv
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Blockquotes
+  html = html.replace(/(^> .+\n?)+/gm, block => {
+    const inner = block.replace(/^> /gm, '').trim();
+    return `<blockquote>${inner}</blockquote>\n`;
+  });
+
+  // Listen
+  html = html.replace(/(^- .+\n?)+/gm, block => {
+    const items = block.trim().split('\n').map(l => `<li>${l.replace(/^- /, '').trim()}</li>`).join('');
+    return `<ul>${items}</ul>\n`;
+  });
+  html = html.replace(/(^\d+\. .+\n?)+/gm, block => {
+    const items = block.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /, '').trim()}</li>`).join('');
+    return `<ol>${items}</ol>\n`;
+  });
+
+  // Absätze (Doppel-Zeilenumbrüche)
+  html = html.split(/\n{2,}/).map(para => {
+    para = para.trim();
+    if (!para) return '';
+    if (/^<(h[1-6]|hr|ul|ol|table|pre|blockquote)/.test(para)) return para;
+    return `<p>${para.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+
+  return html;
+}
+
+function openPrintWindow(text, title) {
+  const body = mdToHtml(text);
+  const today = new Date().toLocaleDateString('de-DE');
+  const win = window.open('', '_blank');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>${title}</title>
+<style>
+  body{font-family:'Segoe UI',Arial,sans-serif;max-width:820px;margin:0 auto;padding:24px 28px;color:#222;font-size:15px;line-height:1.6}
+  h1{font-size:1.5em;border-bottom:2px solid #333;padding-bottom:6px;margin-top:0}
+  h2{font-size:1.25em;color:#333;margin-top:1.6em;border-bottom:1px solid #eee;padding-bottom:4px}
+  h3{font-size:1.1em;color:#444;margin-top:1.4em}
+  h4{font-size:1em;color:#555}
+  table{width:100%;border-collapse:collapse;margin:1em 0;font-size:0.92em}
+  th,td{border:1px solid #ccc;padding:7px 10px;text-align:left}
+  th{background:#f2f2f2;font-weight:600}
+  blockquote{border-left:3px solid #aaa;margin:1em 0;padding:6px 14px;color:#555;font-style:italic}
+  hr{border:none;border-top:1px solid #ddd;margin:1.5em 0}
+  code{background:#f4f4f4;padding:2px 5px;border-radius:3px;font-size:0.88em;font-family:monospace}
+  pre{background:#f4f4f4;padding:12px;border-radius:6px;overflow:auto;font-size:0.88em}
+  ul,ol{margin:.6em 0;padding-left:1.6em}
+  li{margin:.25em 0}
+  p{margin:.7em 0}
+  .toolbar{background:#f0f7ff;border:1px solid #b6d4fe;border-radius:8px;padding:10px 16px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
+  .toolbar span{font-size:13px;color:#1d4ed8}
+  .btn-print{background:#2563eb;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600}
+  .footer{margin-top:2em;font-size:12px;color:#999;border-top:1px solid #eee;padding-top:8px}
+  @media print{.toolbar{display:none}.footer{color:#bbb}}
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <span>📄 <strong>Export bereit</strong> – als PDF drucken oder speichern</span>
+  <button class="btn-print" onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
+</div>
+${body}
+<div class="footer">Erstellt mit TeacherAssist · ${today}</div>
+</body>
+</html>`);
+  win.document.close();
+}
 
 /* ---------- Avatar ---------- */
 function BotAvatar({ size = 32 }) {
@@ -144,25 +269,58 @@ function TypingDots() {
 
 /* ---------- Chat Bubble ---------- */
 function ChatBubble({ message, isBot, isTyping }) {
+  const [hovered, setHovered] = React.useState(false);
+  const hasContent = isBot && !isTyping && message && message.length > 80;
+
   return (
-    <div style={{
-      display: 'flex', gap: 12, alignItems: 'flex-start',
-      flexDirection: isBot ? 'row' : 'row-reverse',
-      maxWidth: '100%',
-      animation: 'fadeInUp 0.3s ease',
-    }}>
+    <div
+      style={{
+        display: 'flex', gap: 12, alignItems: 'flex-start',
+        flexDirection: isBot ? 'row' : 'row-reverse',
+        maxWidth: '100%',
+        animation: 'fadeInUp 0.3s ease',
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {isBot && <BotAvatar />}
-      <div style={{
-        background: isBot ? 'var(--bubble-bot)' : 'var(--bubble-user)',
-        color: isBot ? 'var(--text-primary)' : 'var(--bubble-user-text)',
-        padding: '10px 16px',
-        borderRadius: isBot ? '4px 18px 18px 18px' : '18px 4px 18px 18px',
-        maxWidth: '75%',
-        fontSize: 15, lineHeight: 1.55,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-      }}>
-        {isTyping || !message ? <TypingDots /> : message}
+      <div style={{ maxWidth: '75%', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{
+          background: isBot ? 'var(--bubble-bot)' : 'var(--bubble-user)',
+          color: isBot ? 'var(--text-primary)' : 'var(--bubble-user-text)',
+          padding: '10px 16px',
+          borderRadius: isBot ? '4px 18px 18px 18px' : '18px 4px 18px 18px',
+          fontSize: 15, lineHeight: 1.55,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}>
+          {isTyping || !message ? <TypingDots /> : message}
+        </div>
+        {hasContent && (
+          <div style={{
+            display: 'flex', gap: 6,
+            opacity: hovered ? 1 : 0,
+            transition: 'opacity 0.2s',
+          }}>
+            <button
+              onClick={() => openPrintWindow(message, 'TeacherAssist Export')}
+              title="Drucken / Als PDF speichern"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '4px 10px', borderRadius: 8, fontSize: 12,
+                background: 'var(--surface-elevated)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer', fontFamily: 'inherit',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface-elevated)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border)'; }}
+            >
+              {Icons.print} Exportieren
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -303,6 +461,15 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
             cursor: 'pointer', fontSize: 14, textAlign: 'left',
           }}>
             {Icons.user} Mein Profil
+          </button>
+          <button onClick={() => onNavigate('raster')} style={{
+            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+            padding: '10px 10px', borderRadius: 8, border: 'none',
+            background: currentView === 'raster' ? 'var(--accent-soft)' : 'transparent',
+            color: currentView === 'raster' ? 'var(--accent)' : 'var(--text-primary)',
+            cursor: 'pointer', fontSize: 14, textAlign: 'left',
+          }}>
+            {Icons.grid} Bewertungsraster
           </button>
           <button onClick={() => onNavigate('settings')} style={{
             display: 'flex', alignItems: 'center', gap: 10, width: '100%',
@@ -1290,8 +1457,377 @@ function DsgvoWarningModal({ findings, onAnonymize, onProceed, onCancel }) {
   );
 }
 
+/* ---------- Bewertungsraster-Editor ---------- */
+
+const NOTENSCHLUESSEL_TYPEN = {
+  standard:    [{ note:1,bez:'Sehr gut',pct:95 },{ note:2,bez:'Gut',pct:80 },{ note:3,bez:'Befriedigend',pct:65 },{ note:4,bez:'Ausreichend',pct:50 },{ note:5,bez:'Mangelhaft',pct:25 },{ note:6,bez:'Ungenügend',pct:0 }],
+  mild:        [{ note:1,bez:'Sehr gut',pct:87 },{ note:2,bez:'Gut',pct:70 },{ note:3,bez:'Befriedigend',pct:55 },{ note:4,bez:'Ausreichend',pct:40 },{ note:5,bez:'Mangelhaft',pct:20 },{ note:6,bez:'Ungenügend',pct:0 }],
+  verschaerft: [{ note:1,bez:'Sehr gut',pct:95 },{ note:2,bez:'Gut',pct:82 },{ note:3,bez:'Befriedigend',pct:70 },{ note:4,bez:'Ausreichend',pct:55 },{ note:5,bez:'Mangelhaft',pct:30 },{ note:6,bez:'Ungenügend',pct:0 }],
+};
+
+function genRasterMarkdown(form, nsTyp) {
+  const today = new Date().toLocaleDateString('de-DE');
+  const gesamtpunkte = form.kriterien.reduce((s, k) => s + (Number(k.punkte) || 0), 0);
+  const ns = NOTENSCHLUESSEL_TYPEN[nsTyp] || NOTENSCHLUESSEL_TYPEN.standard;
+
+  let md = `# Bewertungsraster: ${form.thema}\n\n`;
+  md += `**Fach:** ${form.fach}  \n**Klasse:** ${form.klasse}  \n**Art:** ${form.art || 'Klassenarbeit'}  \n**Erstellt am:** ${today}  \n**Gesamtpunkte:** ${gesamtpunkte}\n\n`;
+  md += `## Bewertungskriterien\n\n`;
+  md += `| Kriterium | Max. Punkte | AFB | Beschreibung |\n`;
+  md += `|-----------|-------------|-----|--------------|\n`;
+  for (const k of form.kriterien) {
+    md += `| ${k.name || '—'} | ${k.punkte || 0} | ${k.afb || 'II'} | ${k.beschreibung || '—'} |\n`;
+  }
+  md += `\n**Gesamtpunkte:** ${gesamtpunkte}\n\n`;
+  md += `## Notenschlüssel\n\n`;
+  md += `| Note | Bezeichnung | Mind. Punkte | Prozent |\n`;
+  md += `|------|-------------|--------------|----------|\n`;
+  for (let i = 0; i < ns.length; i++) {
+    const n = ns[i];
+    const minPkt = Math.round(gesamtpunkte * n.pct / 100 * 2) / 2;
+    md += `| ${n.note} | ${n.bez} | ${minPkt} P | ≥ ${n.pct}% |\n`;
+  }
+  md += `\n> ⚠️ Dies ist ein Vorschlag. Du als Lehrkraft entscheidest abschließend über die Notengebung.\n`;
+  return md;
+}
+
+function RasterEditorView({ toolStatus }) {
+  const emptyForm = { fach:'', klasse:'', thema:'', art:'Klassenarbeit', kriterien:[
+    { name:'Inhalt / Fachlichkeit', punkte:30, afb:'II', beschreibung:'' },
+    { name:'Sprache / Ausdruck',    punkte:15, afb:'I',  beschreibung:'' },
+    { name:'Form / Darstellung',    punkte:5,  afb:'I',  beschreibung:'' },
+  ]};
+
+  const [mode,     setMode]     = React.useState('list');
+  const [rasters,  setRasters]  = React.useState([]);
+  const [loading,  setLoading]  = React.useState(true);
+  const [form,     setForm]     = React.useState(emptyForm);
+  const [nsTyp,    setNsTyp]    = React.useState('standard');
+  const [saving,   setSaving]   = React.useState(false);
+  const [saved,    setSaved]    = React.useState(false);
+  const [error,    setError]    = React.useState('');
+
+  const TOOL = 'http://localhost:8789';
+
+  React.useEffect(() => { loadRasters(); }, []);
+
+  async function loadRasters() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${TOOL}/list-raster`);
+      if (r.ok) setRasters((await r.json()).rasters || []);
+    } catch {}
+    setLoading(false);
+  }
+
+  function newRaster() {
+    setForm(emptyForm);
+    setNsTyp('standard');
+    setError('');
+    setSaved(false);
+    setMode('edit');
+  }
+
+  async function loadRasterContent(filename) {
+    try {
+      // Read by requesting from server (we only have stem/label, re-derive form fields)
+      const stem = filename.replace(/\.md$/, '');
+      const parts = stem.split('_');
+      setForm({ ...emptyForm,
+        fach:   parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : '',
+        klasse: parts[1] || '',
+        thema:  parts.slice(2).join(' ') || stem,
+      });
+      setMode('edit');
+    } catch {}
+  }
+
+  function updateKriterium(i, field, val) {
+    setForm(f => {
+      const k = [...f.kriterien];
+      k[i] = { ...k[i], [field]: val };
+      return { ...f, kriterien: k };
+    });
+  }
+  function addKriterium() {
+    setForm(f => ({ ...f, kriterien: [...f.kriterien, { name:'', punkte:10, afb:'II', beschreibung:'' }] }));
+  }
+  function removeKriterium(i) {
+    setForm(f => ({ ...f, kriterien: f.kriterien.filter((_, j) => j !== i) }));
+  }
+
+  const gesamtpunkte = form.kriterien.reduce((s, k) => s + (Number(k.punkte) || 0), 0);
+
+  async function handleSave() {
+    if (!form.fach || !form.klasse || !form.thema) {
+      setError('Bitte Fach, Klasse und Thema angeben.');
+      return;
+    }
+    setSaving(true); setError('');
+    try {
+      const content = genRasterMarkdown(form, nsTyp);
+      const r = await fetch(`${TOOL}/save-raster`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fach: form.fach, klasse: form.klasse, thema: form.thema, content }),
+      });
+      const data = await r.json();
+      if (data.success) { setSaved(true); setTimeout(() => setSaved(false), 2000); loadRasters(); }
+      else setError(data.error || 'Fehler beim Speichern.');
+    } catch { setError('Tool-Server nicht erreichbar (start.bat läuft?).'); }
+    setSaving(false);
+  }
+
+  function handleExportCurrent() {
+    const md = genRasterMarkdown(form, nsTyp);
+    openPrintWindow(md, `Bewertungsraster ${form.fach} ${form.klasse} – ${form.thema}`);
+  }
+
+  const inputStyle = {
+    width: '100%', padding: '9px 13px', borderRadius: 10,
+    border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+    color: 'var(--text-primary)', fontSize: 14, outline: 'none',
+    fontFamily: 'inherit', boxSizing: 'border-box', transition: 'border-color 0.2s',
+  };
+  const labelStyle = { display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 };
+
+  // ---- LIST VIEW ----
+  if (mode === 'list') return (
+    <div style={{ padding: 24, maxWidth: 650, margin: '0 auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 3 }}>Bewertungsraster</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 14, margin: 0 }}>
+            Erstelle und verwalte Erwartungshorizonte für deine Klassen.
+          </p>
+        </div>
+        <button onClick={newRaster} style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '10px 18px', borderRadius: 10, border: 'none',
+          background: 'var(--accent)', color: '#fff',
+          cursor: 'pointer', fontSize: 14, fontWeight: 600,
+        }}>
+          {Icons.plus} Neu erstellen
+        </button>
+      </div>
+
+      {toolStatus !== 'online' && (
+        <div style={{ padding: '12px 16px', borderRadius: 10, background: 'var(--surface-elevated)', border: '1px solid var(--border)', marginBottom: 16, fontSize: 13, color: 'var(--text-secondary)' }}>
+          ⚠ Tool-Server offline – Raster können nicht gespeichert werden. Starte <code>start.bat</code> neu.
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>Lade…</div>
+      ) : rasters.length === 0 ? (
+        <div style={{
+          padding: '36px 24px', borderRadius: 14, textAlign: 'center',
+          border: '2px dashed var(--border)', color: 'var(--text-tertiary)',
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, color: 'var(--text-secondary)' }}>Noch keine Raster vorhanden</div>
+          <div style={{ fontSize: 13 }}>Erstelle dein erstes Bewertungsraster oder lasse den Agenten eines für dich erstellen.</div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {rasters.map(r => (
+            <div key={r.filename} style={{
+              padding: '14px 18px', borderRadius: 12,
+              background: 'var(--surface-elevated)', border: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', gap: 12,
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 2 }}>
+                  {r.label}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                  {new Date(r.modified * 1000).toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}
+                  {' · '}{r.filename}
+                </div>
+              </div>
+              <button
+                onClick={() => loadRasterContent(r.filename)}
+                title="Bearbeiten"
+                style={{ padding: '7px 13px', borderRadius: 8, border: '1.5px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}
+              >
+                {Icons.edit} Bearbeiten
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // ---- EDIT VIEW ----
+  const ns = NOTENSCHLUESSEL_TYPEN[nsTyp];
+  return (
+    <div style={{ padding: 24, maxWidth: 700, margin: '0 auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+        <button onClick={() => setMode('list')} style={{ padding: '7px 13px', borderRadius: 8, border: '1.5px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 13 }}>
+          ← Zurück
+        </button>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+          {form.fach && form.klasse ? `${form.fach} · ${form.klasse}` : 'Neues Bewertungsraster'}
+        </h2>
+      </div>
+
+      {/* Metadaten */}
+      <div style={{ background: 'var(--surface-elevated)', borderRadius: 14, border: '1px solid var(--border)', padding: '18px 20px', marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 14 }}>Prüfungsdetails</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={labelStyle}>Fach *</label>
+            <input value={form.fach} onChange={e => setForm(f => ({...f, fach: e.target.value}))}
+              placeholder="z.B. Mathematik" style={inputStyle}
+              onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Klasse *</label>
+            <input value={form.klasse} onChange={e => setForm(f => ({...f, klasse: e.target.value}))}
+              placeholder="z.B. 7a" style={inputStyle}
+              onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+          </div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Thema / Prüfungsname *</label>
+          <input value={form.thema} onChange={e => setForm(f => ({...f, thema: e.target.value}))}
+            placeholder="z.B. Bruchrechnung Test 3" style={inputStyle}
+            onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Art der Prüfung</label>
+          <select value={form.art} onChange={e => setForm(f => ({...f, art: e.target.value}))} style={{...inputStyle, cursor:'pointer'}}>
+            {['Klassenarbeit','Kurztest','Hausaufgabe','Mündliche Prüfung','Präsentation','Projekt'].map(a => <option key={a}>{a}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Kriterien-Tabelle */}
+      <div style={{ background: 'var(--surface-elevated)', borderRadius: 14, border: '1px solid var(--border)', padding: '18px 20px', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>
+            Bewertungskriterien
+            <span style={{ marginLeft: 10, fontSize: 13, fontWeight: 400, color: 'var(--text-tertiary)' }}>
+              Gesamt: <strong style={{color:'var(--accent)'}}>{gesamtpunkte} Punkte</strong>
+            </span>
+          </div>
+          <button onClick={addKriterium} style={{
+            display:'flex',alignItems:'center',gap:5,padding:'6px 12px',borderRadius:8,
+            border:'1.5px solid var(--accent)',background:'transparent',color:'var(--accent)',
+            cursor:'pointer',fontSize:13,fontWeight:600,
+          }}>
+            {Icons.plus} Kriterium
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Header */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 72px 56px 1fr 32px', gap: 8, fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '0 4px' }}>
+            <span>Kriterium</span><span>Punkte</span><span>AFB</span><span>Beschreibung (optional)</span><span></span>
+          </div>
+          {form.kriterien.map((k, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 72px 56px 1fr 32px', gap: 8, alignItems: 'center' }}>
+              <input value={k.name} onChange={e=>updateKriterium(i,'name',e.target.value)}
+                placeholder="z.B. Inhalt" style={{...inputStyle, fontSize:13, padding:'7px 10px'}}
+                onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+              <input type="number" min="0" max="999" value={k.punkte} onChange={e=>updateKriterium(i,'punkte',e.target.value)}
+                style={{...inputStyle, fontSize:13, padding:'7px 10px', textAlign:'center'}}
+                onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+              <select value={k.afb} onChange={e=>updateKriterium(i,'afb',e.target.value)}
+                style={{...inputStyle, fontSize:13, padding:'7px 8px', cursor:'pointer'}}>
+                <option>I</option><option>II</option><option>III</option>
+              </select>
+              <input value={k.beschreibung} onChange={e=>updateKriterium(i,'beschreibung',e.target.value)}
+                placeholder="Optional…" style={{...inputStyle, fontSize:13, padding:'7px 10px'}}
+                onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+              {form.kriterien.length > 1 ? (
+                <button onClick={()=>removeKriterium(i)} style={{ width:28,height:28,borderRadius:6,border:'none',background:'transparent',color:'var(--danger)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                  {Icons.trash}
+                </button>
+              ) : <div></div>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Notenschlüssel */}
+      <div style={{ background: 'var(--surface-elevated)', borderRadius: 14, border: '1px solid var(--border)', padding: '18px 20px', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>Notenschlüssel</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[['standard','Standard'],['mild','Mild (GS)'],['verschaerft','Verschärft']].map(([v,l]) => (
+              <button key={v} onClick={()=>setNsTyp(v)} style={{
+                padding:'5px 10px',borderRadius:7,fontSize:12,cursor:'pointer',fontWeight:600,
+                border:'1.5px solid',
+                borderColor: nsTyp===v ? 'var(--accent)' : 'var(--border)',
+                background: nsTyp===v ? 'var(--accent)' : 'var(--surface-input)',
+                color: nsTyp===v ? '#fff' : 'var(--text-secondary)',
+                transition:'all 0.15s',
+              }}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+          <thead>
+            <tr style={{ borderBottom:'1px solid var(--border)' }}>
+              {['Note','Bezeichnung','Mind. Punkte','Prozent'].map(h => (
+                <th key={h} style={{ textAlign:'left', padding:'6px 10px', color:'var(--text-tertiary)', fontWeight:600, fontSize:11, textTransform:'uppercase', letterSpacing:0.5 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ns.map((n, i) => {
+              const minPkt = Math.round(gesamtpunkte * n.pct / 100 * 2) / 2;
+              const maxPkt = i === 0 ? gesamtpunkte : Math.round(gesamtpunkte * ns[i-1].pct / 100 * 2) / 2 - 0.5;
+              return (
+                <tr key={n.note} style={{ borderBottom:'1px solid var(--border)' }}>
+                  <td style={{ padding:'8px 10px', fontWeight:700, color:'var(--accent)', fontSize:16 }}>{n.note}</td>
+                  <td style={{ padding:'8px 10px', color:'var(--text-primary)' }}>{n.bez}</td>
+                  <td style={{ padding:'8px 10px', color:'var(--text-secondary)' }}>{minPkt}–{maxPkt} P</td>
+                  <td style={{ padding:'8px 10px', color:'var(--text-tertiary)' }}>≥ {n.pct}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{ marginTop:10, fontSize:12, color:'var(--text-tertiary)' }}>
+          ⚠ Vorschlag – du entscheidest abschließend über die Notengebung.
+        </div>
+      </div>
+
+      {/* Aktionen */}
+      {error && <div style={{ marginBottom:12, padding:'10px 14px', borderRadius:8, background:'rgba(220,38,38,0.08)', color:'var(--danger)', fontSize:13 }}>{error}</div>}
+
+      <div style={{ display:'flex', gap:10 }}>
+        <button onClick={handleSave} disabled={saving || toolStatus !== 'online'} style={{
+          flex:1, padding:'11px', borderRadius:10, border:'none', cursor: toolStatus==='online' ? 'pointer':'not-allowed',
+          background: saved ? '#2a9d5c' : 'var(--accent)', color:'#fff',
+          fontSize:14, fontWeight:600, transition:'background 0.2s',
+          opacity: toolStatus !== 'online' ? 0.5 : 1,
+        }}>
+          {saving ? 'Speichert…' : saved ? '✓ Gespeichert' : '💾 Speichern'}
+        </button>
+        <button onClick={handleExportCurrent} style={{
+          padding:'11px 20px', borderRadius:10, border:'1.5px solid var(--border)',
+          background:'var(--surface-input)', color:'var(--text-primary)',
+          cursor:'pointer', fontSize:14, fontWeight:600, display:'flex', alignItems:'center', gap:6,
+        }}>
+          {Icons.print} Drucken
+        </button>
+      </div>
+      {toolStatus !== 'online' && (
+        <div style={{ marginTop:8, fontSize:12, color:'var(--text-tertiary)' }}>
+          Tool-Server offline – Speichern nicht möglich. Export funktioniert weiterhin.
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   Icons, BotAvatar, TypingDots, ChatBubble, QuickReplies,
   OnboardingProgress, Sidebar, ChatInput, ProfileView, SettingsView, ApiKeyModal,
   UrlDownloadForm, DsgvoWarningModal, MODEL_PRICES, MODEL_GROUPS,
+  RasterEditorView, openPrintWindow,
 });

@@ -154,6 +154,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({"chunks": 0, "error": str(e)})
 
+        elif path == "/list-raster":   self._list_raster()
+
         elif path == "/search":
             params = parse_qs(parsed.query)
             query  = params.get("q", [""])[0].strip()
@@ -190,6 +192,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/clear":        self._clear()
         elif self.path == "/download-url": self._download_url()
         elif self.path == "/settings":     self._save_settings()
+        elif self.path == "/save-raster":  self._save_raster()
         else: self.send_error(404)
 
     def _upload(self):
@@ -285,6 +288,47 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True, "deleted": len(ids)})
         except Exception as e:
             self._json({"error": str(e)}, 500)
+
+    def _list_raster(self):
+        """Alle Bewertungsraster aus memory/bewertungsraster/ auflisten."""
+        raster_dir = BASE_DIR / "memory" / "bewertungsraster"
+        rasters = []
+        if raster_dir.exists():
+            for f in sorted(raster_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+                if f.name == "README.md":
+                    continue
+                stat = f.stat()
+                # Dateinamen-Parsing: fach_klasse_thema.md
+                parts = f.stem.split("_", 2)
+                label = f.stem.replace("_", " ").title()
+                rasters.append({
+                    "filename": f.name,
+                    "stem":     f.stem,
+                    "label":    label,
+                    "modified": stat.st_mtime,
+                    "size_bytes": stat.st_size,
+                })
+        self._json({"rasters": rasters})
+
+    def _save_raster(self):
+        """Bewertungsraster in memory/bewertungsraster/ speichern."""
+        import re
+        data     = json.loads(self._body().decode("utf-8"))
+        content  = data.get("content", "").strip()
+        fach     = data.get("fach", "").strip()
+        klasse   = data.get("klasse", "").strip()
+        thema    = data.get("thema", "").strip()
+        if not (fach and klasse and thema):
+            self._json({"error": "fach, klasse und thema erforderlich"}, 400)
+            return
+        slug = f"{fach}_{klasse}_{thema}".lower()
+        slug = re.sub(r"[^\w]", "_", slug)
+        slug = re.sub(r"_+", "_", slug).strip("_")
+        raster_dir = BASE_DIR / "memory" / "bewertungsraster"
+        raster_dir.mkdir(parents=True, exist_ok=True)
+        filepath = raster_dir / f"{slug}.md"
+        filepath.write_text(content, encoding="utf-8")
+        self._json({"success": True, "filename": f"{slug}.md", "filepath": str(filepath)})
 
     def log_message(self, *_):
         pass  # Kein Log-Spam

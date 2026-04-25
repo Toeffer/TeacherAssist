@@ -117,6 +117,8 @@ lehreragent/
 │   │   └── skill.md                      ← Stundenentwürfe, liest lehrplan_index
 │   ├── bewertung_erstellen/
 │   │   └── skill.md                      ← Erwartungshorizont + Notenschlüssel
+│   ├── arbeitsblatt_erstellen/
+│   │   └── skill.md                      ← Druckfertige Aufgabenblätter mit Differenzierung ✅
 │   ├── schuelerarbeit_bewerten/
 │   │   └── skill.md                      ← Korrektur gegen Bewertungsraster
 │   └── lehrplan_einlesen/
@@ -494,6 +496,7 @@ und verwende den zurückgegebenen Text als Grundlage für die Extraktion.
 | `lehrplan_einlesen` | `pdf_reader` → bei leerem Text: `ocr_reader` → `lehrplan_indexer` → `memory_writer` |
 | `unterricht_planen` | `memory_reader` (profil + index) → `lehrplan_searcher` |
 | `bewertung_erstellen` | `memory_reader` (lehrplan_index) → `memory_writer` (bewertungsraster) |
+| `arbeitsblatt_erstellen` | `memory_reader` (profil + lehrplan_index) → `lehrplan_searcher` → `memory_writer` (optional) |
 | `schuelerarbeit_bewerten` | `image_receiver` (falls iPhone-Upload) → `ocr_reader` → `memory_reader` (bewertungsraster) → `memory_writer` (protokoll) |
 
 ---
@@ -577,12 +580,14 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 ```
 Browser (Port 8788)          Tool-Server (Port 8789)
    index.html                   tool_server.py
-   app.jsx          ←──────────► /upload    (PDF hochladen)
-   components.jsx               /ingest     (PDF → ChromaDB)
-   tweaks-panel.jsx             /search     (RAG-Suche)
-                                /settings   (Provider speichern)
-                                /health     (Status)
-                                /clear      (DB leeren)
+   app.jsx          ←──────────► /upload        (PDF hochladen)
+   components.jsx               /ingest         (PDF → ChromaDB)
+   tweaks-panel.jsx             /search         (RAG-Suche)
+                                /settings       (Provider speichern)
+                                /health         (Status)
+                                /clear          (DB leeren)
+                                /save-raster    (Bewertungsraster speichern) ✅
+                                /list-raster    (Raster auflisten) ✅
 
    app.jsx ──────── WebSocket/HTTP ──────► OpenClaw (:18789)
                     (callLLM via OpenRouter oder Ollama)
@@ -597,6 +602,8 @@ Browser (Port 8788)          Tool-Server (Port 8789)
 - **RAG-Suche:** Vor jedem LLM-Call Lehrplan-Kontext via `/search` injizieren
 - **DSGVO-Hinweis:** Nur wenn Provider = OpenRouter und kein Ollama aktiv
 - **Dark/Light Mode:** System-Präferenz + manueller Toggle
+- **Export / Drucken:** Jede Bot-Antwort kann mit einem Klick als druckfertiges HTML geöffnet werden (Print-CSS, kein Tool-Server nötig) ✅
+- **Bewertungsraster-Editor:** Eigene View-Seite in der Sidebar – Raster erstellen, Kriterien editieren, Notenschlüssel wählen, speichern, drucken ✅
 
 ### Dateien
 
@@ -761,6 +768,7 @@ idle → optimizing → uploading(progress) → processing(step, percent) → do
 - [x] `skills/onboarding/skill.md`
 - [x] `skills/unterricht_planen/skill.md`
 - [x] `skills/bewertung_erstellen/skill.md`
+- [x] `skills/arbeitsblatt_erstellen/skill.md` ← Druckfertige Aufgabenblätter
 - [x] `skills/schuelerarbeit_bewerten/skill.md`
 - [x] `skills/lehrplan_einlesen/skill.md`
 - [x] Memory-Templates (alle .md-Dateien)
@@ -784,6 +792,8 @@ idle → optimizing → uploading(progress) → processing(step, percent) → do
 - [x] `tweaks-panel.jsx` – Erweiterte Einstellungen
 - [x] `start.bat` – Startet alle Server + OpenClaw
 - [x] `openclaw_config_template.yaml` – Provider-Env-Vars, Fallback-Config
+- [x] Export-Button: Jede Antwort per Klick als druckfertiges HTML exportieren
+- [x] Bewertungsraster-Editor: eigene View, Kriterien-Editor, 3 Notenschlüssel, Speichern + Drucken
 
 ### ✅ Phase 2b – iOS App, WLAN-only (abgeschlossen)
 - [x] `app_ios/.../ConnectionService.swift` – WebSocket, Ping, Reconnect (exponential backoff)
@@ -936,7 +946,7 @@ python-frontmatter==1.1.0
 
 | Skill | Tools die er braucht | Priorität |
 |-------|---------------------|-----------|
-| `arbeitsblatt_erstellen` | memory_reader, memory_writer | Hoch |
+| `arbeitsblatt_erstellen` | memory_reader, memory_writer | ✅ fertig |
 | `pruefung_erstellen` | memory_reader, memory_writer, lehrplan_searcher | Hoch |
 | `elternbrief_schreiben` | memory_reader, memory_writer | Mittel |
 | `zeugnis_formulieren` | memory_reader, memory_writer | Mittel |
