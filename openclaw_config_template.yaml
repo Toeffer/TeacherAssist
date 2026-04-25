@@ -13,58 +13,45 @@ gateway:
     - "https://lehreragent.local:*"
 
 # Brain (LLM) Konfiguration – Unterstützt mehrere Provider
+# Wird von start.bat aus settings.json befüllt (BRAIN_PROVIDER, BRAIN_MODEL, BRAIN_API_KEY)
 brain:
   # Provider: "anthropic", "openai", "openrouter", "google", "local" (Ollama/LM Studio)
-  provider: "anthropic"
-  
+  # Wird aus Umgebungsvariable geladen – start.bat liest settings.json und setzt BRAIN_PROVIDER
+  provider: "${BRAIN_PROVIDER}"
+
   # Modell je nach Provider:
-  # - Anthropic: "claude-3-5-sonnet-20241022", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"
-  # - OpenAI: "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"
-  # - OpenRouter: "openai/gpt-4-turbo", "anthropic/claude-3-5-sonnet", "google/gemini-pro"
-  # - Google: "gemini-pro", "gemini-ultra"
-  # - Local: "llama2", "mistral", "codellama" (via Ollama/LM Studio)
-  model: "claude-3-5-sonnet-20241022"
-  
-  # API-Key – kann aus Umgebungsvariable oder direkt gesetzt werden
-  # Für OpenRouter: OPENROUTER_API_KEY Umgebungsvariable setzen
-  api_key: "${ANTHROPIC_API_KEY}"  # Aus Umgebungsvariable laden
-  
-  # Alternative: API-Key direkt setzen (nicht empfohlen für Version Control)
-  # api_key: "sk-..."
-  
+  # - openrouter: "deepseek/deepseek-chat", "openai/gpt-4o", "anthropic/claude-sonnet-4-6"
+  # - local (Ollama): "gemma3:4b", "gemma3:12b", "gemma4:e4b"
+  # Wird aus Umgebungsvariable geladen (BRAIN_MODEL)
+  model: "${BRAIN_MODEL}"
+
+  # API-Key für Cloud-Provider (leer lassen bei provider=local)
+  api_key: "${BRAIN_API_KEY}"
+
   # OpenRouter-spezifische Einstellungen
   openrouter:
-    # OpenRouter Base URL (Standard: https://openrouter.ai/api/v1)
     base_url: "https://openrouter.ai/api/v1"
-    
-    # OpenRouter Referer (optional, für Tracking)
-    # referer: "https://lehreragent.local"
-    
-    # OpenRouter Website (optional)
-    # website: "https://lehreragent.local"
-    
-    # OpenRouter Model-Priorität (kostengünstigste, schnellste, beste)
     priority: "cost"  # "cost", "speed", "quality"
-  
+
   # Allgemeine LLM-Einstellungen
   temperature: 0.7
   max_tokens: 4096
   top_p: 0.9
   frequency_penalty: 0.0
   presence_penalty: 0.0
-  
+
   # Timeout-Einstellungen
   timeout: 30  # Sekunden
   max_retries: 3
-  
+
   # Fallback-Strategie bei API-Fehlern
   fallback:
     enabled: true
-    # Fallback zu kostengünstigerem Modell bei Fehlern
-    fallback_model: "claude-3-haiku-20240307"
-    # Fallback zu lokalem Modell (Ollama) bei Netzwerkproblemen
-    local_fallback: false
-    local_model: "llama2:7b"
+    # Bei Cloud-Fehler: zuerst günstigeres Cloud-Modell versuchen
+    fallback_model: "${BRAIN_FALLBACK_MODEL}"
+    # Bei Netzwerkproblemen oder nicht verfügbarem Cloud-Provider: lokales Modell (Ollama)
+    local_fallback: true
+    local_model: "${BRAIN_LOCAL_MODEL}"
 
 # Memory-Konfiguration
 memory:

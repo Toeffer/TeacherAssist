@@ -1,4 +1,4 @@
-# LehrerAgent – Desktop-Verknüpfung erstellen
+﻿# LehrerAgent – Desktop-Verknüpfung erstellen
 # Wird von install.bat aufgerufen. Nicht direkt ausführen.
 
 param(

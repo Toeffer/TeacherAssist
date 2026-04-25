@@ -1,4 +1,4 @@
-# LehrerAgent – API-Schlüssel einrichten
+﻿# LehrerAgent – API-Schlüssel einrichten
 # Wird von install.bat aufgerufen. Nicht direkt ausführen.
 
 param(

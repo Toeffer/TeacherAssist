@@ -1,4 +1,4 @@
-# LehrerAgent – Konfiguration einrichten
+﻿# LehrerAgent – Konfiguration einrichten
 # Wird von install.bat aufgerufen. Nicht direkt ausführen.
 
 param(

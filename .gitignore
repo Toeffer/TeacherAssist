@@ -9,6 +9,11 @@ dist/
 
 # ─── ChromaDB (wird beim Lehrplan-Indexieren auto-generiert) ──────────────────
 memory/lehrplan_vectordb/
+tools/chroma_db/
+
+# ─── Laufzeit-Ordner ─────────────────────────────────────────────────────────
+uploads/
+settings.json
 
 # ─── Persönliche / Runtime Memory-Dateien ────────────────────────────────────
 memory/onboarding_complete.md

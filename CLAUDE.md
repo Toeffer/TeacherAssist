@@ -1,6 +1,6 @@
 # LehrerAgent – CLAUDE.md
 > Vollständiger Bauplan für Claude Code. Wird bei jeder Session automatisch geladen.
-> Letzte Aktualisierung: April 2026
+> Letzte Aktualisierung: April 2026 (v3 – iOS WiFi-App + Web-UI ergänzt)
 
 ---
 
@@ -18,17 +18,18 @@ Nimmt Lehrern Routinearbeit ab: Unterrichtsplanung, Bewertungserstellung, Korrek
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  EBENE 1 – SKILLS  (Markdown, bereits fertig ✅)            │
+│  EBENE 1 – SKILLS  (Markdown, fertig ✅)                    │
 │  Was der Agent tun soll. Reine Instruktionen für das LLM.   │
 │  Kein ausführbarer Code. Trigger → Ablauf → Ausgabeformat.  │
 ├─────────────────────────────────────────────────────────────┤
-│  EBENE 2 – TOOLS  (Python, als nächstes zu bauen 🔨)        │
+│  EBENE 2 – TOOLS  (Python, fertig ✅)                       │
 │  Was der Agent nicht selbst kann: PDFs lesen, Dateien       │
-│  schreiben, OCR, externe APIs. Werden von Skills aufgerufen.│
+│  schreiben, OCR, Bildempfang. Werden von Skills aufgerufen. │
 ├─────────────────────────────────────────────────────────────┤
-│  EBENE 3 – APP  (Flutter, Phase 3 📱)                       │
-│  UI für Lehrer auf Desktop + Mobil. Kein eigenes Backend.   │
-│  Reines Interface zu OpenClaw über WebSocket.               │
+│  EBENE 3 – CLIENTS  (mehrere, verschiedene Reifegrade)      │
+│  3a: Web-UI   – HTML/React, bereits fertig ✅               │
+│  3b: iOS App  – Swift/SwiftUI, WLAN-only, fertig ✅         │
+│  3c: Flutter  – Desktop + Mobile, in Entwicklung 🔨         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -45,24 +46,22 @@ Python-Code schreiben wir nur für Tools (Ebene 2).
 │                  DESKTOP (lokal / VPS)                    │
 │                                                          │
 │  ┌─────────────────────────────────────────────────┐    │
-│  │  OpenClaw Runtime                               │    │
-│  │                                                 │    │
-│  │  Gateway (:18789) ←→ Brain (LLM: Claude API)   │    │
-│  │       ↕                    ↕                   │    │
-│  │  Skills (Markdown)    Tools (Python)            │    │
-│  │       ↕                    ↕                   │    │
+│  │  OpenClaw Runtime (:18789)                      │    │
+│  │  Brain (LLM) ←→ Skills (Markdown) ←→ Tools     │    │
 │  │  Memory (~/.openclaw/memory/*.md)               │    │
 │  └─────────────────────────────────────────────────┘    │
 │                          ↕                               │
-│              WebSocket / HTTPS (:18789)                  │
+│  ┌──────────────────────────────────────────────┐       │
+│  │  Tool-Server (:8789)   Web-Server (:8788)    │       │
+│  │  PDF-Upload/OCR/RAG    index.html + app.jsx  │       │
+│  └──────────────────────────────────────────────┘       │
 └──────────────────────────┬───────────────────────────────┘
-                           │ Tailscale VPN
-              ┌────────────┴────────────┐
-              │      Flutter App        │
-              │  Desktop + Mobile       │
-              │  (reines UI, kein       │
-              │   eigenes Backend)      │
-              └─────────────────────────┘
+                           │ WLAN / Tailscale VPN
+              ┌────────────┴─────────────┐
+              │                          │
+      iOS App (Swift)          Flutter App
+      WLAN WebSocket           Desktop + Mobile
+      Kamera → OCR             Chat-Interface
 ```
 
 ---
@@ -73,12 +72,15 @@ Python-Code schreiben wir nur für Tools (Ebene 2).
 |---------|-------------|---------|-------|
 | Agent-Runtime | OpenClaw | MIT, aktuell | Self-hosted, model-agnostic, Skills-System |
 | LLM | Claude Sonnet (claude-sonnet-4-6) | aktuell | Bestes Modell für Deutsch + Strukturaufgaben |
-| Tools | Python | 3.11+ | PDF-Parsing, Dateisystem, OCR |
+| Tools | Python | 3.11+ | PDF-Parsing, Dateisystem, OCR, Bildempfang |
 | PDF-Parsing | pypdf | 4.x | Text-PDFs; zuverlässig, kein C-Build nötig |
 | OCR | pytesseract + Pillow | aktuell | Gescannte PDFs und Schülerarbeitsfotos |
 | Vektorspeicher | chromadb (lokal) | 0.5.x | Lehrplan-Einträge semantisch durchsuchbar |
 | Embeddings | sentence-transformers | aktuell | Lokal, kein API-Call, DSGVO-sicher |
-| Frontend | Flutter | 3.x (Dart 3) | Eine Codebase → Android, iOS, Windows, macOS, Linux |
+| Web-UI | React 18 (CDN) + HTML | — | Kein Build-Schritt, sofort nutzbar im Browser |
+| Tool-Server | Python http.server | 3.11+ | PDF-Upload, OCR, RAG-Suche, Settings (:8789) |
+| iOS App | Swift / SwiftUI | iOS 16+ | Natives Kamera-Interface, WLAN-WebSocket |
+| Flutter App | Flutter | 3.x (Dart 3) | Eine Codebase → Android, iOS, Windows, macOS |
 | VPN | Tailscale | aktuell | Kein Port-Forwarding, DSGVO-sicher, kostenlos/3 Nutzer |
 | Memory | Markdown-Dateien (lokal) | — | Kein Drittanbieter, transparent, editierbar |
 | VPS optional | Hetzner CX22 | ~5€/Monat | Multi-User / Schulserver |
@@ -90,6 +92,23 @@ Python-Code schreiben wir nur für Tools (Ebene 2).
 ```
 lehreragent/
 ├── CLAUDE.md                              ← Diese Datei (Projektwurzel)
+├── README.md                              ← Schnelleinstieg für Lehrer
+├── SETUP.md                               ← Detaillierte Einrichtungsanleitung
+│
+├── index.html                             ← Web-UI Entry Point (Port 8788)
+├── app.jsx                                ← React-App: Chat, Provider-Switch, Upload
+├── components.jsx                         ← React-Komponenten: Settings, Onboarding, etc.
+├── tweaks-panel.jsx                       ← Erweiterte Einstellungen (Panel)
+├── tool_server.py                         ← Tool-Server (Port 8789): Upload, OCR, RAG, Settings
+├── start.bat                              ← Startet Web-Server + Tool-Server + OpenClaw
+├── install.bat                            ← Erstinstallation: Python-Env, Abhängigkeiten
+├── openclaw_config_template.yaml          ← OpenClaw-Konfiguration (Provider, Fallback)
+├── settings.json                          ← Persistierte Provider-Einstellungen (auto-generiert)
+│
+├── scripts/                               ← Windows-Hilfsscripte
+│   ├── setup_config.ps1                   ← OpenClaw-Konfiguration einrichten
+│   ├── setup_apikey.ps1                   ← API-Key in Umgebungsvariable speichern
+│   └── create_shortcut.ps1               ← Desktop-Verknüpfung erstellen
 │
 ├── skills/                                ← EBENE 1: OpenClaw Skills (Markdown)
 │   ├── onboarding/
@@ -105,15 +124,17 @@ lehreragent/
 │
 ├── tools/                                 ← EBENE 2: Python-Tools (ausführbarer Code)
 │   ├── __init__.py
-│   ├── pdf_reader.py                     ← Lehrplan-PDFs parsen (Text-PDFs)
-│   ├── ocr_reader.py                     ← Gescannte PDFs / Fotos → Text (pytesseract)
-│   ├── memory_writer.py                  ← Strukturiertes Schreiben in Memory-Dateien
-│   ├── memory_reader.py                  ← Memory-Dateien lesen + nach Schlüsseln suchen
-│   ├── lehrplan_indexer.py               ← Text → ChromaDB (Vektorsuche für Lehrpläne)
-│   ├── lehrplan_searcher.py              ← Semantische Suche in Lehrplan-Vektordatenbank
-│   ├── usage_tracker.py                  ← Token- & Kosten-Tracking für Claude API ✅
-│   └── requirements.txt                  ← pypdf, pytesseract, Pillow, chromadb,
-│                                            sentence-transformers, python-frontmatter
+│   ├── image_receiver.py                 ← Base64-Bilder vom iPhone empfangen + temp. speichern ✅
+│   ├── pdf_reader.py                     ← Lehrplan-PDFs parsen (Text-PDFs) ✅
+│   ├── ocr_reader.py                     ← Gescannte PDFs / Fotos → Text (pytesseract) ✅
+│   ├── memory_writer.py                  ← Strukturiertes Schreiben in Memory-Dateien ✅
+│   ├── memory_reader.py                  ← Memory-Dateien lesen + nach Schlüsseln suchen ✅
+│   ├── lehrplan_indexer.py               ← Text → ChromaDB (Vektorsuche für Lehrpläne) ✅
+│   ├── lehrplan_searcher.py              ← Semantische Suche in Lehrplan-Vektordatenbank ✅
+│   ├── usage_tracker.py                  ← Token- & Kosten-Tracking für LLM-API ✅
+│   ├── requirements.txt                  ← Alle Python-Abhängigkeiten
+│   ├── setup.bat                         ← Windows: Python-Venv einrichten
+│   └── setup.sh                          ← Linux/macOS: Python-Venv einrichten
 │
 ├── memory/                                ← OpenClaw Memory-Dateien (Markdown-Templates)
 │   ├── lehrerprofil.md                   ← Profil: Bundesland, Schulform, Fächer, Klassen
@@ -125,34 +146,47 @@ lehreragent/
 │   └── bewertungsraster/
 │       └── README.md                     ← Ablageort für {fach}_{klasse}_{thema}.md
 │
-├── app/                                   ← EBENE 3: Flutter App (IMPLEMENTIERT ✅)
+├── uploads/                               ← Temporäre PDF-Uploads (via Tool-Server)
+│
+├── app_ios/                               ← EBENE 3b: iOS App (Swift/SwiftUI) ✅ fertig
+│   └── LehrerAgent/
+│       ├── LehrerAgentApp.swift           ← Entry Point, TabView-Router
+│       ├── Info_additions.plist           ← Berechtigungen: Kamera, Galerie, LAN
+│       ├── Services/
+│       │   ├── ConnectionService.swift    ← WebSocket-Client (URLSessionWebSocketTask)
+│       │   └── ImageService.swift        ← Kamera, Galerie, Skalierung, Perspektivkorrektur
+│       ├── Models/
+│       │   └── UploadViewModel.swift     ← Upload-State-Machine, EvaluationResult
+│       └── Views/
+│           ├── ConnectView.swift         ← IP eingeben, verbinden, UserDefaults
+│           └── CaptureView.swift         ← Foto, Kontext (Fach/Klasse/Aufgabe), Ergebnis
+│
+├── app/                                   ← EBENE 3c: Flutter App (in Entwicklung 🔨)
 │   ├── pubspec.yaml
-│   ├── lib/
-│   │   ├── main.dart                     ← Entry point, Router, Theme (Material 3) ✅
-│   │   ├── config/
-│   │   │   └── app_config.dart           ← Host, Port, VPN-Hostname aus ENV ✅
-│   │   ├── services/
-│   │   │   ├── openclaw_service.dart     ← WebSocket-Client zu OpenClaw (:18789) ✅
-│   │   │   ├── connection_manager.dart   ← WLAN → Tailscale → Offline Fallback ✅
-│   │   │   ├── offline_queue.dart        ← Aufträge zwischenspeichern bei kein Netz ✅
-│   │   │   ├── notification_service.dart ← FCM (Android) + APNs (iOS) ✅
-│   │   │   └── tailscale_service.dart    ← Tailscale VPN Management ✅
-│   │   ├── screens/
-│   │   │   ├── chat_screen.dart          ← Haupt-Chat-Interface ✅
-│   │   │   ├── tasks_screen.dart         ← Laufende Agentenaufgaben + Status ✅
-│   │   │   ├── results_screen.dart       ← Fertige Ergebnisse, drucken/exportieren ✅
-│   │   │   ├── memory_screen.dart        ← Lehrerprofil + Memory-Übersicht (Desktop)
-│   │   │   └── settings_screen.dart      ← Verbindung, Modell, Benachrichtigungen ✅
-│   │   └── widgets/
-│   │       ├── message_bubble.dart       ← Chat-Nachricht (Lehrer / Agent)
-│   │       ├── file_upload_button.dart   ← PDF / Bild hochladen
-│   │       ├── quick_actions.dart        ← Shortcut-Buttons (mobile)
-│   │       └── connection_indicator.dart ← WLAN / VPN / Offline-Status
-│   └── test/
+│   └── lib/
+│       ├── main.dart                     ← Entry point, Router, Theme (Material 3)
+│       ├── config/app_config.dart        ← Host, Port, VPN-Hostname aus ENV
+│       ├── services/
+│       │   ├── openclaw_service.dart     ← WebSocket-Client zu OpenClaw (:18789)
+│       │   ├── connection_manager.dart   ← WLAN → Tailscale → Offline Fallback
+│       │   ├── offline_queue.dart        ← Aufträge zwischenspeichern
+│       │   ├── notification_service.dart ← FCM (Android) + APNs (iOS)
+│       │   └── tailscale_service.dart    ← Tailscale VPN Management
+│       ├── screens/
+│       │   ├── chat_screen.dart          ← Haupt-Chat-Interface
+│       │   ├── tasks_screen.dart         ← Laufende Agentenaufgaben + Status
+│       │   ├── results_screen.dart       ← Fertige Ergebnisse, drucken/exportieren
+│       │   ├── memory_screen.dart        ← Lehrerprofil + Memory-Übersicht
+│       │   └── settings_screen.dart      ← Verbindung, Modell, Benachrichtigungen
+│       └── widgets/
+│           ├── message_bubble.dart
+│           ├── file_upload_button.dart
+│           ├── quick_actions.dart
+│           └── connection_indicator.dart
 │
 └── docs/
     ├── architektur.md                    ← Diagramme, ADRs
-    ├── deployment.md                     ← VPS-Setup, Schulserver
+    ├── deployment.md                     ← VPS-Setup, Schulserver, Reverse Proxy
     ├── datenschutz.md                    ← DSGVO-Checkliste, AVV-Vorlage
     └── tool_api.md                       ← Schnittstellendokumentation Tools ↔ Skills
 ```
@@ -177,7 +211,46 @@ print(json.dumps(result))
 
 ---
 
-### `pdf_reader.py`
+### `image_receiver.py` ✅
+
+**Zweck:** Base64-kodierte Bilder vom iPhone empfangen, temporär speichern, Pfad zurückgeben.
+Wird von `schuelerarbeit_bewerten` aufgerufen bevor `ocr_reader.py` läuft.
+
+```python
+# Input (action: "receive"):
+{
+  "action": "receive",
+  "image_data": str,        # Base64-JPEG (mit oder ohne data:image-Prefix)
+  "format": "jpeg",         # jpeg | png | webp | heic
+  "session_id": str         # UUID aus der iOS-App (für Tracking)
+}
+
+# Output:
+{
+  "success": bool,
+  "filepath": str,          # z. B. "/tmp/openclaw_images/openclaw_abc123_1714000000.jpeg"
+  "session_id": str,
+  "filesize_kb": int,
+  "error": str | None
+}
+
+# Input (action: "cleanup"):
+{ "action": "cleanup", "filepath": str }
+
+# Input (action: "cleanup_old"):
+{ "action": "cleanup_old", "max_age_minutes": 30 }
+```
+
+**DSGVO:** Bilder werden AUSSCHLIESSLICH in `/tmp/openclaw_images/` gespeichert.
+Nach OCR/Auswertung sofort löschen via `cleanup`-Action.
+Automatische Bereinigung via `cleanup_old` (Heartbeat-Skill alle 30 Min).
+
+**Stolperstelle:** HEIC (iPhone-Standard) muss ggf. konvertiert werden.
+iOS-App sendet immer JPEG (explizit in `ImageService.swift` konfiguriert).
+
+---
+
+### `pdf_reader.py` ✅
 
 **Zweck:** Text-PDFs einlesen (Lehrpläne, die nicht gescannt sind)
 
@@ -203,7 +276,7 @@ In dem Fall: Fallback auf `ocr_reader.py` triggern (prüfen: `len(text.strip()) 
 
 ---
 
-### `ocr_reader.py`
+### `ocr_reader.py` ✅
 
 **Zweck:** Gescannte PDFs und Fotos von Schülerarbeiten → maschinenlesbarer Text
 
@@ -230,7 +303,7 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 
 ---
 
-### `memory_writer.py`
+### `memory_writer.py` ✅
 
 **Zweck:** Memory-Markdown-Dateien strukturiert schreiben/aktualisieren
 
@@ -251,11 +324,11 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 }
 ```
 
-**Stolperstelle:** Encoding immer explizit `utf-8` setzen. macOS schreibt sonst latin-1.
+**Stolperstelle:** Encoding immer explizit `utf-8` setzen. Windows schreibt sonst cp1252.
 
 ---
 
-### `memory_reader.py`
+### `memory_reader.py` ✅
 
 **Zweck:** Memory-Dateien lesen, optional nach Schlüsseln filtern
 
@@ -278,7 +351,7 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 
 ---
 
-### `lehrplan_indexer.py`
+### `lehrplan_indexer.py` ✅
 
 **Zweck:** Lehrplan-Text in ChromaDB als Vektoren speichern
 
@@ -300,7 +373,7 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 {
   "success": bool,
   "chunks_indexed": int,
-  "collection": str,        # ChromaDB Collection-Name
+  "collection": str,
   "error": str | None
 }
 ```
@@ -311,7 +384,7 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 
 ---
 
-### `lehrplan_searcher.py`
+### `lehrplan_searcher.py` ✅
 
 **Zweck:** Semantische Suche in indizierten Lehrplänen
 
@@ -343,19 +416,19 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 
 ---
 
-### `usage_tracker.py`
+### `usage_tracker.py` ✅
 
-**Zweck:** Token- und Kosten-Tracking für Claude API-Nutzung
+**Zweck:** Token- und Kosten-Tracking für LLM-API-Nutzung (Claude, OpenRouter, lokal)
 
 ```python
 # Input für Tracking:
 {
-  "model": str,             # Modellname, z.B. "claude-3-5-sonnet-20241022"
-  "input_tokens": int,      # Anzahl Input-Tokens
-  "output_tokens": int,     # Anzahl Output-Tokens
-  "skill_name": str | None, # Optional: Skill-Name für detailliertes Tracking
-  "request_id": str | None, # Optional: Request-ID für Debugging
-  "timestamp": str | None   # Optional: Zeitstempel (ISO-Format)
+  "model": str,             # Modellname, z.B. "claude-sonnet-4-6"
+  "input_tokens": int,
+  "output_tokens": int,
+  "skill_name": str | None,
+  "request_id": str | None,
+  "timestamp": str | None   # ISO-Format
 }
 
 # Output für Tracking:
@@ -370,17 +443,16 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
     "output_cost_usd": float,
     "total_cost_usd": float,
     "skill": str | None,
-    "request_id": str | None,
     "timestamp": str,
-    "day_key": str,         # Format: "YYYY-MM-DD"
-    "month_key": str        # Format: "YYYY-MM"
+    "day_key": str,         # "YYYY-MM-DD"
+    "month_key": str        # "YYYY-MM"
   },
   "totals": {
     "total_tokens": int,
     "total_cost_usd": float,
     "total_requests": int
   },
-  "warnings": list[str]     # Budget-Warnungen, falls vorhanden
+  "warnings": list[str]     # Budget-Warnungen
 }
 
 # Input für Kostenschätzung:
@@ -389,38 +461,17 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
   "estimated_input_tokens": int,
   "estimated_output_tokens": int
 }
-
-# Output für Kostenschätzung:
-{
-  "model": str,
-  "estimated_input_tokens": int,
-  "estimated_output_tokens": int,
-  "estimated_input_cost_usd": float,
-  "estimated_output_cost_usd": float,
-  "estimated_total_cost_usd": float,
-  "price_per_million_input": float,
-  "price_per_million_output": float
-}
 ```
 
-**Funktionen:**
-1. **Token-Tracking:** Verfolgt Input- und Output-Tokens pro Request
-2. **Kostenberechnung:** Berechnet API-Kosten basierend auf Claude-Preisen
-3. **Budget-Warnungen:** Warnt bei Überschreitung von Budget-Grenzen
-4. **Detaillierte Reports:** Tägliche, monatliche und Skill-basierte Berichte
-5. **Export-Funktionen:** JSON, CSV und Text-Exporte
-6. **Kostenschätzung:** Schätzt Kosten für geplante Requests vorab
+**Funktionen:** Token-Tracking, Kostenberechnung, Budget-Warnungen (75%/90%), tägliche/monatliche Reports, JSON/CSV-Export, Kostenschätzung vor Requests.
 
 **Claude API Preise (Stand: April 2026):**
-- `claude-3-5-sonnet-20241022`: $3.00/M Input, $15.00/M Output
-- `claude-3-opus-20240229`: $15.00/M Input, $75.00/M Output  
-- `claude-3-sonnet-20240229`: $3.00/M Input, $15.00/M Output
-- `claude-3-haiku-20240307`: $0.25/M Input, $1.25/M Output
+- `claude-sonnet-4-6`: $3.00/M Input, $15.00/M Output
+- `claude-opus-4-7`: $15.00/M Input, $75.00/M Output
+- `claude-haiku-4-5`: $0.25/M Input, $1.25/M Output
 
 **Daten-Speicherung:** `~/.openclaw/usage/usage_data.json`
-**Standard-Budget:** $100/Monat mit Warnungen bei 75% und 90% Auslastung
-
-**Integration in OpenClaw:** Wird automatisch nach jedem LLM-Call aufgerufen, um Token-Nutzung zu tracken.
+**Standard-Budget:** $100/Monat
 
 ---
 
@@ -443,7 +494,7 @@ und verwende den zurückgegebenen Text als Grundlage für die Extraktion.
 | `lehrplan_einlesen` | `pdf_reader` → bei leerem Text: `ocr_reader` → `lehrplan_indexer` → `memory_writer` |
 | `unterricht_planen` | `memory_reader` (profil + index) → `lehrplan_searcher` |
 | `bewertung_erstellen` | `memory_reader` (lehrplan_index) → `memory_writer` (bewertungsraster) |
-| `schuelerarbeit_bewerten` | `ocr_reader` (falls Foto/Scan) → `memory_reader` (bewertungsraster) → `memory_writer` (protokoll) |
+| `schuelerarbeit_bewerten` | `image_receiver` (falls iPhone-Upload) → `ocr_reader` → `memory_reader` (bewertungsraster) → `memory_writer` (protokoll) |
 
 ---
 
@@ -471,11 +522,19 @@ bewertung_erstellen
   → [LLM generiert Erwartungshorizont]
   → memory_writer → bewertungsraster/{fach}_{klasse}_{thema}.md
 
-schuelerarbeit_bewerten
-  ← ocr_reader (wenn Foto/Scan übergeben)
+schuelerarbeit_bewerten (Desktop/Web-UI)
+  ← ocr_reader (wenn PDF/Scan übergeben)
   ← memory_reader ← bewertungsraster/{name}.md
   → [LLM bewertet Kriterium für Kriterium]
   → memory_writer → korrekturprotokoll.md
+
+schuelerarbeit_bewerten (iPhone-Weg)
+  ← image_receiver (Base64-JPEG vom iPhone)
+  ← ocr_reader (Bild → Text)
+  ← memory_reader ← bewertungsraster/{name}.md
+  → [LLM bewertet]
+  → memory_writer → korrekturprotokoll.md
+  → image_receiver (cleanup – Bild löschen)
 ```
 
 ---
@@ -511,7 +570,137 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 
 ---
 
-## Flutter App – Design-Prinzipien
+## Web-UI – Architektur (Ebene 3a)
+
+### Übersicht
+
+```
+Browser (Port 8788)          Tool-Server (Port 8789)
+   index.html                   tool_server.py
+   app.jsx          ←──────────► /upload    (PDF hochladen)
+   components.jsx               /ingest     (PDF → ChromaDB)
+   tweaks-panel.jsx             /search     (RAG-Suche)
+                                /settings   (Provider speichern)
+                                /health     (Status)
+                                /clear      (DB leeren)
+
+   app.jsx ──────── WebSocket/HTTP ──────► OpenClaw (:18789)
+                    (callLLM via OpenRouter oder Ollama)
+```
+
+### Hauptfunktionen
+
+- **Provider-Switch:** OpenRouter (cloud) ↔ Ollama (lokal), persistiert in `settings.json`
+- **Auto-Fallback:** Wenn OpenRouter offline → automatisch Ollama; Banner + Label im Header
+- **Streaming:** LLM-Antworten werden Wort für Wort gestreamt (SSE / fetch-Stream)
+- **PDF-Upload:** Lehrplan hochladen → `/upload` → `/ingest` → ChromaDB indexiert
+- **RAG-Suche:** Vor jedem LLM-Call Lehrplan-Kontext via `/search` injizieren
+- **DSGVO-Hinweis:** Nur wenn Provider = OpenRouter und kein Ollama aktiv
+- **Dark/Light Mode:** System-Präferenz + manueller Toggle
+
+### Dateien
+
+| Datei | Zweck |
+|-------|-------|
+| `index.html` | HTML-Wrapper, CSS-Variablen, React CDN-Import |
+| `app.jsx` | App-State, Chat-Loop, Provider-Logik, LLM-Calls |
+| `components.jsx` | SettingsView, OnboardingView, ChatInput, MessageBubble |
+| `tweaks-panel.jsx` | Erweiterte Einstellungen (Temperatur, System-Prompt, etc.) |
+| `tool_server.py` | Python HTTP-Server Port 8789, CORS, alle Tool-Endpunkte |
+| `start.bat` | Startet Web-Server (:8788) + Tool-Server (:8789) + OpenClaw |
+
+---
+
+## iOS App – Architektur & Protokoll (Ebene 3b)
+
+### Verbindung (Phase 1: nur gleiches WLAN)
+
+```
+iPhone (iOS App)                    Mac (OpenClaw :18789)
+      │                                      │
+      │── WebSocket ws://192.168.x.x:18789 ──│
+      │                                      │
+      │── JSON: {type:"upload", ...} ────────→ image_receiver.py
+      │                                      → ocr_reader.py
+      │                                      → schuelerarbeit_bewerten
+      │← JSON: {type:"progress", percent:30} │
+      │← JSON: {type:"progress", percent:70} │
+      │← JSON: {type:"result", note:"3"} ────│
+```
+
+**IP-Adresse:** Lehrer gibt die lokale Mac-IP einmalig in der App ein.
+Wird in `UserDefaults` gespeichert (`openclaw_host`).
+**Port:** 18789 (OpenClaw Gateway Standard).
+
+### iOS Nachrichtenprotokoll (JSON over WebSocket)
+
+```json
+// iPhone → Mac: Bild senden
+{
+  "type": "upload",
+  "id": "uuid-1234",
+  "skill": "schuelerarbeit_bewerten",
+  "image": { "data": "<base64-JPEG>", "format": "jpeg", "width_px": 1600, "height_px": 2263 },
+  "context": { "fach": "Mathematik", "klasse": "7a", "aufgabe": "Bruchrechnung Test 3" }
+}
+
+// Mac → iPhone: Fortschritt
+{ "type": "progress", "id": "uuid-1234", "step": "OCR läuft...", "percent": 30 }
+
+// Mac → iPhone: Ergebnis
+{ "type": "result", "id": "uuid-1234", "punkte": "34/50", "note": "3", "feedback": "..." }
+
+// Mac → iPhone: Fehler
+{ "type": "error", "id": "uuid-1234", "message": "OCR fehlgeschlagen: ..." }
+```
+
+### iOS Bildoptimierung (vor dem Senden)
+
+```
+Original (iPhone): 12 MP, ~4–8 MB HEIC
+       ↓
+1. UIImagePickerController liefert UIImage
+2. ImageService.perspectiveCorrect(): CIDetectorTypeRectangle
+3. ImageService.scale(): auf max. 1600px Breite/Höhe
+4. UIImage.jpegData(compressionQuality: 0.85): ~200–400 KB
+5. Data.base64EncodedString() → in UploadMessage.image.data
+```
+
+### iOS State-Machine (UploadState enum)
+
+```
+idle → optimizing → uploading(progress) → processing(step, percent) → done(result)
+                                                                     ↘ failed(message)
+```
+
+### iOS Berechtigungen (Info.plist)
+
+| Key | Grund |
+|-----|-------|
+| `NSCameraUsageDescription` | Schülerarbeiten fotografieren |
+| `NSPhotoLibraryUsageDescription` | Fotos aus Galerie laden |
+| `NSLocalNetworkUsageDescription` | WebSocket zum Mac im WLAN |
+| `NSAppTransportSecurity.NSAllowsLocalNetworking` | HTTP/WS (kein HTTPS) im LAN |
+
+### iOS Xcode-Einrichtung
+
+```
+1. Neues Xcode-Projekt: File → New → Project → iOS App
+   - Product Name: LehrerAgent | Interface: SwiftUI | Min iOS: 16.0
+
+2. Swift-Dateien aus app_ios/LehrerAgent/ in Xcode-Projektordner ziehen
+
+3. Info.plist: Einträge aus Info_additions.plist einfügen
+   (Target → Info → Custom iOS Target Properties)
+
+4. Signing: Team auswählen (kostenloses Apple-Konto reicht für Sideload, 7 Tage)
+
+5. iPhone per USB → Trust bestätigen → Run ▶
+```
+
+---
+
+## Flutter App – Design-Prinzipien (Ebene 3c)
 
 - **Kein eigenes Backend** – App ist reines Interface zu OpenClaw
 - **Adaptive UI:** Mobile = Chat-first; Desktop = Chat + Sidebar (Memory-Übersicht)
@@ -520,22 +709,18 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 - Flutter: **Material 3**, adaptive Layouts, keine fixen Pixel-Breakpoints
 - Dart: **null-safety** durchgehend, keine deprecated APIs
 
-### Verbindungslogik (Priorität, in `connection_manager.dart`)
+### Verbindungslogik (Priorität)
 
 ```
 1. Selbes WLAN → direkte lokale IP (aus app_config)
 2. Tailscale → VPN-Hostname (aus app_config)
-3. Kein Zugriff → Offline-Modus
-   → Auftrag in offline_queue.dart speichern
-   → Beim Reconnect automatisch senden
+3. Kein Zugriff → Offline-Modus → Auftrag in offline_queue speichern
 ```
-
-### WebSocket-Verbindung
 
 ```dart
 // Immer dart:io WebSocket verwenden (nicht dart:html – funktioniert nur im Browser)
 // Reconnect mit exponential backoff: 1s → 2s → 4s → 8s → max 30s
-// Heartbeat-Ping alle 30s um Connection am Leben zu halten
+// Heartbeat-Ping alle 30s
 ```
 
 ---
@@ -544,8 +729,9 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 
 ### Datenschutz (DSGVO – nicht verhandelbar)
 - Schülernamen werden NICHT in Memory gespeichert (Standard: anonym)
-- Keine personenbezogenen Daten in LLM-API-Calls
-- OCR-Ergebnisse von Schülerarbeiten: nur temporär im RAM, nicht auf Disk
+- Keine personenbezogenen Daten in LLM-API-Calls bei Cloud-Provider
+- OCR-Ergebnisse von Schülerarbeiten: nur temporär im RAM, nicht persistent auf Disk
+- iPhone-Fotos: sofort nach OCR via `image_receiver.cleanup` löschen
 - Anonymisierung: SuS-01, SuS-02 statt Namen
 - Alle Memory-Dateien bleiben lokal auf dem Gerät der Lehrkraft
 
@@ -564,6 +750,7 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 - Kein Hardcoding von Ports, IPs oder API-Keys → aus Config/ENV
 - Tools: immer Try/Except mit sauberem JSON-Error-Output
 - Flutter: keine `print()`-Statements in Production, nur `debugPrint()`
+- Swift: keine `print()` in Production, nur `os_log` oder `Logger`
 - Alle Dateipfade über `os.path.expanduser()` auflösen
 
 ---
@@ -578,45 +765,54 @@ Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schre
 - [x] `skills/lehrplan_einlesen/skill.md`
 - [x] Memory-Templates (alle .md-Dateien)
 
-### 🔨 Phase 1 – Tools (abgeschlossen ✅)
-Reihenfolge eingehalten – jedes Tool braucht das vorherige:
+### ✅ Phase 1 – Python Tools + Tool-Server (abgeschlossen)
+- [x] `tools/requirements.txt`
+- [x] `tools/memory_reader.py`
+- [x] `tools/memory_writer.py`
+- [x] `tools/pdf_reader.py`
+- [x] `tools/ocr_reader.py`
+- [x] `tools/lehrplan_indexer.py`
+- [x] `tools/lehrplan_searcher.py`
+- [x] `tools/usage_tracker.py`
+- [x] `tools/image_receiver.py` ← Base64-Bildempfang + DSGVO-Cleanup
+- [x] `tool_server.py` ← HTTP-Server Port 8789 (Upload, OCR, RAG, Settings)
 
-- [x] `tools/requirements.txt` anlegen
-- [x] `tools/memory_reader.py` – wird von fast allen Tools gebraucht
-- [x] `tools/memory_writer.py` – wird von fast allen Skills gebraucht
-- [x] `tools/pdf_reader.py` – Grundlage für lehrplan_einlesen
-- [x] `tools/ocr_reader.py` – Erweiterung für Scans + Schülerarbeitsfotos
-- [x] `tools/lehrplan_indexer.py` – ChromaDB aufbauen
-- [x] `tools/lehrplan_searcher.py` – Semantische Suche
-- [x] Manueller Integrationstest: PDF einlesen → indexieren → Stunde planen
+### ✅ Phase 2a – Web-UI (abgeschlossen)
+- [x] `index.html` – HTML-Wrapper + CSS Design-System
+- [x] `app.jsx` – Chat, Provider-Switch (OpenRouter/Ollama), Streaming, RAG
+- [x] `components.jsx` – Settings, Onboarding, Fallback-Banner
+- [x] `tweaks-panel.jsx` – Erweiterte Einstellungen
+- [x] `start.bat` – Startet alle Server + OpenClaw
+- [x] `openclaw_config_template.yaml` – Provider-Env-Vars, Fallback-Config
 
-### 📱 Phase 2 – Flutter Desktop App (abgeschlossen ✅)
-- [x] `app/` Grundgerüst (`flutter create`)
-- [x] `app_config.dart` mit ENV-Variablen
-- [x] `openclaw_service.dart` WebSocket-Client
-- [x] `chat_screen.dart` Basis-Chat-Interface
-- [x] `file_upload_button.dart` für PDFs
+### ✅ Phase 2b – iOS App, WLAN-only (abgeschlossen)
+- [x] `app_ios/.../ConnectionService.swift` – WebSocket, Ping, Reconnect (exponential backoff)
+- [x] `app_ios/.../ImageService.swift` – Kamera, Galerie, Skalierung, Perspektivkorrektur
+- [x] `app_ios/.../UploadViewModel.swift` – State-Machine, Server-Nachrichten
+- [x] `app_ios/.../ConnectView.swift` – IP-Eingabe, UserDefaults
+- [x] `app_ios/.../CaptureView.swift` – Foto, Kontextform, Fortschritt, Ergebnis
+- [x] `app_ios/.../LehrerAgentApp.swift` – Entry Point, TabView
+- [x] `app_ios/.../Info_additions.plist` – Kamera/Galerie/LAN-Berechtigungen
+- [ ] In Xcode einrichten + auf echtem Gerät testen
+- [ ] End-to-End-Test: iPhone → WLAN → Mac → OCR → Note → iPhone
+
+### 🔨 Phase 3 – Flutter Desktop App (in Entwicklung)
+- [x] Grundgerüst + Dart-Dateien vorhanden
+- [ ] Widgets implementieren: `message_bubble.dart`, `connection_indicator.dart`
+- [ ] `memory_screen.dart` – Lehrerprofil + Memory-Übersicht (Desktop-Sidebar)
 - [ ] End-to-End-Test: App → OpenClaw → Skill → Tool → Antwort
 
-### 📱 Phase 3 – Mobile + Remote (abgeschlossen ✅)
-- [x] Adaptives Layout für Mobile (Chat-first)
-- [x] `connection_manager.dart` mit WLAN/Tailscale/Offline-Fallback
-- [x] `offline_queue.dart`
-- [x] Quick-Actions-Widget für Mobile (Shortcut-Buttons)
+### 📡 Phase 4 – Remote-Zugriff (Tailscale)
+- [ ] Tailscale auf Mac + iPhone einrichten
+- [ ] iOS `ConnectionService` erweitern: WLAN-IP → Tailscale-Hostname → Offline-Queue
+- [ ] Flutter `connection_manager.dart` mit Tailscale-Fallback
+- [ ] CLAUDE.md: iOS-Abschnitt um Tailscale-Variante ergänzen
 
-### 🔔 Phase 4 – Push & Hintergrund (abgeschlossen ✅)
-- [x] OpenClaw als Tray-App (Desktop, via OpenClaw Heartbeat-Config)
-- [x] `notification_service.dart` (FCM + APNs)
-- [x] Benachrichtigung bei fertigem Agenten-Task
-- [x] `tailscale_service.dart` – Tailscale VPN Management
-
-### 📋 Phase 5 – Komplettierung & Dokumentation
-- [x] `main.dart` – App-Entrypoint mit Routing und Provider-Setup ✅
-- [x] `openclaw_config_template.yaml` – OpenClaw Konfigurationsvorlage ✅
-- [x] CLAUDE.md – Aktualisierung der Dokumentation ✅
-- [ ] Widgets implementieren (message_bubble, connection_indicator)
-- [ ] `memory_screen.dart` – Lehrerprofil + Memory-Übersicht
-- [ ] Kompletter End-to-End-Test aller Skills
+### 🔔 Phase 5 – Push & Hintergrund
+- [ ] OpenClaw als Tray-App (Desktop Heartbeat-Config)
+- [ ] Heartbeat-Skill: `cleanup_old` für Temp-Bilder alle 30 Min
+- [ ] iOS: `UNUserNotificationCenter` – Benachrichtigung bei fertigem Task
+- [ ] Flutter: `notification_service.dart` (FCM + APNs)
 
 ---
 
@@ -626,36 +822,50 @@ Reihenfolge eingehalten – jedes Tool braucht das vorherige:
 # 1. OpenClaw installieren (Node 22 LTS oder Node 24)
 npm install -g openclaw
 
-# 2. Skills deployen
+# 2. Skills + Memory deployen
 cp -r skills/* ~/.openclaw/skills/
 cp -r memory/* ~/.openclaw/memory/
-
-# 3. Skills laden
 openclaw skill load onboarding unterricht_planen bewertung_erstellen \
   schuelerarbeit_bewerten lehrplan_einlesen
 
-# 4. Python-Umgebung für Tools
+# 3. Python-Umgebung für Tools
 cd tools/
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 5. Tesseract installieren (für OCR)
+# 4. Tesseract installieren (für OCR)
 # macOS:   brew install tesseract tesseract-lang
 # Ubuntu:  sudo apt install tesseract-ocr tesseract-ocr-deu
 # Windows: Installer von github.com/UB-Mannheim/tesseract
 
-# 6. Tools in OpenClaw registrieren (in ~/.openclaw/config.yaml)
+# 5. Tools in OpenClaw registrieren (~/.openclaw/config.yaml)
 # tools_path: /absoluter/pfad/zu/lehreragent/tools
 # tools_python: /absoluter/pfad/zu/lehreragent/tools/.venv/bin/python
 
-# 7. Agent starten
-openclaw start
+# 6. Agent starten – WICHTIG: --host 0.0.0.0 damit iPhone erreichbar ist
+openclaw start --host 0.0.0.0 --port 18789
+# Mac-IP herausfinden:
+ipconfig getifaddr en0   # macOS
+# Diese IP in der iOS-App eingeben
 
-# 8. Flutter App (Desktop)
-cd ../app/
-flutter pub get
-flutter run -d macos    # oder: windows / linux
+# 7. Web-UI starten (Windows: start.bat doppelklicken)
+python -m http.server 8788          # Web-UI
+python tool_server.py               # Tool-Server
+# → Browser öffnet http://localhost:8788
+```
+
+```
+iOS App in Xcode einrichten:
+1. Xcode → File → New → Project → iOS App
+   Name: LehrerAgent | SwiftUI | Swift | Min iOS: 16.0
+2. Alle Dateien aus app_ios/LehrerAgent/ ins Xcode-Projekt ziehen
+   (Services/, Models/, Views/ als Gruppen beibehalten)
+3. Info.plist: Einträge aus Info_additions.plist einfügen
+4. iPhone per USB verbinden → Trust bestätigen
+5. Signing: kostenloses Apple-Konto reicht für Sideload (7 Tage)
+6. Run ▶ → App auf iPhone installieren
+7. App öffnen → Mac-IP eingeben → Verbinden
 ```
 
 ---
@@ -665,12 +875,26 @@ flutter run -d macos    # oder: windows / linux
 **OpenClaw**
 - Gateway startet nicht → Port 18789 belegt? `lsof -i :18789` / `netstat -ano | findstr 18789`
 - Skills triggern nicht → Trigger-Phrase zu ungenau? `/skills list` zum Debuggen
+- iPhone kann nicht verbinden → `openclaw start` ohne `--host 0.0.0.0` lauscht nur auf localhost
 
 **Python Tools**
 - `pypdf` gibt leeren Text zurück → PDF ist ein Scan → Fallback auf `ocr_reader.py`
 - `pytesseract` findet Tesseract nicht → `pytesseract.pytesseract.tesseract_cmd` explizit setzen
 - ChromaDB-Pfad: immer `os.path.expanduser("~/.openclaw/memory/lehrplan_vectordb")` verwenden
 - Memory-Dateien: `open(path, encoding="utf-8")` – niemals ohne encoding-Parameter
+
+**iOS App**
+- `NSLocalNetworkUsageDescription` fehlt → App verbindet sich nie, kein Fehler sichtbar (iOS blockiert still)
+- Simulator hat keine Kamera → GalleryPicker testen, auf echtem Gerät deployen
+- iOS 16 Minimum: `URLSessionWebSocketTask` + `PHPickerViewController` benötigen iOS 13+, SwiftUI-Features 16+
+- `UploadViewModel` doppelt initialisiert → `@StateObject` in `RootView` anlegen, per `.environmentObject()` weitergeben
+- Reconnect: `ConnectionService` versucht 5× mit exponential backoff (1s → 2s → 4s → 8s → 16s)
+
+**Web-UI**
+- Tool-Server nicht gestartet → Upload/RAG/Settings funktionieren nicht (Port 8789)
+- CORS-Fehler → Tool-Server läuft auf anderem Port oder nicht gestartet
+- Ollama nicht gefunden → `ollama serve` muss laufen, dann /health prüfen
+- OpenRouter-Fallback zeigt Warnung → Provider-Status wird alle 30s geprüft
 
 **Flutter**
 - WebSocket auf Desktop: `dart:io` importieren, nicht `dart:html`
