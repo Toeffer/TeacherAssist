@@ -53,6 +53,29 @@ und gibt einen strukturierten Korrekturvorschlag mit Begründung zurück.
 
 ## Ablauf
 
+### Schritt 0 – Korrekturs til der Lehrkraft aus Protokoll ableiten
+
+Lade `memory/korrekturprotokoll.md` und analysiere die vorhandenen Einträge.
+
+**Falls 3 oder mehr Korrekturen vorhanden sind:**
+
+Extrahiere folgende Muster als Few-Shot-Orientierung für die aktuelle Korrektur:
+
+1. **Typische Begründungsphrasen** – z.B. "zeigt solides Grundverständnis", "formale Mängel beeinträchtigen die Note", "sinngemäß korrekt, aber nicht ausreichend differenziert"
+2. **Korrekturnoten am Rand** – kurze Formulierungen die bisher für Randbemerkungen verwendet wurden
+3. **Punktvergabe-Tendenz** – großzügig (oft obere Grenze), streng (oft untere Grenze), oder neutral
+4. **Feedbackton** – eher sachlich/nüchtern oder eher ermutigend/pädagogisch
+
+Übernimm Stil, Ton und charakteristische Wendungen in die neue Korrektur.
+Kennzeichne dies nicht explizit in der Ausgabe – der Stil fließt natürlich ein.
+
+**Falls weniger als 3 Korrekturen vorhanden oder Protokoll leer:**
+
+Überspringe diesen Schritt und beginne mit Schritt 1.
+Verwende dann einen ausgewogenen, professionell-kollegialen Standardton.
+
+---
+
 ### Schritt 1 – Erwartungshorizont laden
 
 Prüfe, ob ein Erwartungshorizont übergeben oder referenziert wurde.

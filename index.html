@@ -70,6 +70,11 @@
       to   { transform: rotate(360deg); }
     }
 
+    @keyframes micPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.6; transform: scale(1.15); }
+    }
+
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }

@@ -158,6 +158,13 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/backup":        self._backup()
         elif path == "/list-raster":   self._list_raster()
+        elif path == "/memory-list":   self._list_memory()
+        elif path == "/memory-read":
+            file_param = parse_qs(parsed.query).get("file", [""])[0]
+            self._read_memory_file(file_param)
+        elif path == "/memory-versions":
+            file_param = parse_qs(parsed.query).get("file", [""])[0]
+            self._list_versions(file_param)
 
         elif path == "/search":
             params = parse_qs(parsed.query)
@@ -195,8 +202,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/clear":        self._clear()
         elif self.path == "/download-url": self._download_url()
         elif self.path == "/settings":     self._save_settings()
-        elif self.path == "/save-raster":  self._save_raster()
-        elif self.path == "/restore":      self._restore()
+        elif self.path == "/save-raster":   self._save_raster()
+        elif self.path == "/restore":       self._restore()
+        elif self.path == "/memory-write":          self._write_memory_file()
+        elif self.path == "/memory-restore-version": self._restore_version()
+        elif self.path == "/ocr-image":              self._ocr_image()
         else: self.send_error(404)
 
     def _upload(self):
@@ -331,6 +341,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         raster_dir = BASE_DIR / "memory" / "bewertungsraster"
         raster_dir.mkdir(parents=True, exist_ok=True)
         filepath = raster_dir / f"{slug}.md"
+        self._rotate_backups(filepath)
         filepath.write_text(content, encoding="utf-8")
         self._json({"success": True, "filename": f"{slug}.md", "filepath": str(filepath)})
 
@@ -397,6 +408,160 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True, "restored": len(restored), "files": restored})
         except Exception as e:
             self._json({"error": str(e)}, 500)
+
+    def _list_memory(self):
+        """Alle .md-Dateien unter memory/ auflisten."""
+        memory_dir = BASE_DIR / "memory"
+        files = []
+        if memory_dir.exists():
+            for f in sorted(memory_dir.rglob("*.md"), key=lambda p: str(p)):
+                rel = str(f.relative_to(memory_dir)).replace("\\", "/")
+                files.append({
+                    "path": rel,
+                    "name": f.name,
+                    "size": f.stat().st_size,
+                    "modified": f.stat().st_mtime,
+                })
+        self._json({"files": files})
+
+    def _read_memory_file(self, file_path):
+        """Einzelne Memory-Datei lesen (nur .md unter memory/)."""
+        memory_dir = BASE_DIR / "memory"
+        try:
+            target = (memory_dir / file_path).resolve()
+            if not str(target).startswith(str(memory_dir.resolve())):
+                self._json({"error": "Zugriff verweigert"}, 403)
+                return
+            if not target.exists():
+                self._json({"error": "Datei nicht gefunden", "exists": False}, 404)
+                return
+            self._json({"content": target.read_text(encoding="utf-8"), "path": file_path})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _write_memory_file(self):
+        """Memory-Datei schreiben (nur .md unter memory/)."""
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+            file_path = data.get("path", "").strip()
+            content   = data.get("content", "")
+            if not file_path.endswith(".md"):
+                self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
+                return
+            memory_dir = BASE_DIR / "memory"
+            target = (memory_dir / file_path).resolve()
+            if not str(target).startswith(str(memory_dir.resolve())):
+                self._json({"error": "Zugriff verweigert"}, 403)
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate_backups(target)
+            target.write_text(content, encoding="utf-8")
+            self._json({"success": True, "path": file_path})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    # ---- Backup rotation ---------------------------------------------------
+    @staticmethod
+    def _rotate_backups(filepath: Path):
+        """Copy current file to .bak1, shifting .bak1→.bak2→.bak3 (max 3 versions)."""
+        import shutil
+        if not filepath.exists():
+            return
+        bak3 = Path(str(filepath) + '.bak3')
+        bak2 = Path(str(filepath) + '.bak2')
+        bak1 = Path(str(filepath) + '.bak1')
+        if bak2.exists(): shutil.copy2(str(bak2), str(bak3))
+        if bak1.exists(): shutil.copy2(str(bak1), str(bak2))
+        shutil.copy2(str(filepath), str(bak1))
+
+    def _list_versions(self, file_path):
+        """Liste verfügbare Backup-Versionen (.bak1/.bak2/.bak3) einer Memory-Datei."""
+        memory_dir = BASE_DIR / "memory"
+        try:
+            target = (memory_dir / file_path).resolve()
+            if not str(target).startswith(str(memory_dir.resolve())):
+                self._json({"error": "Zugriff verweigert"}, 403)
+                return
+            import datetime
+            versions = []
+            for i in range(1, 4):
+                bak = Path(str(target) + f'.bak{i}')
+                if bak.exists():
+                    stat = bak.stat()
+                    versions.append({
+                        "version": i,
+                        "modified": stat.st_mtime,
+                        "label": datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
+                        "size": stat.st_size,
+                    })
+            self._json({"versions": versions})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _restore_version(self):
+        """Backup-Version einer Memory-Datei wiederherstellen."""
+        import shutil
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+            file_path = data.get("path", "").strip()
+            version = int(data.get("version", 0))
+            if not file_path.endswith(".md") or version not in (1, 2, 3):
+                self._json({"error": "Ungültige Anfrage"}, 400)
+                return
+            memory_dir = BASE_DIR / "memory"
+            target = (memory_dir / file_path).resolve()
+            if not str(target).startswith(str(memory_dir.resolve())):
+                self._json({"error": "Zugriff verweigert"}, 403)
+                return
+            bak = Path(str(target) + f'.bak{version}')
+            if not bak.exists():
+                self._json({"error": "Version nicht gefunden"}, 404)
+                return
+            self._rotate_backups(target)  # back up current before restoring
+            shutil.copy2(str(bak), str(target))
+            self._json({"success": True, "content": target.read_text(encoding="utf-8")})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _ocr_image(self):
+        """Bild per OCR in Text umwandeln (pytesseract, Sprache: Deutsch)."""
+        ct  = self.headers.get("Content-Type", "")
+        body = self._body()
+        try:
+            if "multipart/form-data" in ct:
+                boundary = ""
+                for seg in ct.split(";"):
+                    seg = seg.strip()
+                    if seg.startswith("boundary="):
+                        boundary = seg[9:].strip('"')
+                files = parse_multipart(body, boundary)
+                if not files:
+                    self._json({"error": "Kein Bild übermittelt"}, 400)
+                    return
+                name, content = files[0]
+            else:
+                name, content = "image.jpg", body
+
+            import tempfile, pytesseract
+            from PIL import Image
+            suffix = '.jpg' if name.lower().endswith(('.jpg', '.jpeg')) else '.png'
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(content)
+                tmp_path = f.name
+            try:
+                img  = Image.open(tmp_path)
+                text = pytesseract.image_to_string(img, lang="deu")
+                os.unlink(tmp_path)
+            except Exception:
+                try: os.unlink(tmp_path)
+                except: pass
+                raise
+            if not text.strip():
+                self._json({"error": "Kein Text erkannt. Bitte ein deutlicheres Foto machen."})
+                return
+            self._json({"text": text.strip()})
+        except Exception as e:
+            self._json({"error": f"OCR fehlgeschlagen: {str(e)}"}, 500)
 
     def log_message(self, *_):
         pass  # Kein Log-Spam

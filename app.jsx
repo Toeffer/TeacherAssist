@@ -379,6 +379,8 @@ function App() {
   const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
   const [sessionTokens, setSessionTokens] = useState(0);
   const [uploadPhase, setUploadPhase] = useState(null); // null | 'uploading' | 'indexing'
+  const [batchQueue,  setBatchQueue]  = useState([]);   // [{file, status:'pending'|'active'|'done'|'error'}]
+  const batchRunning = useRef(false);
   const chatContainerRef = useRef(null);
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
@@ -655,6 +657,57 @@ function App() {
       });
     }
   }, [activeChatId, addMessage]);
+
+  const handleFilesUpload = useCallback(async (files) => {
+    if (!files || files.length === 0) return;
+    const items = files.map(f => ({ file: f, status: 'pending' }));
+    setBatchQueue(prev => [...prev, ...items]);
+
+    if (batchRunning.current) return; // already draining
+    batchRunning.current = true;
+
+    // drain queue sequentially
+    const drainFrom = (startIdx) => {
+      setBatchQueue(prev => {
+        const pending = prev.findIndex((it, idx) => idx >= startIdx && it.status === 'pending');
+        if (pending === -1) { batchRunning.current = false; return prev; }
+
+        const updated = prev.map((it, idx) => idx === pending ? { ...it, status: 'active' } : it);
+
+        // process this file async, then recurse
+        const item = updated[pending];
+        (async () => {
+          try {
+            const sourceName = item.file.name;
+            const formData = new FormData();
+            formData.append('file', item.file);
+            const upRes = await fetch('http://localhost:8789/upload', { method: 'POST', body: formData });
+            if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
+            const { saved } = await upRes.json();
+            if (!saved?.length) throw new Error('Keine Datei gespeichert');
+
+            const inRes = await fetch('http://localhost:8789/ingest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: saved[0], source: sourceName }),
+            });
+            const data = await inRes.json();
+            if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+
+            setRagDocCount(n => n + (data.chunks || 0));
+            setBatchQueue(prev => prev.map((it, idx) => idx === pending ? { ...it, status: 'done' } : it));
+          } catch (err) {
+            setBatchQueue(prev => prev.map((it, idx) => idx === pending ? { ...it, status: 'error', err: err.message } : it));
+          }
+          drainFrom(pending + 1);
+        })();
+
+        return updated;
+      });
+    };
+
+    drainFrom(0);
+  }, []);
 
   const handleClearKnowledge = useCallback(async () => {
     if (!confirm('Gesamte Wissensdatenbank leeren?')) return;
@@ -942,6 +995,10 @@ function App() {
                 : 'Schritt 2/2: Wird eingelesen und indiziert… (kann etwas dauern)'}
             </div>
           )}
+          <BatchQueuePanel
+            queue={batchQueue}
+            onDismiss={() => setBatchQueue([])}
+          />
           <ChatInput
             value={inputValue}
             onChange={setInputValue}
@@ -949,11 +1006,13 @@ function App() {
             placeholder={currentOnboardingStep?.placeholder || 'Nachricht eingeben…'}
             disabled={isBusy || !!uploadPhase}
             onFileUpload={onboardingDone ? handleFileUpload : null}
+            onFilesUpload={onboardingDone && toolStatus === 'online' ? handleFilesUpload : null}
             toolOnline={toolStatus === 'online'}
             showDsgvoHint={onboardingDone && effectiveProvider === 'openrouter'}
             showLocalHint={onboardingDone && effectiveProvider === 'ollama'}
             quickActions={onboardingDone && !isBusy && !uploadPhase ? [
               { label: '📋 Was war letzte Stunde?', onSelect: () => handleSend('Was war in meiner letzten geplanten Unterrichtsstunde? Bitte zeige mir eine kurze Zusammenfassung aus dem Verlaufsprotokoll (vergangene_stunden.md).') },
+              { label: '⚡ Vorlagen', onSelect: () => handleNavigate('templates') },
             ] : []}
           />
         </>
@@ -964,6 +1023,14 @@ function App() {
       ) : currentView === 'raster' ? (
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <RasterEditorView toolStatus={toolStatus} />
+        </div>
+      ) : currentView === 'templates' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <TemplateGalleryView onUseTemplate={(prompt) => { setInputValue(prompt); handleNavigate('chat'); }} />
+        </div>
+      ) : currentView === 'memory' ? (
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+          <MemoryEditorView toolStatus={toolStatus} />
         </div>
       ) : (
         <div style={{ flex: 1, overflowY: 'auto' }}>

@@ -138,11 +138,66 @@ const Icons = {
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
     </svg>
   ),
+  mic: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+      <line x1="12" y1="19" x2="12" y2="23"></line>
+      <line x1="8" y1="23" x2="16" y2="23"></line>
+    </svg>
+  ),
+  micOff: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="1" y1="1" x2="23" y2="23"></line>
+      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path>
+      <line x1="12" y1="19" x2="12" y2="23"></line>
+      <line x1="8" y1="23" x2="16" y2="23"></line>
+    </svg>
+  ),
+  fileStack: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 2H8a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"></path>
+      <path d="M4 6H2v16a2 2 0 0 0 2 2h14"></path>
+    </svg>
+  ),
+  folder: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+    </svg>
+  ),
+  template: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+      <line x1="3" y1="9" x2="21" y2="9"></line>
+      <line x1="9" y1="21" x2="9" y2="9"></line>
+    </svg>
+  ),
   upload: (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="16 16 12 12 8 16"></polyline>
       <line x1="12" y1="12" x2="12" y2="21"></line>
       <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+    </svg>
+  ),
+  camera: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+      <circle cx="12" cy="13" r="4"></circle>
+    </svg>
+  ),
+  calendar: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+      <line x1="16" y1="2" x2="16" y2="6"></line>
+      <line x1="8" y1="2" x2="8" y2="6"></line>
+      <line x1="3" y1="10" x2="21" y2="10"></line>
+    </svg>
+  ),
+  history: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="1 4 1 10 7 10"></polyline>
+      <path d="M3.51 15a9 9 0 1 0 .49-4.05"></path>
     </svg>
   ),
 };
@@ -504,6 +559,24 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
           }}>
             {Icons.grid} Bewertungsraster
           </button>
+          <button onClick={() => onNavigate('templates')} style={{
+            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+            padding: '10px 10px', borderRadius: 8, border: 'none',
+            background: currentView === 'templates' ? 'var(--accent-soft)' : 'transparent',
+            color: currentView === 'templates' ? 'var(--accent)' : 'var(--text-primary)',
+            cursor: 'pointer', fontSize: 14, textAlign: 'left',
+          }}>
+            {Icons.template} Vorlagen-Galerie
+          </button>
+          <button onClick={() => onNavigate('memory')} style={{
+            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+            padding: '10px 10px', borderRadius: 8, border: 'none',
+            background: currentView === 'memory' ? 'var(--accent-soft)' : 'transparent',
+            color: currentView === 'memory' ? 'var(--accent)' : 'var(--text-primary)',
+            cursor: 'pointer', fontSize: 14, textAlign: 'left',
+          }}>
+            {Icons.folder} Memory-Editor
+          </button>
           <button onClick={() => onNavigate('settings')} style={{
             display: 'flex', alignItems: 'center', gap: 10, width: '100%',
             padding: '10px 10px', borderRadius: 8, border: 'none',
@@ -529,8 +602,45 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
 }
 
 /* ---------- Chat Input ---------- */
-function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUpload, toolOnline, showDsgvoHint, showLocalHint, quickActions }) {
+function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUpload, onFilesUpload, toolOnline, showDsgvoHint, showLocalHint, quickActions }) {
   const fileRef = React.useRef(null);
+  const batchRef = React.useRef(null);
+  const [isRecording, setIsRecording] = React.useState(false);
+  const [recError, setRecError]       = React.useState('');
+  const [showCamera, setShowCamera]   = React.useState(false);
+  const recognitionRef = React.useRef(null);
+  const cameraSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const dictateSupported = !!SpeechRec;
+
+  const startDictation = () => {
+    if (!SpeechRec || disabled) return;
+    setRecError('');
+    const rec = new SpeechRec();
+    rec.lang = 'de-DE';
+    rec.interimResults = true;
+    rec.continuous = false;
+    let baseText = value;
+    rec.onresult = (e) => {
+      const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
+      const isFinal = e.results[e.results.length - 1].isFinal;
+      const sep = baseText && !baseText.endsWith(' ') ? ' ' : '';
+      onChange(baseText + sep + transcript);
+      if (isFinal) { baseText = baseText + sep + transcript; }
+    };
+    rec.onerror = (e) => { setRecError(e.error === 'not-allowed' ? 'Mikrofon-Zugriff verweigert' : 'Diktat fehlgeschlagen'); setIsRecording(false); };
+    rec.onend = () => setIsRecording(false);
+    recognitionRef.current = rec;
+    rec.start();
+    setIsRecording(true);
+  };
+
+  const stopDictation = () => {
+    recognitionRef.current?.stop();
+    setIsRecording(false);
+  };
+
   const handleKey = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
   };
@@ -539,8 +649,20 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
     if (file && onFileUpload) onFileUpload(file);
     e.target.value = '';
   };
+  const handleBatchFiles = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0 && onFilesUpload) onFilesUpload(files);
+    e.target.value = '';
+  };
+
   return (
     <div style={{ padding: '8px 16px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+      {showCamera && (
+        <CameraModal
+          onClose={() => setShowCamera(false)}
+          onCapture={(text) => onChange(value ? value + '\n\n' + text : text)}
+        />
+      )}
       {quickActions?.length > 0 && !disabled && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
           {quickActions.map(a => (
@@ -563,13 +685,14 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: 8,
         background: 'var(--surface-input)',
-        borderRadius: 16, border: '1.5px solid var(--border)',
+        borderRadius: 16, border: `1.5px solid ${isRecording ? 'var(--danger)' : 'var(--border)'}`,
         padding: '4px 4px 4px 8px',
         transition: 'border-color 0.2s',
       }}>
         {toolOnline && (
           <>
             <input ref={fileRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={handleFile} />
+            <input ref={batchRef} type="file" accept=".pdf,image/*" multiple style={{ display: 'none' }} onChange={handleBatchFiles} />
             <button
               onClick={() => fileRef.current?.click()}
               disabled={disabled}
@@ -586,13 +709,31 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
             >
               {Icons.paperclip}
             </button>
+            {onFilesUpload && (
+              <button
+                onClick={() => batchRef.current?.click()}
+                disabled={disabled}
+                title="Mehrere Schülerarbeiten auf einmal hochladen (Batch)"
+                style={{
+                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                  background: 'none', border: 'none',
+                  color: 'var(--text-tertiary)', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = 'var(--accent)'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-tertiary)'}
+              >
+                {Icons.fileStack}
+              </button>
+            )}
           </>
         )}
         <textarea
           value={value}
           onChange={e => onChange(e.target.value)}
           onKeyDown={handleKey}
-          placeholder={placeholder || 'Nachricht eingeben…'}
+          placeholder={isRecording ? '🎙 Diktat läuft… (sprechen)' : (placeholder || 'Nachricht eingeben…')}
           disabled={disabled}
           rows={1}
           style={{
@@ -603,6 +744,27 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
           }}
           onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
         ></textarea>
+        {dictateSupported && (
+          <button
+            onClick={isRecording ? stopDictation : startDictation}
+            disabled={disabled}
+            title={isRecording ? 'Diktat beenden' : 'Diktat starten (Spracheingabe)'}
+            style={{
+              width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+              background: isRecording ? 'rgba(220,38,38,0.12)' : 'none',
+              border: 'none',
+              color: isRecording ? 'var(--danger)' : 'var(--text-tertiary)',
+              cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.15s',
+              animation: isRecording ? 'micPulse 1.2s ease-in-out infinite' : 'none',
+            }}
+            onMouseEnter={e => { if (!isRecording) e.currentTarget.style.color = 'var(--accent)'; }}
+            onMouseLeave={e => { if (!isRecording) e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+          >
+            {isRecording ? Icons.micOff : Icons.mic}
+          </button>
+        )}
         <button onClick={onSend} disabled={disabled || !value.trim()} style={{
           width: 40, height: 40, borderRadius: 12,
           background: value.trim() ? 'var(--accent)' : 'var(--border)',
@@ -615,8 +777,12 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
       </div>
       {toolOnline && (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 5, paddingLeft: 4 }}>
-          📎 PDF-Lehrplan hochladen – wird automatisch in die Wissensdatenbank eingelesen
+          📎 Lehrplan hochladen · {onFilesUpload ? '📚 Batch: mehrere Arbeiten auf einmal · ' : ''}
+          {dictateSupported ? '🎙 Diktat per Mikrofon-Button' : ''}
         </div>
+      )}
+      {recError && (
+        <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 3, paddingLeft: 4 }}>{recError}</div>
       )}
       {showDsgvoHint && (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 3, paddingLeft: 4 }}>
@@ -1922,9 +2088,659 @@ function RasterEditorView({ toolStatus }) {
   );
 }
 
+/* ---------- Memory-Editor ---------- */
+function MemoryEditorView({ toolStatus }) {
+  const [files,    setFiles]    = React.useState([]);
+  const [loading,  setLoading]  = React.useState(true);
+  const [selected, setSelected] = React.useState(null);
+  const [content,  setContent]  = React.useState('');
+  const [saving,   setSaving]   = React.useState(false);
+  const [saved,    setSaved]    = React.useState(false);
+  const [error,    setError]    = React.useState('');
+  const TOOL = 'http://localhost:8789';
+
+  React.useEffect(() => { loadList(); }, []);
+
+  async function loadList() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${TOOL}/memory-list`);
+      if (r.ok) setFiles((await r.json()).files || []);
+    } catch {}
+    setLoading(false);
+  }
+
+  async function openFile(path) {
+    setError(''); setSaved(false);
+    try {
+      const r = await fetch(`${TOOL}/memory-read?file=${encodeURIComponent(path)}`);
+      const d = await r.json();
+      if (d.error) { setError(d.error); return; }
+      setSelected(path);
+      setContent(d.content || '');
+    } catch (e) { setError(e.message); }
+  }
+
+  async function saveFile() {
+    if (!selected) return;
+    setSaving(true); setError('');
+    try {
+      const r = await fetch(`${TOOL}/memory-write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: selected, content }),
+      });
+      const d = await r.json();
+      if (d.success) { setSaved(true); setTimeout(() => setSaved(false), 2000); loadList(); }
+      else setError(d.error || 'Fehler beim Speichern');
+    } catch (e) { setError(e.message); }
+    setSaving(false);
+  }
+
+  const labelStyle = {
+    fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer',
+    padding: '10px 14px', borderRadius: 8, display: 'flex',
+    alignItems: 'center', gap: 10, transition: 'background 0.15s',
+    wordBreak: 'break-all',
+  };
+
+  return (
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+      {/* File list */}
+      <div style={{
+        width: 220, flexShrink: 0, borderRight: '1px solid var(--border)',
+        overflowY: 'auto', padding: '16px 8px',
+        background: 'var(--surface-sidebar)',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', padding: '0 8px 12px' }}>
+          Memory-Dateien
+        </div>
+        {toolStatus !== 'online' && (
+          <div style={{ fontSize: 12, color: 'var(--danger)', padding: '8px', margin: '0 4px', borderRadius: 8, background: 'rgba(220,38,38,0.08)' }}>
+            Tool-Server offline
+          </div>
+        )}
+        {loading ? (
+          <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '8px 12px' }}>Lade…</div>
+        ) : files.length === 0 ? (
+          <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '8px 12px' }}>Keine Dateien</div>
+        ) : files.map(f => (
+          <div
+            key={f.path}
+            onClick={() => openFile(f.path)}
+            style={{
+              ...labelStyle,
+              background: selected === f.path ? 'var(--accent-soft)' : 'transparent',
+              color: selected === f.path ? 'var(--accent)' : 'var(--text-primary)',
+            }}
+            onMouseEnter={e => { if (selected !== f.path) e.currentTarget.style.background = 'var(--surface-elevated)'; }}
+            onMouseLeave={e => { if (selected !== f.path) e.currentTarget.style.background = 'transparent'; }}
+          >
+            <span style={{ fontSize: 16, flexShrink: 0 }}>
+              {f.path.includes('/') ? '📂' : '📄'}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: selected === f.path ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+              {f.path.includes('/') && (
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path.split('/').slice(0, -1).join('/')}</div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Editor */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {selected ? (
+          <>
+            <div style={{
+              padding: '12px 20px', borderBottom: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
+              background: 'var(--surface)',
+            }}>
+              <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', flex: 1 }}>
+                {selected}
+              </span>
+              <button onClick={saveFile} disabled={saving || toolStatus !== 'online'} style={{
+                padding: '7px 18px', borderRadius: 9, border: 'none', cursor: 'pointer',
+                background: saved ? '#2a9d5c' : 'var(--accent)', color: '#fff',
+                fontSize: 13, fontWeight: 600, transition: 'background 0.2s',
+                opacity: toolStatus !== 'online' ? 0.5 : 1,
+              }}>
+                {saving ? 'Speichert…' : saved ? '✓ Gespeichert' : '💾 Speichern'}
+              </button>
+              <button onClick={() => { setSelected(null); setContent(''); }} style={{
+                padding: '7px 12px', borderRadius: 9, border: '1.5px solid var(--border)',
+                background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 13,
+              }}>
+                Schließen
+              </button>
+            </div>
+            {error && (
+              <div style={{ padding: '8px 20px', fontSize: 13, color: 'var(--danger)', background: 'rgba(220,38,38,0.06)', borderBottom: '1px solid var(--border)' }}>{error}</div>
+            )}
+            <textarea
+              value={content}
+              onChange={e => { setContent(e.target.value); setSaved(false); }}
+              spellCheck={false}
+              style={{
+                flex: 1, resize: 'none', border: 'none', outline: 'none',
+                padding: '20px 24px', fontFamily: "'Consolas','Courier New',monospace",
+                fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)',
+                background: 'var(--bg)', overflow: 'auto',
+              }}
+            />
+            <div style={{ padding: '6px 20px', fontSize: 11, color: 'var(--text-tertiary)', borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+              🔒 Nur .md-Dateien unter memory/ · Änderungen wirken beim nächsten Agent-Start
+            </div>
+          </>
+        ) : (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', gap: 12 }}>
+            <div style={{ fontSize: 40 }}>📁</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-secondary)' }}>Memory-Editor</div>
+            <div style={{ fontSize: 13, textAlign: 'center', maxWidth: 320, lineHeight: 1.7 }}>
+              Wähle links eine Datei aus um sie anzusehen und zu bearbeiten.<br/>
+              Alle Änderungen werden sofort auf der Festplatte gespeichert.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Vorlagen-Galerie ---------- */
+const TEMPLATE_CATEGORIES = [
+  {
+    label: 'Unterrichtsplanung',
+    icon: '📋',
+    templates: [
+      { title: 'Stundenentwurf', prompt: 'Plane eine Unterrichtsstunde für Fach [FACH], Klasse [KLASSE] zum Thema [THEMA]. Zeitrahmen: 45 Minuten.' },
+      { title: 'Reihenplanung (6 Std.)', prompt: 'Erstelle eine Unterrichtsreihe mit 6 Stunden für [FACH] Klasse [KLASSE] zum Thema [THEMA]. Zeige Stundenübersicht, Lernziele und Methodenvariation.' },
+      { title: 'Jahresplanung', prompt: 'Erstelle eine Jahresplanung für [FACH] in Klasse [KLASSE] mit Stoffverteilungsplan, Klassenarbeitsterminen und Lehrplanbezügen.' },
+      { title: 'Vertretungsstunde', prompt: 'Ich brauche sofort einen Crashplan für eine Vertretungsstunde in Klasse [KLASSE], Fach [FACH]. Kein spezielles Vorwissen nötig – in 2 Minuten einsetzbar.' },
+    ],
+  },
+  {
+    label: 'Bewertung & Korrektur',
+    icon: '✅',
+    templates: [
+      { title: 'Bewertungsraster erstellen', prompt: 'Erstelle einen Erwartungshorizont für [ART DER PRÜFUNG] in [FACH] Klasse [KLASSE] zum Thema [THEMA]. Mit AFB-Verteilung, Punkteschlüssel und Notengrenzen.' },
+      { title: 'Schülerarbeit bewerten', prompt: 'Bitte bewerte folgende Schülerarbeit anhand des gespeicherten Bewertungsrasters. [ARBEIT HIER EINFÜGEN]' },
+      { title: 'Klassenstatistik auswerten', prompt: 'Ich habe folgende Noten in [FACH] Klasse [KLASSE] geschrieben: [NOTEN HIER]. Erstelle Notenspiegel, Durchschnitt und pädagogische Hinweise.' },
+      { title: 'Zeugnisformulierungen', prompt: 'Formuliere Zeugniskommentare für [FACH] Klasse [KLASSE] in drei Varianten (gut, befriedigend, mit Förderempfehlung). Schulform: [SCHULFORM].' },
+    ],
+  },
+  {
+    label: 'Materialerstellung',
+    icon: '📝',
+    templates: [
+      { title: 'Arbeitsblatt', prompt: 'Erstelle ein druckfertiges Arbeitsblatt für [FACH] Klasse [KLASSE] zum Thema [THEMA]. Mit Pflichtaufgaben und Zusatzaufgabe für schnellere Schüler.' },
+      { title: 'Klassenarbeit / Klausur', prompt: 'Erstelle eine Klassenarbeit (45 Min.) für [FACH] Klasse [KLASSE] zum Thema [THEMA]. Mit Erwartungshorizont, AFB I–III und Notenschlüssel.' },
+      { title: 'Lernzielkontrolle', prompt: 'Erstelle einen formativen Kurztest (10–15 Min.) für [FACH] Klasse [KLASSE] zu [THEMA]. Mit Musterlösung.' },
+      { title: 'Tafelbild / Whiteboard', prompt: 'Entwirf ein strukturiertes Tafelbild für eine Stunde zu [THEMA] in [FACH] Klasse [KLASSE]. Als ASCII-Skizze mit Aufbauanleitung.' },
+    ],
+  },
+  {
+    label: 'Kommunikation',
+    icon: '✉️',
+    templates: [
+      { title: 'Elternbrief', prompt: 'Schreibe einen Elternbrief für Klasse [KLASSE] zum Thema [ANLASS]. Freundlich, sachlich, mit Rückmeldebogen.' },
+      { title: 'Förderplan', prompt: 'Erstelle einen individuellen Förderplan für einen Schüler in [FACH] Klasse [KLASSE] mit Schwäche bei [BEREICH]. Mit SMART-Zielen und konkreten Maßnahmen.' },
+      { title: 'Lerntagebuch-Feedback', prompt: 'Formuliere konstruktives Feedback zu folgendem Lerntagebucheintrag eines Schülers: [EINTRAG HIER]' },
+      { title: 'Klassenrat vorbereiten', prompt: 'Erstelle eine Tagesordnung und Protokollvorlage für den nächsten Klassenrat in Klasse [KLASSE] mit Themen: [THEMEN].' },
+    ],
+  },
+];
+
+function TemplateGalleryView({ onUseTemplate }) {
+  const [activeCategory, setActiveCategory] = React.useState(0);
+  const [search, setSearch] = React.useState('');
+
+  const filtered = search.trim()
+    ? TEMPLATE_CATEGORIES.map(cat => ({
+        ...cat,
+        templates: cat.templates.filter(t =>
+          t.title.toLowerCase().includes(search.toLowerCase()) ||
+          t.prompt.toLowerCase().includes(search.toLowerCase())
+        ),
+      })).filter(cat => cat.templates.length > 0)
+    : [TEMPLATE_CATEGORIES[activeCategory]];
+
+  return (
+    <div style={{ padding: 24, maxWidth: 720, margin: '0 auto' }}>
+      <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Vorlagen-Galerie</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 20 }}>
+        Klicke auf eine Vorlage um sie direkt in den Chat zu übernehmen. Ersetze die [PLATZHALTER] mit deinen Angaben.
+      </p>
+
+      {/* Suche */}
+      <input
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Vorlage suchen…"
+        style={{
+          width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 16,
+          border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+          color: 'var(--text-primary)', fontSize: 14, outline: 'none', fontFamily: 'inherit',
+          boxSizing: 'border-box',
+        }}
+        onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+        onBlur={e => e.target.style.borderColor = 'var(--border)'}
+      />
+
+      {/* Kategorie-Tabs */}
+      {!search.trim() && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+          {TEMPLATE_CATEGORIES.map((cat, i) => (
+            <button key={i} onClick={() => setActiveCategory(i)} style={{
+              padding: '8px 16px', borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              border: '1.5px solid',
+              borderColor: activeCategory === i ? 'var(--accent)' : 'var(--border)',
+              background: activeCategory === i ? 'var(--accent)' : 'var(--surface-elevated)',
+              color: activeCategory === i ? '#fff' : 'var(--text-secondary)',
+              transition: 'all 0.15s',
+            }}>
+              {cat.icon} {cat.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Vorlagen */}
+      {filtered.map((cat, ci) => (
+        <div key={ci}>
+          {search.trim() && (
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10, marginTop: ci > 0 ? 20 : 0 }}>
+              {cat.icon} {cat.label}
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12, marginBottom: 8 }}>
+            {cat.templates.map((t, ti) => (
+              <div
+                key={ti}
+                onClick={() => onUseTemplate(t.prompt)}
+                style={{
+                  padding: '16px 18px', borderRadius: 12, cursor: 'pointer',
+                  background: 'var(--surface-elevated)', border: '1.5px solid var(--border)',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-soft)'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface-elevated)'; }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 6 }}>
+                  {t.title}
+                </div>
+                <div style={{
+                  fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.6,
+                  overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+                }}>
+                  {t.prompt}
+                </div>
+                <div style={{ marginTop: 10, fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>
+                  Klicken zum Übernehmen →
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {filtered.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)' }}>
+          Keine Vorlagen gefunden für „{search}"
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Kamera-Modal (Foto-zu-Korrektur) ---------- */
+function CameraModal({ onClose, onCapture }) {
+  const videoRef   = React.useRef(null);
+  const streamRef  = React.useRef(null);
+  const [preview,    setPreview]    = React.useState(null);
+  const [ocrText,    setOcrText]    = React.useState('');
+  const [ocrLoading, setOcrLoading] = React.useState(false);
+  const [errMsg,     setErrMsg]     = React.useState('');
+
+  React.useEffect(() => {
+    startCamera();
+    return () => stopCamera();
+  }, []);
+
+  async function startCamera() {
+    setErrMsg('');
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
+      streamRef.current = s;
+      if (videoRef.current) videoRef.current.srcObject = s;
+    } catch (e) {
+      setErrMsg('Kamera nicht zugänglich: ' + (e.message || e.name));
+    }
+  }
+
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+  }
+
+  function capture() {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement('canvas');
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    stopCamera();
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    setPreview(dataUrl);
+    canvas.toBlob(async (blob) => {
+      setOcrLoading(true);
+      try {
+        const fd = new FormData();
+        fd.append('image', blob, 'capture.jpg');
+        const res  = await fetch('http://localhost:8789/ocr-image', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        setOcrText(data.text);
+      } catch (e) {
+        setErrMsg('OCR: ' + e.message);
+      }
+      setOcrLoading(false);
+    }, 'image/jpeg', 0.92);
+  }
+
+  function retake() {
+    setPreview(null); setOcrText(''); setErrMsg('');
+    startCamera();
+  }
+
+  const inputStyle = {
+    width: '100%', padding: '9px 13px', borderRadius: 10, boxSizing: 'border-box',
+    border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+    color: 'var(--text-primary)', fontSize: 13, fontFamily: 'inherit',
+    resize: 'vertical', minHeight: 100,
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 3000,
+      background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+    }}>
+      <div style={{
+        background: 'var(--surface)', borderRadius: 20, padding: 24,
+        maxWidth: 480, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        animation: 'fadeInUp 0.25s ease',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ fontWeight: 700, fontSize: 17, color: 'var(--text-primary)', margin: 0 }}>
+            📸 Arbeit fotografieren
+          </h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}>
+            {Icons.close}
+          </button>
+        </div>
+
+        {!preview && (
+          <>
+            {errMsg ? (
+              <div style={{ padding: '14px', borderRadius: 10, background: 'rgba(220,38,38,0.08)', color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
+                ⚠️ {errMsg}
+              </div>
+            ) : (
+              <video ref={videoRef} autoPlay playsInline muted style={{
+                width: '100%', borderRadius: 12, background: '#000',
+                maxHeight: 320, objectFit: 'cover', display: 'block', marginBottom: 12,
+              }} />
+            )}
+            <button onClick={capture} disabled={!!errMsg} style={{
+              width: '100%', padding: '12px', borderRadius: 12,
+              background: errMsg ? 'var(--border)' : 'var(--accent)', color: '#fff',
+              border: 'none', cursor: errMsg ? 'default' : 'pointer', fontSize: 15, fontWeight: 600,
+            }}>
+              📸 Foto aufnehmen
+            </button>
+          </>
+        )}
+
+        {preview && (
+          <>
+            <img src={preview} alt="Aufnahme" style={{ width: '100%', borderRadius: 12, marginBottom: 12, display: 'block' }} />
+            {ocrLoading && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text-tertiary)', fontSize: 13, marginBottom: 12 }}>
+                <div style={{ width: 14, height: 14, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.7s linear infinite', flexShrink: 0 }}></div>
+                Erkenne Text…
+              </div>
+            )}
+            {errMsg && !ocrLoading && (
+              <div style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(220,38,38,0.08)', color: 'var(--danger)', fontSize: 12, marginBottom: 12 }}>
+                ⚠️ {errMsg}
+              </div>
+            )}
+            {ocrText && (
+              <>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 }}>
+                  Erkannter Text (bearbeitbar):
+                </div>
+                <textarea
+                  value={ocrText}
+                  onChange={e => setOcrText(e.target.value)}
+                  style={inputStyle}
+                />
+              </>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button onClick={retake} style={{
+                flex: 1, padding: '10px', borderRadius: 10, cursor: 'pointer',
+                border: '1.5px solid var(--border)', background: 'var(--surface-elevated)',
+                color: 'var(--text-secondary)', fontSize: 13,
+              }}>
+                ↩ Neu aufnehmen
+              </button>
+              {(ocrText || errMsg) && (
+                <button
+                  onClick={() => { onCapture(ocrText || ''); onClose(); }}
+                  disabled={!ocrText}
+                  style={{
+                    flex: 2, padding: '10px', borderRadius: 10, cursor: ocrText ? 'pointer' : 'default',
+                    background: ocrText ? 'var(--accent)' : 'var(--border)', color: '#fff',
+                    border: 'none', fontSize: 13, fontWeight: 600,
+                  }}
+                >
+                  In Chat einfügen →
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+          💡 Tipp: Auf hellem Untergrund fotografieren, Blatt gerade halten.
+          Der erkannte Text wird in das Eingabefeld eingefügt.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- iCal-Export-Modal ---------- */
+function IcalExportModal({ text, onClose }) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const guessTitle = () => {
+    const m = text.match(/(?:Klassenarbeit|Klausur|Test|Prüfung|Abgabe)[^\n.]{0,60}/i);
+    return m ? m[0].trim() : 'Termin aus TeacherAssist';
+  };
+  const guessDate = () => {
+    const m = text.match(/\b(\d{1,2})[./](\d{1,2})[./](20\d{2})\b/);
+    if (m) {
+      const [, d, mo, y] = m;
+      return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    }
+    return today;
+  };
+
+  const [title,     setTitle]     = React.useState(guessTitle);
+  const [date,      setDate]      = React.useState(guessDate);
+  const [startTime, setStartTime] = React.useState('08:00');
+  const [duration,  setDuration]  = React.useState('45');
+
+  function download() {
+    const dt    = new Date(`${date}T${startTime}:00`);
+    const endDt = new Date(dt.getTime() + Math.max(5, parseInt(duration) || 45) * 60000);
+    const fmt   = d => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+    const uid   = `${Date.now()}@teacherAssist`;
+    const ics   = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0',
+      'PRODID:-//TeacherAssist//DE', 'CALSCALE:GREGORIAN',
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      `DTSTAMP:${fmt(new Date())}Z`,
+      `DTSTART:${fmt(dt)}`,
+      `DTEND:${fmt(endDt)}`,
+      `SUMMARY:${title.replace(/[,;\\]/g, m => '\\' + m)}`,
+      `DESCRIPTION:Erstellt mit TeacherAssist`,
+      'END:VEVENT', 'END:VCALENDAR',
+    ].join('\r\n');
+    const blob = new Blob([ics], { type: 'text/calendar; charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = title.slice(0, 40).replace(/[^\wäöüÄÖÜß\s]/g, '').trim() + '.ics';
+    a.click();
+    URL.revokeObjectURL(url);
+    onClose();
+  }
+
+  const is = {
+    width: '100%', padding: '9px 13px', borderRadius: 10, boxSizing: 'border-box',
+    border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+    color: 'var(--text-primary)', fontSize: 14, outline: 'none', fontFamily: 'inherit',
+  };
+  const ls = { display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 2000,
+      background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div style={{
+        background: 'var(--surface)', borderRadius: 20, padding: '28px 24px',
+        maxWidth: 400, width: '100%', animation: 'fadeInUp 0.25s ease',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <h3 style={{ fontWeight: 700, fontSize: 17, color: 'var(--text-primary)', margin: 0 }}>
+            📅 Als Kalender-Termin
+          </h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}>
+            {Icons.close}
+          </button>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={ls}>Titel</label>
+          <input value={title} onChange={e => setTitle(e.target.value)} style={is}
+            onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+            onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+          <div style={{ flex: 3 }}>
+            <label style={ls}>Datum</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={is}
+              onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+              onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
+          </div>
+          <div style={{ flex: 2 }}>
+            <label style={ls}>Uhrzeit</label>
+            <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} style={is}
+              onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+              onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
+          </div>
+          <div style={{ flex: 2 }}>
+            <label style={ls}>Dauer (Min.)</label>
+            <input type="number" value={duration} onChange={e => setDuration(e.target.value)}
+              min="5" max="480" style={is}
+              onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+              onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
+          </div>
+        </div>
+
+        <button onClick={download} style={{
+          width: '100%', padding: '12px', borderRadius: 12, border: 'none',
+          background: 'var(--accent)', color: '#fff', cursor: 'pointer',
+          fontSize: 14, fontWeight: 600, transition: 'opacity 0.15s',
+        }}
+          onMouseEnter={e => e.currentTarget.style.opacity = 0.88}
+          onMouseLeave={e => e.currentTarget.style.opacity = 1}
+        >
+          💾 .ics herunterladen
+        </button>
+        <p style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 12, textAlign: 'center', lineHeight: 1.6 }}>
+          Öffne die Datei mit Outlook, Apple Kalender, Google Kalender etc.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Batch-Upload-Queue ---------- */
+function BatchQueuePanel({ queue, onDismiss }) {
+  if (!queue || queue.length === 0) return null;
+  const done  = queue.filter(i => i.status === 'done').length;
+  const total = queue.length;
+  return (
+    <div style={{
+      padding: '10px 16px', borderTop: '1px solid var(--border)',
+      background: 'var(--surface-elevated)', flexShrink: 0,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+          Batch-Upload: {done}/{total} abgeschlossen
+        </span>
+        {done === total && (
+          <button onClick={onDismiss} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 12 }}>
+            Schließen
+          </button>
+        )}
+      </div>
+      {/* Fortschrittsbalken */}
+      <div style={{ height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', marginBottom: 8 }}>
+        <div style={{
+          height: '100%', borderRadius: 2,
+          background: done === total ? '#2a9d5c' : 'var(--accent)',
+          width: `${total > 0 ? (done / total) * 100 : 0}%`,
+          transition: 'width 0.4s ease',
+        }} />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 140, overflowY: 'auto' }}>
+        {queue.map((item, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <span style={{ flexShrink: 0, fontSize: 14 }}>
+              {item.status === 'done'    ? '✅' :
+               item.status === 'error'  ? '❌' :
+               item.status === 'active' ? '⏳' : '⬜'}
+            </span>
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
+              {item.file.name}
+            </span>
+            {item.status === 'error' && (
+              <span style={{ color: 'var(--danger)', fontSize: 11, flexShrink: 0 }}>Fehler</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   Icons, BotAvatar, TypingDots, ChatBubble, QuickReplies,
   OnboardingProgress, Sidebar, ChatInput, ProfileView, SettingsView, ApiKeyModal,
   UrlDownloadForm, DsgvoWarningModal, MODEL_PRICES, MODEL_GROUPS,
-  RasterEditorView, openPrintWindow,
+  RasterEditorView, MemoryEditorView, TemplateGalleryView, BatchQueuePanel,
+  TEMPLATE_CATEGORIES, openPrintWindow,
 });
