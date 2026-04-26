@@ -132,6 +132,19 @@ const Icons = {
       <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
     </svg>
   ),
+  copy: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg>
+  ),
+  upload: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 16 12 12 8 16"></polyline>
+      <line x1="12" y1="12" x2="12" y2="21"></line>
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+    </svg>
+  ),
 };
 
 /* ---------- Markdown → Druck-HTML ---------- */
@@ -268,9 +281,28 @@ function TypingDots() {
 }
 
 /* ---------- Chat Bubble ---------- */
-function ChatBubble({ message, isBot, isTyping }) {
+function ChatBubble({ message, isBot, isTyping, onExport }) {
   const [hovered, setHovered] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
   const hasContent = isBot && !isTyping && message && message.length > 80;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+
+  const btnBase = {
+    display: 'flex', alignItems: 'center', gap: 5,
+    padding: '4px 10px', borderRadius: 8, fontSize: 12,
+    background: 'var(--surface-elevated)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer', fontFamily: 'inherit',
+    transition: 'all 0.15s',
+  };
 
   return (
     <div
@@ -303,17 +335,18 @@ function ChatBubble({ message, isBot, isTyping }) {
             transition: 'opacity 0.2s',
           }}>
             <button
-              onClick={() => openPrintWindow(message, 'TeacherAssist Export')}
+              onClick={handleCopy}
+              title="Text kopieren (für Word / LibreOffice)"
+              style={{ ...btnBase, ...(copied ? { background: '#2a9d5c', color: '#fff', borderColor: '#2a9d5c' } : {}) }}
+              onMouseEnter={e => { if (!copied) { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; } }}
+              onMouseLeave={e => { if (!copied) { e.currentTarget.style.background = 'var(--surface-elevated)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border)'; } }}
+            >
+              {copied ? Icons.check : Icons.copy} {copied ? 'Kopiert!' : 'Kopieren'}
+            </button>
+            <button
+              onClick={() => onExport ? onExport(message) : openPrintWindow(message, 'TeacherAssist Export')}
               title="Drucken / Als PDF speichern"
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '4px 10px', borderRadius: 8, fontSize: 12,
-                background: 'var(--surface-elevated)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer', fontFamily: 'inherit',
-                transition: 'all 0.15s',
-              }}
+              style={btnBase}
               onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; }}
               onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface-elevated)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border)'; }}
             >
@@ -496,7 +529,7 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
 }
 
 /* ---------- Chat Input ---------- */
-function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUpload, toolOnline, showDsgvoHint, showLocalHint }) {
+function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUpload, toolOnline, showDsgvoHint, showLocalHint, quickActions }) {
   const fileRef = React.useRef(null);
   const handleKey = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
@@ -507,7 +540,26 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
     e.target.value = '';
   };
   return (
-    <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+    <div style={{ padding: '8px 16px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+      {quickActions?.length > 0 && !disabled && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+          {quickActions.map(a => (
+            <button key={a.label} onClick={a.onSelect} style={{
+              background: 'var(--surface-elevated)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-secondary)',
+              padding: '5px 12px', borderRadius: 14,
+              fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'var(--accent)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface-elevated)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border)'; }}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: 8,
         background: 'var(--surface-input)',
@@ -867,10 +919,11 @@ function calcMessagesPerEuro(prices) {
   return Math.round(1 * usdPerEuro / costPerMsg / 100) * 100; // gerundet auf 100
 }
 
-function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider }) {
+function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore }) {
   const [showKey, setShowKey] = React.useState(false);
   const [keyInput, setKeyInput] = React.useState(apiKey || '');
   const [saved, setSaved] = React.useState(false);
+  const restoreRef = React.useRef(null);
 
   const handleSaveKey = () => {
     onApiKeyChange(keyInput.trim());
@@ -1207,6 +1260,50 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
           )}
         </div>
       </div>
+
+      {/* Backup & Restore */}
+      {toolStatus === 'online' && (
+        <div style={{
+          background: 'var(--surface-elevated)', borderRadius: 14,
+          border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16,
+        }}>
+          <div style={{ padding: '16px 20px' }}>
+            <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3 }}>
+              Backup &amp; Restore
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 14, lineHeight: 1.6 }}>
+              Sicher dein Profil, Lehrerprofil, Lehrplan-Index und Bewertungsraster als ZIP-Datei.
+              Beim Restore werden bestehende Dateien überschrieben.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button onClick={onBackup} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '9px 16px', borderRadius: 8,
+                background: 'var(--accent)', color: '#fff',
+                border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              }}>
+                {Icons.download} Backup herunterladen
+              </button>
+              <button onClick={() => restoreRef.current?.click()} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '9px 16px', borderRadius: 8,
+                background: 'transparent', border: '1.5px solid var(--border)',
+                color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              }}>
+                {Icons.upload} Backup wiederherstellen
+              </button>
+              <input
+                ref={restoreRef} type="file" accept=".zip"
+                style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f && onRestore) onRestore(f); e.target.value = ''; }}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 10 }}>
+              🔒 Backup enthält keine Schülerdaten – nur dein Lehrerprofil und Unterrichtsunterlagen
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Erscheinungsbild + Reset + About */}
       <div style={{

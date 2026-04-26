@@ -378,6 +378,7 @@ function App() {
   const [ollamaModels, setOllamaModels] = useState([]);
   const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
   const [sessionTokens, setSessionTokens] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState(null); // null | 'uploading' | 'indexing'
   const chatContainerRef = useRef(null);
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
@@ -619,8 +620,8 @@ function App() {
       return;
     }
     const sourceName = track ? `${track} – ${file.name}` : file.name;
-    addMessage(activeChatId, { role: 'user', text: `📄 ${sourceName} wird hochgeladen…`, ts: Date.now() });
-    setIsTyping(true);
+    addMessage(activeChatId, { role: 'user', text: `📄 ${sourceName}`, ts: Date.now() });
+    setUploadPhase('uploading');
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -629,6 +630,7 @@ function App() {
       const { saved } = await upRes.json();
       if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
+      setUploadPhase('indexing');
       const inRes = await fetch('http://localhost:8789/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -637,7 +639,7 @@ function App() {
       const data = await inRes.json();
       if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
 
-      setIsTyping(false);
+      setUploadPhase(null);
       setRagDocCount(n => n + data.chunks);
       addMessage(activeChatId, {
         role: 'bot',
@@ -645,7 +647,7 @@ function App() {
         ts: Date.now(),
       });
     } catch (err) {
-      setIsTyping(false);
+      setUploadPhase(null);
       addMessage(activeChatId, {
         role: 'bot',
         text: `⚠️ PDF-Verarbeitung fehlgeschlagen: ${err.message}\n\nIst der Tool-Server gestartet? (start.bat neu starten)`,
@@ -723,6 +725,51 @@ function App() {
       return filtered;
     });
   }, [activeChatId]);
+
+  const handleExport = useCallback((text) => {
+    const findings = detectPersonalData(text);
+    const hasNames = findings.some(f => f.type === 'Möglicher Personenname');
+    if (hasNames && !window.confirm(
+      'Mögliche Schüler- oder Personennamen erkannt.\n\n' +
+      'Exportierte Dateien können auf anderen Geräten gespeichert werden – bitte prüfe, ob du alle Namen entfernt hast.\n\n' +
+      'Trotzdem exportieren?'
+    )) return;
+    openPrintWindow(text, 'TeacherAssist Export');
+  }, []);
+
+  const handleBackup = useCallback(async () => {
+    try {
+      const res = await fetch('http://localhost:8789/backup');
+      if (!res.ok) throw new Error('Backup fehlgeschlagen');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `teacherAssist_backup_${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`Backup fehlgeschlagen: ${err.message}\n\nIst der Tool-Server gestartet?`);
+    }
+  }, []);
+
+  const handleRestore = useCallback(async (file) => {
+    if (!file) return;
+    if (!window.confirm(
+      `Memory-Dateien aus "${file.name}" wiederherstellen?\n\n` +
+      'Bestehende Dateien werden überschrieben. Danach bitte die Seite neu laden.'
+    )) return;
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('http://localhost:8789/restore', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Restore fehlgeschlagen');
+      alert(`✅ ${data.restored} Datei(en) wiederhergestellt.\n\nBitte lade die Seite neu (F5), damit alle Änderungen aktiv werden.`);
+    } catch (err) {
+      alert(`Restore fehlgeschlagen: ${err.message}`);
+    }
+  }, []);
 
   const handleNavigate = useCallback((view) => {
     setCurrentView(view);
@@ -865,7 +912,7 @@ function App() {
             display: 'flex', flexDirection: 'column', gap: 14,
           }}>
             {activeChat.messages.map((msg, i) => (
-              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} />
+              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} onExport={msg.role === 'bot' ? handleExport : undefined} />
             ))}
             {isStreaming && (
               <ChatBubble message={streamingText} isBot isTyping={!streamingText} />
@@ -877,16 +924,37 @@ function App() {
             <div></div>
           </div>
 
+          {uploadPhase && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '8px 18px',
+              background: 'var(--accent-soft)',
+              borderTop: '1px solid var(--border)',
+              fontSize: 13, color: 'var(--accent)', flexShrink: 0,
+            }}>
+              <div style={{
+                width: 14, height: 14, flexShrink: 0,
+                border: '2px solid var(--accent)', borderTopColor: 'transparent',
+                borderRadius: '50%', animation: 'spin 0.7s linear infinite',
+              }}></div>
+              {uploadPhase === 'uploading'
+                ? 'Schritt 1/2: PDF wird übertragen…'
+                : 'Schritt 2/2: Wird eingelesen und indiziert… (kann etwas dauern)'}
+            </div>
+          )}
           <ChatInput
             value={inputValue}
             onChange={setInputValue}
             onSend={() => handleSend()}
             placeholder={currentOnboardingStep?.placeholder || 'Nachricht eingeben…'}
-            disabled={isBusy}
+            disabled={isBusy || !!uploadPhase}
             onFileUpload={onboardingDone ? handleFileUpload : null}
             toolOnline={toolStatus === 'online'}
             showDsgvoHint={onboardingDone && effectiveProvider === 'openrouter'}
             showLocalHint={onboardingDone && effectiveProvider === 'ollama'}
+            quickActions={onboardingDone && !isBusy && !uploadPhase ? [
+              { label: '📋 Was war letzte Stunde?', onSelect: () => handleSend('Was war in meiner letzten geplanten Unterrichtsstunde? Bitte zeige mir eine kurze Zusammenfassung aus dem Verlaufsprotokoll (vergangene_stunden.md).') },
+            ] : []}
           />
         </>
       ) : currentView === 'profile' ? (
@@ -915,6 +983,7 @@ function App() {
             ollamaStatus={ollamaStatus} ollamaModels={ollamaModels}
             openrouterStatus={openrouterStatus}
             isFallbackActive={isFallbackActive} effectiveProvider={effectiveProvider}
+            onBackup={handleBackup} onRestore={handleRestore}
           />
         </div>
       )}

@@ -11,9 +11,11 @@ Stellt lokale Endpunkte bereit:
 Wird mit dem venv-Python aus start.bat gestartet.
 """
 import http.server
+import io
 import json
 import os
 import sys
+import zipfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -154,6 +156,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({"chunks": 0, "error": str(e)})
 
+        elif path == "/backup":        self._backup()
         elif path == "/list-raster":   self._list_raster()
 
         elif path == "/search":
@@ -193,6 +196,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/download-url": self._download_url()
         elif self.path == "/settings":     self._save_settings()
         elif self.path == "/save-raster":  self._save_raster()
+        elif self.path == "/restore":      self._restore()
         else: self.send_error(404)
 
     def _upload(self):
@@ -329,6 +333,70 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         filepath = raster_dir / f"{slug}.md"
         filepath.write_text(content, encoding="utf-8")
         self._json({"success": True, "filename": f"{slug}.md", "filepath": str(filepath)})
+
+    def _backup(self):
+        """Gesamtes memory/-Verzeichnis als ZIP zum Download anbieten."""
+        memory_dir = BASE_DIR / "memory"
+        if not memory_dir.exists():
+            self._json({"error": "memory/-Verzeichnis nicht gefunden"}, 404)
+            return
+        try:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in sorted(memory_dir.rglob("*")):
+                    if f.is_file():
+                        zf.write(f, f.relative_to(BASE_DIR))
+            data = buf.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="teacherAssist_memory_backup.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _restore(self):
+        """ZIP-Datei hochladen und memory/-Verzeichnis wiederherstellen."""
+        ct = self.headers.get("Content-Type", "")
+        body = self._body()
+        try:
+            if "multipart/form-data" in ct:
+                boundary = ""
+                for seg in ct.split(";"):
+                    seg = seg.strip()
+                    if seg.startswith("boundary="):
+                        boundary = seg[9:].strip('"')
+                files = parse_multipart(body, boundary)
+                if not files:
+                    self._json({"error": "Keine Datei übermittelt"}, 400)
+                    return
+                _, zip_data = files[0]
+            else:
+                zip_data = body
+
+            buf = io.BytesIO(zip_data)
+            if not zipfile.is_zipfile(buf):
+                self._json({"error": "Datei ist kein gültiges ZIP-Archiv"}, 400)
+                return
+
+            restored = []
+            with zipfile.ZipFile(buf, "r") as zf:
+                for name in zf.namelist():
+                    norm = name.replace("\\", "/")
+                    # Sicherheit: nur Dateien unter memory/ erlaubt
+                    if not (norm.startswith("memory/") or norm.startswith("./memory/")):
+                        continue
+                    dest = BASE_DIR / norm
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(zf.read(name))
+                    restored.append(norm)
+
+            self._json({"success": True, "restored": len(restored), "files": restored})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
 
     def log_message(self, *_):
         pass  # Kein Log-Spam
