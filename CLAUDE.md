@@ -129,6 +129,20 @@ lehreragent/
 │   │   └── skill.md                      ← Individuelle Förderpläne mit SMART-Zielen ✅
 │   ├── klassenstatistik/
 │   │   └── skill.md                      ← Notenauswertung, Notenspiegel, Aufgabenanalyse ✅
+│   ├── reihenplanung/
+│   │   └── skill.md                      ← Unterrichtsreihe 4–8 Stunden, Stundenübersicht ✅
+│   ├── jahresplanung/
+│   │   └── skill.md                      ← Stoffverteilung Schuljahr, Klassenarbeitstermine ✅
+│   ├── vertretungsstunde/
+│   │   └── skill.md                      ← Crashplan in 2 Min, ohne Vorwissen nutzbar ✅
+│   ├── lernzielkontrolle/
+│   │   └── skill.md                      ← Kurztest 10–15 Min, formativ, mit Musterlösung ✅
+│   ├── tafelbild_entwerfen/
+│   │   └── skill.md                      ← ASCII-Skizze Tafel/Whiteboard, Aufbauanleitung ✅
+│   ├── klassenrat_protokoll/
+│   │   └── skill.md                      ← Tagesordnung, Protokollvorlage, Gesprächsregeln ✅
+│   ├── lerntagebuch_feedback/
+│   │   └── skill.md                      ← Individuelle Rückmeldungen zu SuS-Reflexionen ✅
 │   ├── schuelerarbeit_bewerten/
 │   │   └── skill.md                      ← Korrektur gegen Bewertungsraster
 │   └── lehrplan_einlesen/
@@ -789,6 +803,13 @@ idle → optimizing → uploading(progress) → processing(step, percent) → do
 - [x] `skills/zeugnis_formulieren/skill.md` ← Zeugnisformulierungen (3 Varianten)
 - [x] `skills/foerderplan_erstellen/skill.md` ← Individuelle Förderpläne
 - [x] `skills/klassenstatistik/skill.md` ← Notenauswertung + Notenspiegel
+- [x] `skills/reihenplanung/skill.md` ← Unterrichtsreihe 4–8 Stunden
+- [x] `skills/jahresplanung/skill.md` ← Stoffverteilung Schuljahr
+- [x] `skills/vertretungsstunde/skill.md` ← Crashplan ohne Vorbereitung
+- [x] `skills/lernzielkontrolle/skill.md` ← Kurztest formativ, mit Musterlösung
+- [x] `skills/tafelbild_entwerfen/skill.md` ← Tafel/Whiteboard ASCII-Skizze
+- [x] `skills/klassenrat_protokoll/skill.md` ← Protokollvorlage + Tagesordnung
+- [x] `skills/lerntagebuch_feedback/skill.md` ← Rückmeldungen SuS-Reflexionen
 - [x] `skills/schuelerarbeit_bewerten/skill.md`
 - [x] `skills/lehrplan_einlesen/skill.md`
 - [x] Memory-Templates (alle .md-Dateien)
@@ -814,6 +835,7 @@ idle → optimizing → uploading(progress) → processing(step, percent) → do
 - [x] `openclaw_config_template.yaml` – Provider-Env-Vars, Fallback-Config
 - [x] Export-Button: Jede Antwort per Klick als druckfertiges HTML exportieren
 - [x] Bewertungsraster-Editor: eigene View, Kriterien-Editor, 3 Notenschlüssel, Speichern + Drucken
+- [x] Token-Anzeige im Header: Session-Tokenverbrauch aus OpenRouter-Streaming live anzeigen
 
 ### ✅ Phase 2b – iOS App, WLAN-only (abgeschlossen)
 - [x] `app_ios/.../ConnectionService.swift` – WebSocket, Ping, Reconnect (exponential backoff)
@@ -962,13 +984,20 @@ python-frontmatter==1.1.0
 
 ---
 
-## Roadmap – Nächste Skills
+## Roadmap – Skills
 
-| Skill | Tools die er braucht | Priorität |
-|-------|---------------------|-----------|
+| Skill | Tools die er braucht | Status |
+|-------|---------------------|--------|
 | `arbeitsblatt_erstellen` | memory_reader, memory_writer, lehrplan_searcher | ✅ fertig |
 | `pruefung_erstellen` | memory_reader, memory_writer, lehrplan_searcher | ✅ fertig |
 | `elternbrief_schreiben` | memory_reader, memory_writer | ✅ fertig |
 | `zeugnis_formulieren` | memory_reader, memory_writer | ✅ fertig |
 | `klassenstatistik` | memory_reader | ✅ fertig |
 | `foerderplan_erstellen` | memory_reader, memory_writer | ✅ fertig |
+| `reihenplanung` | memory_reader, memory_writer | ✅ fertig |
+| `jahresplanung` | memory_reader, memory_writer | ✅ fertig |
+| `vertretungsstunde` | memory_reader | ✅ fertig |
+| `lernzielkontrolle` | memory_reader | ✅ fertig |
+| `tafelbild_entwerfen` | memory_reader | ✅ fertig |
+| `klassenrat_protokoll` | memory_reader | ✅ fertig |
+| `lerntagebuch_feedback` | memory_reader | ✅ fertig |

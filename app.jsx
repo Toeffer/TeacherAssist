@@ -279,7 +279,7 @@ async function fetchRagContext(query) {
 }
 
 /* ---------- LLM API (OpenRouter & Ollama) ---------- */
-async function callLLM(chatMessages, profile, apiKey, model, onChunk, ragContext = '', provider = 'openrouter', ollamaModel = 'gemma3:4b') {
+async function callLLM(chatMessages, profile, apiKey, model, onChunk, ragContext = '', provider = 'openrouter', ollamaModel = 'gemma3:4b', onUsage = null) {
   const isOllama = provider === 'ollama';
   const endpoint = isOllama
     ? 'http://localhost:11434/v1/chat/completions'
@@ -329,6 +329,7 @@ async function callLLM(chatMessages, profile, apiKey, model, onChunk, ragContext
         const parsed = JSON.parse(data);
         const content = parsed.choices?.[0]?.delta?.content;
         if (content) onChunk(content);
+        if (parsed.usage && onUsage) onUsage(parsed.usage);
       } catch {}
     }
   }
@@ -376,6 +377,7 @@ function App() {
   const [ollamaStatus, setOllamaStatus] = useState('unknown');
   const [ollamaModels, setOllamaModels] = useState([]);
   const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
+  const [sessionTokens, setSessionTokens] = useState(0);
   const chatContainerRef = useRef(null);
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
@@ -597,7 +599,9 @@ function App() {
       await callLLM(currentMessages, profile, apiKey, model, (chunk) => {
         fullText += chunk;
         setStreamingText(fullText);
-      }, ragContext, effectiveProvider, ollamaModel);
+      }, ragContext, effectiveProvider, ollamaModel, (usage) => {
+        setSessionTokens(n => n + (usage.total_tokens || 0));
+      });
     } catch (err) {
       fullText = effectiveProvider === 'ollama'
         ? `⚠️ Ollama-Fehler: ${err.message}\n\nLäuft Ollama noch? Prüfe die Einstellungen.`
@@ -807,6 +811,14 @@ function App() {
             return <div style={{ fontSize: 12, color }}>{label}</div>;
           })()}
         </div>
+        {sessionTokens > 0 && (
+          <div title="Token-Verbrauch dieser Sitzung" style={{
+            fontSize: 11, color: 'var(--text-tertiary)',
+            whiteSpace: 'nowrap', userSelect: 'none',
+          }}>
+            {sessionTokens.toLocaleString('de-DE')} Tokens
+          </div>
+        )}
         <button onClick={() => setDark(d => !d)} style={{
           background: 'none', border: 'none', cursor: 'pointer',
           color: 'var(--text-secondary)', padding: 4, display: 'flex',
