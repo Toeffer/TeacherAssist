@@ -119,6 +119,16 @@ lehreragent/
 │   │   └── skill.md                      ← Erwartungshorizont + Notenschlüssel
 │   ├── arbeitsblatt_erstellen/
 │   │   └── skill.md                      ← Druckfertige Aufgabenblätter mit Differenzierung ✅
+│   ├── pruefung_erstellen/
+│   │   └── skill.md                      ← Klassenarbeiten, Klausuren, Kurztest + Erwartungshorizont ✅
+│   ├── elternbrief_schreiben/
+│   │   └── skill.md                      ← Elternbriefe für alle Anlässe, druckfertig ✅
+│   ├── zeugnis_formulieren/
+│   │   └── skill.md                      ← Zeugnisformulierungen (3 Varianten je SuS) ✅
+│   ├── foerderplan_erstellen/
+│   │   └── skill.md                      ← Individuelle Förderpläne mit SMART-Zielen ✅
+│   ├── klassenstatistik/
+│   │   └── skill.md                      ← Notenauswertung, Notenspiegel, Aufgabenanalyse ✅
 │   ├── schuelerarbeit_bewerten/
 │   │   └── skill.md                      ← Korrektur gegen Bewertungsraster
 │   └── lehrplan_einlesen/
@@ -497,6 +507,11 @@ und verwende den zurückgegebenen Text als Grundlage für die Extraktion.
 | `unterricht_planen` | `memory_reader` (profil + index) → `lehrplan_searcher` |
 | `bewertung_erstellen` | `memory_reader` (lehrplan_index) → `memory_writer` (bewertungsraster) |
 | `arbeitsblatt_erstellen` | `memory_reader` (profil + lehrplan_index) → `lehrplan_searcher` → `memory_writer` (optional) |
+| `pruefung_erstellen` | `memory_reader` (profil + lehrplan_index) → `lehrplan_searcher` → `memory_writer` (bewertungsraster) |
+| `elternbrief_schreiben` | `memory_reader` (lehrerprofil) |
+| `zeugnis_formulieren` | `memory_reader` (lehrerprofil) |
+| `foerderplan_erstellen` | `memory_reader` (lehrerprofil) → `memory_writer` (foerderplaene) |
+| `klassenstatistik` | `memory_reader` (lehrerprofil) |
 | `schuelerarbeit_bewerten` | `image_receiver` (falls iPhone-Upload) → `ocr_reader` → `memory_reader` (bewertungsraster) → `memory_writer` (protokoll) |
 
 ---
@@ -769,6 +784,11 @@ idle → optimizing → uploading(progress) → processing(step, percent) → do
 - [x] `skills/unterricht_planen/skill.md`
 - [x] `skills/bewertung_erstellen/skill.md`
 - [x] `skills/arbeitsblatt_erstellen/skill.md` ← Druckfertige Aufgabenblätter
+- [x] `skills/pruefung_erstellen/skill.md` ← Klassenarbeiten, Klausuren, Kurztests
+- [x] `skills/elternbrief_schreiben/skill.md` ← Elternbriefe für alle Anlässe
+- [x] `skills/zeugnis_formulieren/skill.md` ← Zeugnisformulierungen (3 Varianten)
+- [x] `skills/foerderplan_erstellen/skill.md` ← Individuelle Förderpläne
+- [x] `skills/klassenstatistik/skill.md` ← Notenauswertung + Notenspiegel
 - [x] `skills/schuelerarbeit_bewerten/skill.md`
 - [x] `skills/lehrplan_einlesen/skill.md`
 - [x] Memory-Templates (alle .md-Dateien)
@@ -946,9 +966,9 @@ python-frontmatter==1.1.0
 
 | Skill | Tools die er braucht | Priorität |
 |-------|---------------------|-----------|
-| `arbeitsblatt_erstellen` | memory_reader, memory_writer | ✅ fertig |
-| `pruefung_erstellen` | memory_reader, memory_writer, lehrplan_searcher | Hoch |
-| `elternbrief_schreiben` | memory_reader, memory_writer | Mittel |
-| `zeugnis_formulieren` | memory_reader, memory_writer | Mittel |
-| `klassenstatistik` | memory_reader, (csv_writer neu) | Mittel |
-| `foerderplan_erstellen` | memory_reader, memory_writer | Niedrig |
+| `arbeitsblatt_erstellen` | memory_reader, memory_writer, lehrplan_searcher | ✅ fertig |
+| `pruefung_erstellen` | memory_reader, memory_writer, lehrplan_searcher | ✅ fertig |
+| `elternbrief_schreiben` | memory_reader, memory_writer | ✅ fertig |
+| `zeugnis_formulieren` | memory_reader, memory_writer | ✅ fertig |
+| `klassenstatistik` | memory_reader | ✅ fertig |
+| `foerderplan_erstellen` | memory_reader, memory_writer | ✅ fertig |
