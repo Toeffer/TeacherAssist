@@ -92,8 +92,11 @@ class ConnectionManager {
   /// Aktueller Status
   ConnectionStatus get currentStatus => _currentStatus;
 
-  /// Ist verbunden?
-  bool get isConnected => _currentStatus == ConnectionStatus.connected;
+  /// Ist verbunden? (lokal, Tailscale oder direkt)
+  bool get isConnected =>
+      _currentStatus == ConnectionStatus.connected ||
+      _currentStatus == ConnectionStatus.localWifi ||
+      _currentStatus == ConnectionStatus.tailscale;
 
   /// Ist offline?
   bool get isOffline => _currentStatus == ConnectionStatus.offline;

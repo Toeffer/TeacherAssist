@@ -380,15 +380,103 @@ class LehrerAgentQuickActions {
     );
   }
 
+  /// Prüfung erstellen
+  static QuickAction pruefungErstellen({
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) {
+    return QuickAction(
+      title: 'Prüfung erstellen',
+      description: 'Klassenarbeit, Klausur, Kurztest',
+      icon: Icons.edit_document,
+      actionType: 'pruefung_erstellen',
+      color: Colors.deepOrange,
+      enabled: enabled,
+      onTap: onTap,
+    );
+  }
+
+  /// Arbeitsblatt erstellen
+  static QuickAction arbeitsblattErstellen({
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) {
+    return QuickAction(
+      title: 'Arbeitsblatt',
+      description: 'Druckfertig mit Differenzierung',
+      icon: Icons.assignment,
+      actionType: 'arbeitsblatt_erstellen',
+      color: Colors.cyan,
+      enabled: enabled,
+      onTap: onTap,
+    );
+  }
+
+  /// Elternbrief schreiben
+  static QuickAction elternbriefSchreiben({
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) {
+    return QuickAction(
+      title: 'Elternbrief',
+      description: 'Brief für jeden Anlass',
+      icon: Icons.mail_outline,
+      actionType: 'elternbrief_schreiben',
+      color: Colors.blueGrey,
+      enabled: enabled,
+      onTap: onTap,
+    );
+  }
+
+  /// Zeugnis formulieren
+  static QuickAction zeugnisFormulieren({
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) {
+    return QuickAction(
+      title: 'Zeugnistext',
+      description: '3 Varianten je Note & Fach',
+      icon: Icons.workspace_premium,
+      actionType: 'zeugnis_formulieren',
+      color: Colors.amber,
+      enabled: enabled,
+      onTap: onTap,
+    );
+  }
+
+  /// Klassenstatistik
+  static QuickAction klassenstatistik({
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) {
+    return QuickAction(
+      title: 'Klassenstatistik',
+      description: 'Notenspiegel & Auswertung',
+      icon: Icons.bar_chart,
+      actionType: 'klassenstatistik',
+      color: Colors.deepPurple,
+      enabled: enabled,
+      onTap: onTap,
+    );
+  }
+
   /// Alle Standard-Aktionen
   static List<QuickAction> allActions({
     required Map<String, VoidCallback> callbacks,
     Map<String, bool>? enabledStates,
   }) {
-    final actions = <QuickAction>[
+    return [
       unterrichtPlanen(
         onTap: callbacks['unterricht_planen'] ?? () {},
         enabled: enabledStates?['unterricht_planen'] ?? true,
+      ),
+      arbeitsblattErstellen(
+        onTap: callbacks['arbeitsblatt_erstellen'] ?? () {},
+        enabled: enabledStates?['arbeitsblatt_erstellen'] ?? true,
+      ),
+      pruefungErstellen(
+        onTap: callbacks['pruefung_erstellen'] ?? () {},
+        enabled: enabledStates?['pruefung_erstellen'] ?? true,
       ),
       bewertungErstellen(
         onTap: callbacks['bewertung_erstellen'] ?? () {},
@@ -397,6 +485,18 @@ class LehrerAgentQuickActions {
       schuelerarbeitBewerten(
         onTap: callbacks['schuelerarbeit_bewerten'] ?? () {},
         enabled: enabledStates?['schuelerarbeit_bewerten'] ?? true,
+      ),
+      elternbriefSchreiben(
+        onTap: callbacks['elternbrief_schreiben'] ?? () {},
+        enabled: enabledStates?['elternbrief_schreiben'] ?? true,
+      ),
+      zeugnisFormulieren(
+        onTap: callbacks['zeugnis_formulieren'] ?? () {},
+        enabled: enabledStates?['zeugnis_formulieren'] ?? true,
+      ),
+      klassenstatistik(
+        onTap: callbacks['klassenstatistik'] ?? () {},
+        enabled: enabledStates?['klassenstatistik'] ?? true,
       ),
       lehrplanEinlesen(
         onTap: callbacks['lehrplan_einlesen'] ?? () {},
@@ -419,11 +519,9 @@ class LehrerAgentQuickActions {
         enabled: enabledStates?['memory_view'] ?? true,
       ),
     ];
-
-    return actions;
   }
 
-  /// Nur häufig verwendete Aktionen (für Mobile)
+  /// Häufig verwendete Aktionen (für Mobile-Leiste, max. 6)
   static List<QuickAction> frequentActions({
     required Map<String, VoidCallback> callbacks,
     Map<String, bool>? enabledStates,
@@ -433,9 +531,17 @@ class LehrerAgentQuickActions {
         onTap: callbacks['unterricht_planen'] ?? () {},
         enabled: enabledStates?['unterricht_planen'] ?? true,
       ),
-      bewertungErstellen(
-        onTap: callbacks['bewertung_erstellen'] ?? () {},
-        enabled: enabledStates?['bewertung_erstellen'] ?? true,
+      arbeitsblattErstellen(
+        onTap: callbacks['arbeitsblatt_erstellen'] ?? () {},
+        enabled: enabledStates?['arbeitsblatt_erstellen'] ?? true,
+      ),
+      pruefungErstellen(
+        onTap: callbacks['pruefung_erstellen'] ?? () {},
+        enabled: enabledStates?['pruefung_erstellen'] ?? true,
+      ),
+      elternbriefSchreiben(
+        onTap: callbacks['elternbrief_schreiben'] ?? () {},
+        enabled: enabledStates?['elternbrief_schreiben'] ?? true,
       ),
       schuelerarbeitBewerten(
         onTap: callbacks['schuelerarbeit_bewerten'] ?? () {},

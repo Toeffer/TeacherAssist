@@ -54,39 +54,39 @@ class _MemoryScreenState extends State<MemoryScreen> {
     try {
       // Lehrerprofil laden
       final profileResult = await _openClawService.callTool(
-        'memory_reader',
-        {'filepath': 'lehrerprofil.md'},
+        toolName: 'memory_reader',
+        parameters: {'filepath': 'lehrerprofil.md'},
       );
 
-      if (profileResult['success'] == true) {
-        _memoryData['profile'] = _parseProfile(profileResult['content']);
+      if (profileResult.data['success'] == true) {
+        _memoryData['profile'] = _parseProfile(profileResult.data['content'] as String? ?? '');
       }
 
       // Lehrplan-Status laden
       final lehrplanResult = await _openClawService.callTool(
-        'memory_reader',
-        {'filepath': 'lehrplan_index.md'},
+        toolName: 'memory_reader',
+        parameters: {'filepath': 'lehrplan_index.md'},
       );
 
-      if (lehrplanResult['success'] == true) {
-        _memoryData['lehrplan'] = lehrplanResult['content'];
+      if (lehrplanResult.data['success'] == true) {
+        _memoryData['lehrplan'] = lehrplanResult.data['content'];
       }
 
       // Onboarding-Status prüfen
       final onboardingResult = await _openClawService.callTool(
-        'memory_reader',
-        {'filepath': 'onboarding_complete.md'},
+        toolName: 'memory_reader',
+        parameters: {'filepath': 'onboarding_complete.md'},
       );
 
-      _memoryData['onboardingComplete'] = onboardingResult['exists'] == true;
+      _memoryData['onboardingComplete'] = onboardingResult.data['exists'] == true;
 
       // Bewertungsraster zählen
       final bewertungsrasterResult = await _openClawService.callTool(
-        'memory_reader',
-        {'filepath': 'bewertungsraster/README.md'},
+        toolName: 'memory_reader',
+        parameters: {'filepath': 'bewertungsraster/README.md'},
       );
 
-      _memoryData['hasBewertungsraster'] = bewertungsrasterResult['exists'] == true;
+      _memoryData['hasBewertungsraster'] = bewertungsrasterResult.data['exists'] == true;
     } catch (e) {
       setState(() {
         _errorMessage = 'Fehler beim Laden: $e';

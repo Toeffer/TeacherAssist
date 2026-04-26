@@ -101,11 +101,15 @@ class _ChatScreenState extends State<ChatScreen> {
         content: 'Hallo! Ich bin Ihr LehrerAgent-Assistent. '
             'Wie kann ich Ihnen heute helfen?\n\n'
             'Ich kann Ihnen bei folgenden Aufgaben helfen:\n'
-            '• Unterrichtsplanung\n'
-            '• Bewertungsraster erstellen\n'
-            '• Lehrpläne einlesen und durchsuchen\n'
-            '• Schülerarbeiten bewerten\n'
-            '• Korrekturprotokolle erstellen',
+            '• Unterricht planen – Stundenentwürfe mit Lehrplanbezug\n'
+            '• Arbeitsblatt oder Prüfung erstellen – druckfertig mit AFB-Verteilung\n'
+            '• Bewertungsraster & Erwartungshorizonte erstellen\n'
+            '• Schülerarbeiten bewerten – per Foto oder PDF\n'
+            '• Elternbriefe schreiben – für jeden Anlass\n'
+            '• Zeugnisformulierungen generieren – 3 Varianten je SuS\n'
+            '• Förderpläne erstellen – mit SMART-Zielen\n'
+            '• Klassenstatistik auswerten – Notenspiegel & Aufgabenanalyse\n'
+            '• Lehrpläne einlesen und semantisch durchsuchen',
         timestamp: DateTime.now().subtract(const Duration(seconds: 1)),
         isUser: false,
         type: MessageType.system,
@@ -203,6 +207,38 @@ class _ChatScreenState extends State<ChatScreen> {
         return _formatCorrectionResponse(result);
       case 'onboarding':
         return _formatOnboardingResponse(result);
+      case 'arbeitsblatt_erstellen':
+        return '📄 **Arbeitsblatt erstellt**\n\n'
+            'Fach: ${result['fach'] ?? '—'} | Klasse: ${result['klasse'] ?? '—'}\n'
+            'Thema: ${result['thema'] ?? '—'}\n\n'
+            'Das Arbeitsblatt ist druckfertig. '
+            'Klicke auf den Export-Button, um es als PDF zu speichern.';
+      case 'pruefung_erstellen':
+        return '📝 **Prüfung erstellt**\n\n'
+            'Art: ${result['art'] ?? 'Klassenarbeit'} | '
+            'Fach: ${result['fach'] ?? '—'} | Klasse: ${result['klasse'] ?? '—'}\n'
+            'Gesamtpunkte: ${result['gesamtpunkte'] ?? '—'}\n\n'
+            'Schülerversion und Erwartungshorizont sind druckfertig.';
+      case 'elternbrief_schreiben':
+        return '✉️ **Elternbrief erstellt**\n\n'
+            'Anlass: ${result['anlass'] ?? '—'} | Klasse: ${result['klasse'] ?? '—'}\n\n'
+            'Der Brief ist druckfertig. '
+            'Klicke auf den Export-Button, um ihn auszudrucken.';
+      case 'zeugnis_formulieren':
+        return '🎓 **Zeugnisformulierungen erstellt**\n\n'
+            'Fach: ${result['fach'] ?? '—'} | Note: ${result['note'] ?? '—'}\n\n'
+            '3 Varianten wurden generiert (kompakt / ausführlich / entwicklungsorientiert). '
+            'Bitte Pronomen manuell anpassen.';
+      case 'foerderplan_erstellen':
+        return '📋 **Förderplan erstellt**\n\n'
+            'Bereich: ${result['foerderbereich'] ?? '—'} | Klasse: ${result['klasse'] ?? '—'}\n\n'
+            'Der Plan enthält SMART-Ziele, Maßnahmentabelle und Evaluationsplan. '
+            'Bitte Schüler-Kürzel (SuS-XX) manuell ergänzen.';
+      case 'klassenstatistik':
+        return '📊 **Klassenauswertung erstellt**\n\n'
+            'Klasse: ${result['klasse'] ?? '—'} | '
+            'Durchschnitt: ${result['durchschnitt'] ?? '—'}\n\n'
+            'Notenspiegel und Empfehlungen wurden generiert.';
       default:
         return 'Skill "$skillName" wurde ausgeführt.\n'
             'Ergebnis: ${result.toString()}';
@@ -389,8 +425,18 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
           
           // Quick-Actions (nur auf Mobile oder wenn aktiviert)
           if (_showQuickActions && !isDesktop)
-            QuickActions(
-              onActionSelected: _handleQuickAction,
+            QuickActionsBar(
+              actions: LehrerAgentQuickActions.frequentActions(
+                callbacks: {
+                  'unterricht_planen': () => _handleQuickAction('plan_lesson'),
+                  'bewertung_erstellen': () => _handleQuickAction('create_assessment'),
+                  'pruefung_erstellen': () => _handleQuickAction('create_exam'),
+                  'arbeitsblatt_erstellen': () => _handleQuickAction('create_worksheet'),
+                  'elternbrief_schreiben': () => _handleQuickAction('write_letter'),
+                  'schuelerarbeit_bewerten': () => _handleQuickAction('correct_work'),
+                  'pdf_upload': () => _handleQuickAction('pdf_upload'),
+                },
+              ),
             ),
           
           // Eingabebereich
@@ -573,24 +619,50 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
   String _detectSkill(String text) {
     final lowerText = text.toLowerCase();
     
-    if (lowerText.contains('unterricht') || 
-        lowerText.contains('stunde') || 
-        lowerText.contains('plan')) {
+    if (lowerText.contains('prüfung') ||
+        lowerText.contains('klassenarbeit') ||
+        lowerText.contains('klausur') ||
+        lowerText.contains('kurztest')) {
+      return 'pruefung_erstellen';
+    } else if (lowerText.contains('arbeitsblatt') ||
+               lowerText.contains('aufgabenblatt') ||
+               lowerText.contains('übungsblatt')) {
+      return 'arbeitsblatt_erstellen';
+    } else if (lowerText.contains('elternbrief') ||
+               lowerText.contains('brief an eltern') ||
+               lowerText.contains('elternschreiben')) {
+      return 'elternbrief_schreiben';
+    } else if (lowerText.contains('zeugnis') ||
+               lowerText.contains('zeugnistext') ||
+               lowerText.contains('zeugnisformulierung')) {
+      return 'zeugnis_formulieren';
+    } else if (lowerText.contains('förderplan') ||
+               lowerText.contains('individuelle förderung') ||
+               lowerText.contains('fördermaßnahmen')) {
+      return 'foerderplan_erstellen';
+    } else if (lowerText.contains('klassenstatistik') ||
+               lowerText.contains('notenverteilung') ||
+               lowerText.contains('notenspiegel') ||
+               lowerText.contains('auswertung')) {
+      return 'klassenstatistik';
+    } else if (lowerText.contains('unterricht') ||
+               lowerText.contains('stunde') ||
+               lowerText.contains('plan')) {
       return 'unterricht_planen';
-    } else if (lowerText.contains('bewertung') || 
-               lowerText.contains('raster') || 
-               lowerText.contains('noten')) {
+    } else if (lowerText.contains('bewertung') ||
+               lowerText.contains('raster') ||
+               lowerText.contains('erwartungshorizont')) {
       return 'bewertung_erstellen';
-    } else if (lowerText.contains('lehrplan') || 
-               lowerText.contains('curriculum') || 
+    } else if (lowerText.contains('lehrplan') ||
+               lowerText.contains('curriculum') ||
                lowerText.contains('vorgabe')) {
       return 'lehrplan_einlesen';
-    } else if (lowerText.contains('korrektur') || 
-               lowerText.contains('schüler') || 
-               lowerText.contains('arbeit')) {
+    } else if (lowerText.contains('korrektur') ||
+               lowerText.contains('schülerarbeit') ||
+               lowerText.contains('bewerte diese')) {
       return 'schuelerarbeit_bewerten';
-    } else if (lowerText.contains('hilfe') || 
-               lowerText.contains('was kann') || 
+    } else if (lowerText.contains('hilfe') ||
+               lowerText.contains('was kann') ||
                lowerText.contains('funktion')) {
       return 'help';
     } else {
@@ -601,8 +673,8 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
   /// Skill ausführen
   Future<void> _executeSkill(String skill, String text) async {
     try {
-      if (_connectionManager.currentStatus != ConnectionStatus.connected) {
-        throw Exception('Nicht mit OpenClaw verbunden');
+      if (!_connectionManager.isConnected) {
+        throw Exception('Nicht mit OpenClaw verbunden (Status: ${_connectionManager.currentStatus})');
       }
       
       final parameters = _extractParameters(skill, text);
@@ -695,19 +767,28 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
     
     switch (action) {
       case 'plan_lesson':
-        message = 'Planen Sie eine Unterrichtsstunde für mich.';
+        message = 'Plane eine Unterrichtsstunde für mich.';
         break;
       case 'create_assessment':
-        message = 'Erstellen Sie ein Bewertungsraster.';
+        message = 'Erstelle ein Bewertungsraster.';
+        break;
+      case 'create_exam':
+        message = 'Erstelle eine Klassenarbeit.';
+        break;
+      case 'create_worksheet':
+        message = 'Erstelle ein Arbeitsblatt.';
+        break;
+      case 'write_letter':
+        message = 'Schreibe einen Elternbrief.';
         break;
       case 'read_curriculum':
-        message = 'Lesen Sie einen Lehrplan ein.';
+        message = 'Lese einen Lehrplan ein.';
         break;
       case 'correct_work':
-        message = 'Bewerten Sie eine Schülerarbeit.';
+        message = 'Bewerte eine Schülerarbeit.';
         break;
       case 'show_profile':
-        message = 'Zeigen Sie mein Lehrerprofil an.';
+        message = 'Zeige mein Lehrerprofil an.';
         break;
       default:
         message = action;
@@ -784,10 +865,16 @@ ${result['missing_fields']?.join('\n') ?? 'Unbekannt'}
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-              _buildHelpItem('📝', 'Unterricht planen', 'z.B. "Planen Sie eine Mathestunde zu Bruchrechnung für Klasse 7"'),
-              _buildHelpItem('📋', 'Bewertungsraster', 'z.B. "Erstellen Sie ein Raster für Gedichtanalyse Klasse 8"'),
-              _buildHelpItem('📚', 'Lehrpläne', 'z.B. "Lesen Sie den Bayern-Lehrplan Mathematik Klasse 7 ein"'),
-              _buildHelpItem('✏️', 'Korrekturen', 'z.B. "Bewerten Sie diese Schülerarbeit"'),
+              _buildHelpItem('📅', 'Unterricht planen', '"Plane eine Mathestunde zu Bruchrechnung für Klasse 7"'),
+              _buildHelpItem('📄', 'Arbeitsblatt erstellen', '"Erstelle ein Arbeitsblatt zu Photosynthese für Klasse 9"'),
+              _buildHelpItem('📝', 'Prüfung erstellen', '"Erstelle eine Klassenarbeit Deutsch Klasse 8 zum Thema Kurzgeschichte"'),
+              _buildHelpItem('📋', 'Bewertungsraster', '"Erstelle einen Erwartungshorizont für Gedichtanalyse Klasse 8"'),
+              _buildHelpItem('✏️', 'Schülerarbeit bewerten', '"Bewerte diese Schülerarbeit" (+ Foto/PDF hochladen)'),
+              _buildHelpItem('✉️', 'Elternbrief schreiben', '"Schreibe einen Elternbrief für den Elternabend am 15. Mai"'),
+              _buildHelpItem('🎓', 'Zeugnisformulierung', '"Formuliere einen Zeugnistext für Deutsch Note 3"'),
+              _buildHelpItem('🤝', 'Förderplan erstellen', '"Erstelle einen Förderplan für LRS"'),
+              _buildHelpItem('📊', 'Klassenstatistik', '"Werte diese Ergebnisse aus: 38, 42, 17, 29, 45, 31"'),
+              _buildHelpItem('📚', 'Lehrplan einlesen', '"Lese den Bayern-Lehrplan Mathematik Klasse 7 ein"'),
               const SizedBox(height: 16),
               const Text(
                 'Datei-Upload:',

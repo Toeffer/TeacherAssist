@@ -94,6 +94,9 @@ class OpenClawService {
   /// Aktueller Status
   OpenClawServiceStatus get currentStatus => _currentStatus;
 
+  /// Ist verbunden?
+  bool get isConnected => _currentStatus == OpenClawServiceStatus.connected;
+
   /// Status-Stream
   Stream<OpenClawServiceStatus> get statusStream => _statusStream.stream;
 
