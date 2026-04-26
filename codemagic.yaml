@@ -1,0 +1,82 @@
+workflows:
+  ios-sideload:
+    name: LehrerAgent iOS (Sideload)
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+
+    environment:
+      vars:
+        BUNDLE_ID: de.cbluemling.lehreragent
+        XCODE_SCHEME: LehrerAgent
+        XCODE_WORKSPACE: LehrerAgent.xcodeproj/project.xcworkspace
+      # ---------------------------------------------------------------------------
+      # In Codemagic: Settings → Environment variables → Add group "ios_signing"
+      # mit diesen drei Variablen (als "Secret" markieren):
+      #
+      #   CM_CERTIFICATE          → Inhalt deiner .p12-Datei, base64-kodiert
+      #                             (Anleitung: siehe README unten)
+      #   CM_CERTIFICATE_PASSWORD → Passwort der .p12-Datei (leer lassen wenn keins)
+      #   CM_PROVISIONING_PROFILE → Inhalt deines .mobileprovision, base64-kodiert
+      #   DEVELOPMENT_TEAM        → Deine Apple Team-ID (10-stellig, z.B. AB12CD34EF)
+      #
+      # Wie du an diese Dateien kommst:
+      #   1. Einmalig auf einem Mac in Xcode: Xcode → Preferences → Accounts →
+      #      deine Apple-ID → Manage Certificates → "+" → Apple Development
+      #   2. Keychain Access → Zertifikat + privaten Schlüssel als .p12 exportieren
+      #   3. In developer.apple.com → Certificates → Provisioning Profiles →
+      #      "Development" Profil für dein Gerät (UDID) erstellen und herunterladen
+      #   4. base64: auf Mac: base64 -i datei.p12 | pbcopy
+      # ---------------------------------------------------------------------------
+      groups:
+        - ios_signing
+
+    scripts:
+      - name: Install xcodegen
+        script: brew install xcodegen
+
+      - name: Generate Xcode project
+        script: xcodegen generate --spec project.yml
+
+      - name: Install signing certificate
+        script: |
+          echo $CM_CERTIFICATE | base64 --decode > /tmp/certificate.p12
+          keychain initialize
+          keychain add-certificates --certificate /tmp/certificate.p12 \
+            --certificate-password "$CM_CERTIFICATE_PASSWORD"
+
+      - name: Install provisioning profile
+        script: |
+          echo $CM_PROVISIONING_PROFILE | base64 --decode > /tmp/profile.mobileprovision
+          keychain add-profiles --profile /tmp/profile.mobileprovision
+
+      - name: Build IPA
+        script: |
+          PROFILE_UUID=$(grep -a -A 1 'UUID' /tmp/profile.mobileprovision \
+            | grep string | sed 's/.*<string>\(.*\)<\/string>.*/\1/')
+          xcodebuild \
+            -project LehrerAgent.xcodeproj \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE="$PROFILE_UUID" \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            -archivePath build/LehrerAgent.xcarchive \
+            archive
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath build/LehrerAgent.xcarchive \
+            -exportOptionsPlist export_options.plist \
+            -exportPath build/ipa
+
+    artifacts:
+      - build/ipa/*.ipa
+
+    # ---------------------------------------------------------------------------
+    # IPA installieren (nach erfolgreichem Build):
+    #   Windows: Sideloadly (https://sideloadly.io) + USB-Kabel
+    #   Mac:     Apple Configurator 2 oder ideviceinstaller
+    #   Gültigkeit: 7 Tage (kostenloses Apple-Konto), danach neu signieren
+    # ---------------------------------------------------------------------------
