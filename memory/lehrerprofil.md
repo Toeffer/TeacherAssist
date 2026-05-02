@@ -4,6 +4,7 @@
 
 ## Persönliche Angaben
 - **Name:** (noch nicht eingerichtet)
+- **Meine Begleitung:** (noch nicht eingerichtet)
 - **Bundesland:** (noch nicht eingerichtet)
 - **Schulform:** (noch nicht eingerichtet)
 

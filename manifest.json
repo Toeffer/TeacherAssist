@@ -1,0 +1,29 @@
+{
+  "name": "LehrerAgent",
+  "short_name": "LehrerAgent",
+  "description": "Persönlicher KI-Assistent für den Schulalltag – Unterrichtsplanung, Bewertung, Korrektur",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1814",
+  "theme_color": "#d97757",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23d97757'/><text x='50' y='68' font-size='55' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'>📚</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "productivity"],
+  "lang": "de",
+  "shortcuts": [
+    {
+      "name": "Neue Anfrage",
+      "short_name": "Anfrage",
+      "description": "Direkt eine neue Anfrage starten",
+      "url": "/?action=chat",
+      "icons": [{ "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text x='50' y='68' font-size='55' font-family='system-ui' text-anchor='middle'>💬</text></svg>", "sizes": "96x96" }]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {"name": "onboarding", "folder": "onboarding", "triggers": ["start", "onboarding", "einrichtung", "profil", "neu hier"]},
+  {"name": "unterricht_planen", "folder": "unterricht_planen", "triggers": ["plane eine stunde", "unterrichtsstunde", "stundenentwurf", "unterricht vorbereiten", "lehrplan", "ich brauche eine stunde zu", "was kann ich mit klasse", "unterrichtsplanung"]},
+  {"name": "bewertung_erstellen", "folder": "bewertung_erstellen", "triggers": ["bewertung", "erwartungshorizont", "notenschlüssel", "benotung", "punkteverteilung", "bewertungsraster", "noten"]},
+  {"name": "arbeitsblatt_erstellen", "folder": "arbeitsblatt_erstellen", "triggers": ["arbeitsblatt", "aufgabenblatt", "übungsblatt", "aufgaben erstellen", "übungsaufgaben"]},
+  {"name": "pruefung_erstellen", "folder": "pruefung_erstellen", "triggers": ["klassenarbeit", "klausur", "prüfung", "test", "kurztest", "abschlussarbeit"]},
+  {"name": "elternbrief_schreiben", "folder": "elternbrief_schreiben", "triggers": ["elternbrief", "elternabend", "information an eltern", "rundschreiben", "brief an eltern", "elternmitteilung"]},
+  {"name": "zeugnis_formulieren", "folder": "zeugnis_formulieren", "triggers": ["zeugnis", "zeugnisformulierung", "jahreszeugnis", "halbjahreszeugnis", "zeugnisbemerkung"]},
+  {"name": "foerderplan_erstellen", "folder": "foerderplan_erstellen", "triggers": ["förderplan", "förderung", "lernschwäche", "nachteilsausgleich", "individuelle förderung"]},
+  {"name": "klassenstatistik", "folder": "klassenstatistik", "triggers": ["noten auswerten", "notenspiegel", "klassenstatistik", "klassenspiegel", "durchschnitt", "notenübersicht"]},
+  {"name": "reihenplanung", "folder": "reihenplanung", "triggers": ["unterrichtsreihe", "reihenplanung", "themeneinheit", "einheit planen", "mehrere stunden", "sequenz"]},
+  {"name": "jahresplanung", "folder": "jahresplanung", "triggers": ["jahresplanung", "stoffverteilung", "stoffverteilungsplan", "schuljahresplanung", "curriculum", "jahresübersicht"]},
+  {"name": "vertretungsstunde", "folder": "vertretungsstunde", "triggers": ["vertretungsstunde", "vertretung", "crashplan", "springstunde", "schnell eine stunde"]},
+  {"name": "lernzielkontrolle", "folder": "lernzielkontrolle", "triggers": ["lernzielkontrolle", "lernstandserhebung", "formativ", "kurzkontrolle", "diagnose"]},
+  {"name": "tafelbild_entwerfen", "folder": "tafelbild_entwerfen", "triggers": ["tafelbild", "whiteboard", "anschrieb", "tafelanschrieb", "visualisierung"]},
+  {"name": "klassenrat_protokoll", "folder": "klassenrat_protokoll", "triggers": ["klassenrat", "klassenrats", "protokoll", "tagesordnung klassenrat", "klassenregeln"]},
+  {"name": "lerntagebuch_feedback", "folder": "lerntagebuch_feedback", "triggers": ["lerntagebuch", "reflexion", "tagebucheintrag", "lernreflexion", "feedback tagebuch"]},
+  {"name": "schuelerarbeit_bewerten", "folder": "schuelerarbeit_bewerten", "triggers": ["schülerarbeit", "korrektur", "bewerten", "korrigieren", "schüleraufsatz", "schülertext"]},
+  {"name": "lehrplan_einlesen", "folder": "lehrplan_einlesen", "triggers": ["lehrplan einlesen", "lehrplan hochladen", "pdf lehrplan", "lehrplan importieren"]},
+  {"name": "methodenrotation", "folder": "methodenrotation", "triggers": ["methoden", "methodenwechsel", "neue methoden", "methodenvariation", "vielfältige methoden"]},
+  {"name": "lehrplan_coverage", "folder": "lehrplan_coverage", "triggers": ["lehrplan abdeckung", "was fehlt", "lehrplanlücke", "noch nicht behandelt", "lehrplan check"]}
+]

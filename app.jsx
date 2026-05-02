@@ -15,9 +15,9 @@ const ONBOARDING_STEPS = [
   },
   {
     id: 'name',
-    bot: 'Wie darf ich dich nennen? (Optional – du kannst auch einfach Enter drücken)',
+    bot: 'Wie darf ich dich nennen? Und wie soll ich heißen?\n\nSchreib z.B. "Ich bin Sabine, du bist Klara"\n– oder einfach nur deinen Namen.',
     field: 'name',
-    placeholder: 'Dein Name…',
+    placeholder: 'Dein Name oder "Ich bin …, du bist …"',
     phase: 2,
   },
   {
@@ -71,6 +71,69 @@ const ONBOARDING_STEPS = [
     phase: 3,
   },
 ];
+
+/* ---------- Zeitbasierte Begrüßung ---------- */
+function getTimeBasedGreeting(teacherName, asstName) {
+  const now = new Date();
+  const hour = now.getHours();
+  const day = now.getDay(); // 0=So, 1=Mo, ..., 5=Fr, 6=Sa
+  const month = now.getMonth(); // 0=Jan, ..., 5=Jun, 6=Jul, 11=Dez
+  const asst = asstName || 'Klara';
+  const prefix = teacherName ? `${teacherName}, ` : '';
+
+  let greeting = '';
+  if (hour < 10) greeting = 'Guten Morgen';
+  else if (hour < 14) greeting = 'Guten Tag';
+  else if (hour < 18) greeting = 'Guten Nachmittag';
+  else greeting = 'Guten Abend';
+
+  let moodLine = '';
+
+  // Wochentag
+  if (day === 5) moodLine = 'Endlich Freitag!';
+  else if (day === 1) moodLine = 'Auf in eine neue Woche!';
+
+  // Ferien / besondere Zeiten
+  if (month === 6 || month === 7) moodLine = moodLine || 'Nicht mehr lang bis zu den Sommerferien – du schaffst das!';
+  else if (month === 11) moodLine = moodLine || 'Noch ein paar Wochen bis Weihnachten – durchhalten!';
+  else if (month === 0) moodLine = moodLine || 'Frohes neues Jahr! Ich hoffe, du hattest schöne Ferien.';
+
+  let msg = `${greeting}, ${prefix}ich bin ${asst} 👋\n\nSchön, dass du da bist.`;
+  if (moodLine) msg += `\n\n${moodLine}`;
+  msg += `\n\nLass uns dein Profil kurz einrichten – dann kann ich dir im Schulalltag richtig helfen.`;
+  return msg;
+}
+
+/* ---------- Name-Parsing für "Ich bin X, du bist Y" ---------- */
+function parseNameInput(raw) {
+  if (!raw || !raw.trim()) return { name: '', assistant_name: '' };
+  const text = raw.trim();
+
+  // Muster: "Ich bin X, du bist Y"
+  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*und?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+))?\s*$/i);
+  if (m) {
+    return {
+      name: m[1].trim(),
+      assistant_name: m[2] ? m[2].trim() : '',
+    };
+  }
+
+  // Muster: "X, und du bist Y" oder "X – du Y"
+  const m2 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*[,–\-—]+\s*du\s*(?:bist|heißt)?\s*([a-zA-ZäöüÄÖÜß\-]+)\s*$/i);
+  if (m2) {
+    return {
+      name: m2[1].trim(),
+      assistant_name: m2[2].trim(),
+    };
+  }
+
+  // Nur ein Name → nur Lehrkraft-Name, assistant_name bleibt bestehen
+  if (text.length <= 40 && !/[\s]{3,}/.test(text) && !text.includes('?')) {
+    return { name: text, assistant_name: '' };
+  }
+
+  return { name: text, assistant_name: '' };
+}
 
 /* ---------- Onboarding: Frage-Erkennung & FAQ ---------- */
 function isOnboardingQuestion(text) {
@@ -195,120 +258,17 @@ function normalizeFachname(entry) {
   return m[1].charAt(0).toUpperCase() + m[1].slice(1) + rest;
 }
 
-/* ---------- DSGVO: Personenbezogene Daten erkennen & anonymisieren ---------- */
-function detectPersonalData(text) {
-  const findings = [];
-  // E-Mail-Adressen
-  if (/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(text))
-    findings.push({ type: 'E-Mail-Adresse', auto: true });
-  // Telefonnummern (deutsche Formate)
-  if (/(\+49[\s\-]?|0049[\s\-]?|0\d{2,5}[\s\-\/])\d[\d\s\-\/]{4,}/.test(text))
-    findings.push({ type: 'Telefonnummer', auto: true });
-  // Geburtsdatum (nur wenn im Kontext von "geboren" / "Geburtstag" / "geb.")
-  if (/(geb\b\.?|geboren|geburtstag|geburtsdatum)/i.test(text) &&
-      /\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b/.test(text))
-    findings.push({ type: 'Geburtsdatum', auto: true });
-  // Möglicher Personenname nach typischen Schlüsselwörtern
-  if (/(schüler[in]?|lernende[r]?|kind|elternteil?|sohn|tochter|sus)\s+(von\s+)?[A-ZÄÖÜ][a-zäöüß]{2,}(\s+[A-ZÄÖÜ][a-zäöüß]{2,})?/i.test(text) ||
-      /\b(heißt|namens|vorname|nachname|familienname|name:)\s+[A-ZÄÖÜ][a-zäöüß]{2,}/i.test(text))
-    findings.push({ type: 'Möglicher Personenname', auto: false });
-  return findings;
-}
-
-function anonymizeText(text) {
-  let r = text;
-  r = r.replace(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, '[E-Mail]');
-  r = r.replace(/(\+49[\s\-]?|0049[\s\-]?|0\d{2,5}[\s\-\/])\d[\d\s\-\/]{4,}/g, '[Telefon]');
-  if (/(geb\b\.?|geboren|geburtstag|geburtsdatum)/i.test(r))
-    r = r.replace(/\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b/g, '[Datum]');
-  return r;
-}
-
-/* ---------- System Prompt ---------- */
-function buildSystemPrompt(profile) {
-  const lines = [
-    'Du bist TeacherAssist, ein KI-Assistent speziell für deutsche Lehrkräfte.',
-    'Du hilfst professionell-kollegial bei Unterrichtsplanung, Bewertungserstellung, Schülerkorrektur und Lehrplanfragen.',
-    '',
-    '## Grundprinzipien',
-    '- Du machst Vorschläge – die Lehrkraft entscheidet immer selbst.',
-    '- Ton: professionell-kollegial, wie ein erfahrener Kollege.',
-    '- Bewertungen immer als "Vorschlag" kennzeichnen.',
-    '- AFB-Verteilung bei Aufgaben: ~30% AFB I (Reproduktion) / ~40% AFB II (Reorganisation) / ~30% AFB III (Transfer).',
-    '- Zeitangaben in Stundenentwürfen: Einstieg max. 10 Min., Sicherung min. 5 Min.',
-    '- Lehrplanbezüge ohne eindeutige Quelle mit [*] markieren.',
-    '- Keine Schülernamen verwenden (DSGVO) – bei Bedarf SuS-01, SuS-02 etc.',
-    '- Alle Antworten auf Deutsch.',
-    '- Antworte strukturiert mit Markdown (##, - Listen, **fett**) für bessere Lesbarkeit.',
-  ];
-
-  if (profile && Object.keys(profile).length > 0) {
-    lines.push('', '## Lehrerprofil');
-    if (profile.name) lines.push(`- Name: ${profile.name}`);
-    if (profile.bundesland) lines.push(`- Bundesland: ${profile.bundesland}`);
-    if (profile.schulform === 'Gemeinschaftsschule') {
-      lines.push('- Schulform: Gemeinschaftsschule (kombiniert Gymnasium-Zweig & Regelschul-Zweig)');
-      lines.push('- Beim Planen und Bewerten immer beide Zweige berücksichtigen, sofern kein konkreter Zweig genannt wird.');
-      lines.push('  Lehrplaninhalte sind in der Wissensdatenbank mit dem Präfix "Gymnasium –" bzw. "Regelschule –" gespeichert; diese Kennzeichnung ist in den RAG-Ergebnissen sichtbar.');
-    } else if (profile.schulform) {
-      lines.push(`- Schulform: ${profile.schulform}`);
-    }
-    if (profile.faecher?.length) lines.push(`- Fächer & Klassen: ${profile.faecher.join(', ')}`);
-    if (profile.besonderheiten) lines.push(`- Klassenbesonderheiten: ${profile.besonderheiten}`);
-    if (profile.methoden) lines.push(`- Bevorzugte Methoden: ${profile.methoden}`);
-  }
-
-  return lines.join('\n');
-}
-
-/* ---------- RAG-Kontext aus Tool-Server ---------- */
-async function fetchRagContext(query) {
-  try {
-    const res = await fetch(
-      `http://localhost:8789/search?q=${encodeURIComponent(query)}&limit=4`,
-      { signal: AbortSignal.timeout(3000) }
-    );
-    if (!res.ok) return '';
-    const { results } = await res.json();
-    if (!results?.length) return '';
-    const blocks = results.map(r => `[Quelle: ${r.source}]\n${r.text}`).join('\n\n---\n\n');
-    return `\n\n## Relevante Lehrplaninhalte (automatisch eingeblendet)\n${blocks}`;
-  } catch {
-    return '';
-  }
-}
-
-/* ---------- LLM API (OpenRouter & Ollama) ---------- */
-async function callLLM(chatMessages, profile, apiKey, model, onChunk, ragContext = '', provider = 'openrouter', ollamaModel = 'gemma3:4b', onUsage = null) {
-  const isOllama = provider === 'ollama';
-  const endpoint = isOllama
-    ? 'http://localhost:11434/v1/chat/completions'
-    : 'https://openrouter.ai/api/v1/chat/completions';
-  const activeModel = isOllama ? ollamaModel : model;
-
-  const apiMessages = [
-    { role: 'system', content: buildSystemPrompt(profile) + ragContext },
-    ...chatMessages
-      .filter(m => m.text && m.text.trim())
-      .map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.text })),
-  ];
-
-  const headers = { 'Content-Type': 'application/json' };
-  if (!isOllama) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-    headers['HTTP-Referer'] = 'http://localhost:8788';
-    headers['X-Title'] = 'TeacherAssist';
-  }
-
-  const response = await fetch(endpoint, {
+/* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
+async function callChatViaServer(messages, profile, onChunk, onMeta) {
+  const response = await fetch('http://localhost:8789/chat', {
     method: 'POST',
-    headers,
-    body: JSON.stringify({ model: activeModel, messages: apiMessages, stream: true }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, profile }),
   });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `HTTP-Fehler ${response.status}`);
+    throw new Error(err.error || `Server-Fehler ${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -324,13 +284,20 @@ async function callLLM(chatMessages, profile, apiKey, model, onChunk, ragContext
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6).trim();
-      if (data === '[DONE]') return;
       try {
         const parsed = JSON.parse(data);
-        const content = parsed.choices?.[0]?.delta?.content;
-        if (content) onChunk(content);
-        if (parsed.usage && onUsage) onUsage(parsed.usage);
-      } catch {}
+        switch (parsed.type) {
+          case 'chunk': onChunk(parsed.text); break;
+          case 'usage': if (onMeta) onMeta('usage', parsed.usage); break;
+          case 'dsgvo_warning': if (onMeta) onMeta('dsgvo', parsed); break;
+          case 'skill': if (onMeta) onMeta('skill', parsed); break;
+          case 'provider': if (onMeta) onMeta('provider', parsed); break;
+          case 'error': throw new Error(parsed.message);
+          case 'done': return;
+        }
+      } catch (e) {
+        if (e.message && !e.message.startsWith('Server-')) throw e;
+      }
     }
   }
 }
@@ -347,7 +314,10 @@ function App() {
   });
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [profile, setProfile] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('ta_profile')) || {}; } catch { return {}; }
+    try {
+      const saved = JSON.parse(localStorage.getItem('ta_profile')) || {};
+      return { assistant_name: 'Klara', ...saved };
+    } catch { return { assistant_name: 'Klara' }; }
   });
   const [chats, setChats] = useState(() => {
     try {
@@ -371,7 +341,6 @@ function App() {
   const [apiKeyModalDismissed, setApiKeyModalDismissed] = useState(false);
   const [toolStatus, setToolStatus] = useState('unknown');
   const [ragDocCount, setRagDocCount] = useState(0);
-  const [dsgvoCheck, setDsgvoCheck] = useState(null);
   const [provider, setProvider] = useState(() => localStorage.getItem('ta_provider') || 'openrouter');
   const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ta_ollama_model') || 'gemma3:4b');
   const [ollamaStatus, setOllamaStatus] = useState('unknown');
@@ -459,7 +428,8 @@ function App() {
 
   useEffect(() => {
     if (!onboardingDone && activeChat.messages.length === 0) {
-      addBotMessage(ONBOARDING_STEPS[0].bot);
+      const greeting = getTimeBasedGreeting(profile.name, profile.assistant_name);
+      addBotMessage(greeting, 400);
     }
   }, [activeChatId]);
 
@@ -486,14 +456,7 @@ function App() {
     if (!text || isStreaming || isTyping) return;
     setInputValue('');
 
-    // DSGVO-Sperre: nur prüfen wenn Daten tatsächlich die Cloud erreichen würden
-    if (!skipDsgvo && onboardingDone && effectiveProvider === 'openrouter' && apiKey) {
-      const findings = detectPersonalData(text);
-      if (findings.length > 0) {
-        setDsgvoCheck({ text, findings });
-        return;
-      }
-    }
+    // DSGVO-Prüfung jetzt serverseitig (Tool-Server filtert automatisch)
 
     const userMsg = { role: 'user', text, ts: Date.now() };
     addMessage(activeChatId, userMsg);
@@ -511,12 +474,9 @@ function App() {
           setIsTyping(true);
           let answer = '';
           try {
-            await callLLM(
+            await callChatViaServer(
               [{ role: 'user', text }], {},
-              apiKey, model,
-              chunk => { answer += chunk; },
-              '\n\nHinweis: Beantworte die Rückfrage kurz und hilfreich; weise dann darauf hin, dass das Profil noch fertig eingerichtet werden muss.',
-              provider, ollamaModel
+              chunk => { answer += chunk; }
             );
           } catch { answer = 'Das beantworte ich gerne – lass uns aber erst das Profil abschließen!'; }
           setIsTyping(false);
@@ -538,6 +498,13 @@ function App() {
           setProfile(p => ({ ...p, bundesland: normalizeBundesland(raw) }));
         } else if (step.field === 'schulform') {
           setProfile(p => ({ ...p, schulform: normalizeSchulform(raw) }));
+        } else if (step.field === 'name') {
+          const parsed = parseNameInput(raw);
+          setProfile(p => ({
+            ...p,
+            name: parsed.name || raw,
+            assistant_name: parsed.assistant_name || p.assistant_name || 'Klara',
+          }));
         } else {
           setProfile(p => ({ ...p, [step.field]: raw }));
         }
@@ -595,20 +562,19 @@ function App() {
     setIsStreaming(true);
     setStreamingText('');
 
-    const ragContext = toolStatus === 'online' && ragDocCount > 0 ? await fetchRagContext(text) : '';
-
     let fullText = '';
     try {
-      await callLLM(currentMessages, profile, apiKey, model, (chunk) => {
+      await callChatViaServer(currentMessages, profile, (chunk) => {
         fullText += chunk;
         setStreamingText(fullText);
-      }, ragContext, effectiveProvider, ollamaModel, (usage) => {
-        setSessionTokens(n => n + (usage.total_tokens || 0));
+      }, (type, data) => {
+        if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
+        else if (type === 'dsgvo' && data.message) {
+          addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
+        }
       });
     } catch (err) {
-      fullText = effectiveProvider === 'ollama'
-        ? `⚠️ Ollama-Fehler: ${err.message}\n\nLäuft Ollama noch? Prüfe die Einstellungen.`
-        : `⚠️ Fehler bei der API-Anfrage: ${err.message}\n\nBitte prüfe deinen API-Key in den Einstellungen.`;
+      fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
     }
 
     setIsStreaming(false);
@@ -780,13 +746,6 @@ function App() {
   }, [activeChatId]);
 
   const handleExport = useCallback((text) => {
-    const findings = detectPersonalData(text);
-    const hasNames = findings.some(f => f.type === 'Möglicher Personenname');
-    if (hasNames && !window.confirm(
-      'Mögliche Schüler- oder Personennamen erkannt.\n\n' +
-      'Exportierte Dateien können auf anderen Geräten gespeichert werden – bitte prüfe, ob du alle Namen entfernt hast.\n\n' +
-      'Trotzdem exportieren?'
-    )) return;
     openPrintWindow(text, 'TeacherAssist Export');
   }, []);
 
@@ -878,6 +837,7 @@ function App() {
         onNavigate={handleNavigate}
         currentView={currentView}
         dark={dark} onToggleDark={() => setDark(d => !d)}
+        assistantName={profile.assistant_name || 'Klara'}
       />
 
       <header style={{
@@ -892,19 +852,20 @@ function App() {
         }}>
           {Icons.menu}
         </button>
-        <BotAvatar size={30} />
+        <BotAvatar size={30} name={profile.assistant_name || 'Klara'} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>TeacherAssist</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>{profile.assistant_name || 'Klara'}</div>
           {(() => {
+            const namePrefix = (profile.assistant_name || 'Klara');
             const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : !!apiKey);
-            const label = isStreaming ? 'antwortet…' : isTyping ? 'schreibt…'
+            const label = isStreaming ? namePrefix + ' · antwortet…' : isTyping ? namePrefix + ' · schreibt…'
               : isFallbackActive
                 ? (provider === 'openrouter'
                     ? '⚠ OpenRouter offline · 🔒 Ollama Fallback'
                     : '⚠ Ollama offline · ☁️ OpenRouter Fallback')
                 : provider === 'ollama'
-                  ? ollamaStatus === 'online' ? '🔒 Lokal · Ollama' : '⚠ Ollama offline'
-                  : apiKey ? 'Online' : '⚠ API-Key fehlt';
+                  ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : '⚠ Ollama offline'
+                  : apiKey ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
             const color = isStreaming || isTyping ? 'var(--text-tertiary)'
               : isFallbackActive ? '#d97706'
               : isActive ? (provider === 'ollama' ? '#2a9d5c' : 'var(--accent)') : 'var(--danger)';
@@ -938,26 +899,6 @@ function App() {
         />
       )}
 
-      {dsgvoCheck && (
-        <DsgvoWarningModal
-          findings={dsgvoCheck.findings}
-          onAnonymize={() => {
-            const safe = anonymizeText(dsgvoCheck.text);
-            setDsgvoCheck(null);
-            handleSend(safe, true);
-          }}
-          onProceed={() => {
-            const txt = dsgvoCheck.text;
-            setDsgvoCheck(null);
-            handleSend(txt, true);
-          }}
-          onCancel={() => {
-            setInputValue(dsgvoCheck.text);
-            setDsgvoCheck(null);
-          }}
-        />
-      )}
-
       {currentView === 'chat' ? (
         <>
           <div ref={chatContainerRef} style={{
@@ -965,12 +906,12 @@ function App() {
             display: 'flex', flexDirection: 'column', gap: 14,
           }}>
             {activeChat.messages.map((msg, i) => (
-              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} onExport={msg.role === 'bot' ? handleExport : undefined} />
+              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} onExport={msg.role === 'bot' ? handleExport : undefined} assistantName={profile.assistant_name || 'Klara'} />
             ))}
             {isStreaming && (
-              <ChatBubble message={streamingText} isBot isTyping={!streamingText} />
+              <ChatBubble message={streamingText} isBot isTyping={!streamingText} assistantName={profile.assistant_name || 'Klara'} />
             )}
-            {isTyping && !isStreaming && <ChatBubble isBot isTyping />}
+            {isTyping && !isStreaming && <ChatBubble isBot isTyping assistantName={profile.assistant_name || 'Klara'} />}
             {showQuickReplies && (
               <QuickReplies options={currentOnboardingStep.quickReplies} onSelect={handleQuickReply} />
             )}

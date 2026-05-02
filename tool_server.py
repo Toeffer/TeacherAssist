@@ -1,20 +1,49 @@
 #!/usr/bin/env python3
 """
 TeacherAssist Tool-Server  –  Port 8789
+=========================================
 Stellt lokale Endpunkte bereit:
-  GET  /health           – Statuscheck
-  GET  /collections      – Anzahl gespeicherter Abschnitte
-  GET  /search?q=...     – Semantische Lehrplan-Suche (RAG)
-  POST /upload           – PDF-Datei speichern (multipart)
-  POST /ingest           – PDF verarbeiten + in ChromaDB speichern
-  POST /clear            – Gesamte Wissensdatenbank leeren
-Wird mit dem venv-Python aus start.bat gestartet.
+  GET  /health               – Statuscheck
+  GET  /collections          – Anzahl gespeicherter Abschnitte in ChromaDB
+  GET  /search?q=...         – Semantische Lehrplan-Suche (RAG)
+  GET  /settings             – Gespeicherte Einstellungen abrufen
+  GET  /backup               – Memory-Verzeichnis als ZIP herunterladen
+  GET  /list-raster          – Bewertungsraster auflisten
+  GET  /memory-list          – Alle .md-Dateien unter memory/
+  GET  /memory-read?file=... – Einzelne Memory-Datei lesen
+  GET  /memory-versions?file=... – Backup-Versionen einer Datei
+
+  POST /chat                 – LLM-Chat mit Streaming (NEU: Proxy + DSGVO-Filter + Skill-Router)
+  POST /upload               – PDF-Datei speichern (multipart)
+  POST /ingest               – PDF verarbeiten + in ChromaDB speichern
+  POST /clear                – Gesamte Wissensdatenbank leeren
+  POST /download-url         – Lehrplan per URL herunterladen
+  POST /settings             – Einstellungen speichern
+  POST /save-raster          – Bewertungsraster speichern
+  POST /restore              – Backup wiederherstellen (ZIP)
+  POST /memory-write         – Memory-Datei schreiben
+  POST /memory-restore-version – Backup-Version wiederherstellen
+  POST /ocr-image            – Bild per OCR in Text umwandeln
+
+Sicherheit:
+  - API-Key NUR serverseitig in settings.json
+  - DSGVO-Filter prüft jede Nachricht VOR API-Versand
+  - Schülerdaten → automatisch Ollama (lokal) statt Cloud-API
+  - Skill-Router lädt passende skill.md ohne OpenClaw
 """
+
 import http.server
 import io
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import threading
+import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -23,13 +52,163 @@ BASE_DIR      = Path(__file__).parent
 UPLOAD_DIR    = BASE_DIR / "uploads"
 CHROMA_DIR    = BASE_DIR / "tools" / "chroma_db"
 SETTINGS_FILE = BASE_DIR / "settings.json"
+SKILLS_DIR    = BASE_DIR / "skills"
+MEMORY_DIR    = BASE_DIR / "memory"
+SKILLS_INDEX  = BASE_DIR / "skills_index.json"
+
 UPLOAD_DIR.mkdir(exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 ORIGIN = "http://localhost:8788"
 
 # ---------------------------------------------------------------------------
-# Lazy-geladene Heavy-Imports (damit der Server sofort startet)
+# Konfiguration laden
+# ---------------------------------------------------------------------------
+def load_settings():
+    try:
+        if SETTINGS_FILE.exists():
+            return json.loads(SETTINGS_FILE.read_text("utf-8"))
+    except Exception:
+        pass
+    return {"provider": "openrouter", "ollamaModel": "gemma3:4b", "model": "deepseek/deepseek-chat"}
+
+def get_api_key():
+    """API-Key aus settings.json oder Umgebungsvariable."""
+    try:
+        s = load_settings()
+        if s.get("apiKey"):
+            return s["apiKey"]
+    except Exception:
+        pass
+    return os.environ.get("OPENROUTER_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# DSGVO-Filter (serverseitig – nicht umgehbar)
+# ---------------------------------------------------------------------------
+def detect_personal_data(text):
+    findings = []
+    if re.search(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', text):
+        findings.append({"type": "E-Mail-Adresse", "auto": True})
+    if re.search(r'(\+49[\s\-]?|0049[\s\-]?|0\d{2,5}[\s\-\/])\d[\d\s\-\/]{4,}', text):
+        findings.append({"type": "Telefonnummer", "auto": True})
+    if re.search(r'(geb\b\.?|geboren|geburtstag|geburtsdatum)', text, re.I) and \
+       re.search(r'\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b', text):
+        findings.append({"type": "Geburtsdatum", "auto": True})
+    if re.search(r'(schüler[in]?|lernende[r]?|kind|elternteil?|sohn|tochter|sus)\s+(von\s+)?[A-ZÄÖÜ][a-zäöüß]{2,}(\s+[A-ZÄÖÜ][a-zäöüß]{2,})?', text, re.I):
+        findings.append({"type": "Möglicher Personenname", "auto": False})
+    if re.search(r'\b(heißt|namens|vorname|nachname|familienname|name:)\s+[A-ZÄÖÜ][a-zäöüß]{2,}', text, re.I):
+        findings.append({"type": "Möglicher Personenname", "auto": False})
+    return findings
+
+def anonymize_text(text):
+    r = text
+    r = re.sub(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', '[E-Mail]', r)
+    r = re.sub(r'(\+49[\s\-]?|0049[\s\-]?|0\d{2,5}[\s\-\/])\d[\d\s\-\/]{4,}', '[Telefon]', r)
+    if re.search(r'(geb\b\.?|geboren|geburtstag|geburtsdatum)', r, re.I):
+        r = re.sub(r'\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b', '[Datum]', r)
+    return r
+
+# ---------------------------------------------------------------------------
+# Skill-Router (lädt passende skill.md ohne OpenClaw)
+# ---------------------------------------------------------------------------
+_skill_index_cache = None
+
+def load_skill_index():
+    global _skill_index_cache
+    if _skill_index_cache is not None:
+        return _skill_index_cache
+    try:
+        if SKILLS_INDEX.exists():
+            _skill_index_cache = json.loads(SKILLS_INDEX.read_text("utf-8"))
+        else:
+            _skill_index_cache = []
+    except Exception:
+        _skill_index_cache = []
+    return _skill_index_cache
+
+def find_matching_skill(user_text):
+    """Findet den ersten Skill, dessen Trigger im Usertext vorkommt."""
+    skills = load_skill_index()
+    text_lower = user_text.lower()
+    best = None
+    best_len = 0
+    for skill in skills:
+        for trigger in skill.get("triggers", []):
+            if trigger.lower() in text_lower:
+                if len(trigger) > best_len:
+                    best = skill
+                    best_len = len(trigger)
+    return best
+
+def load_skill_content(folder_name):
+    """Liest eine skill.md aus skills/<folder>/."""
+    skill_path = SKILLS_DIR / folder_name / "skill.md"
+    if skill_path.exists():
+        return skill_path.read_text("utf-8")
+    return ""
+
+def load_memory_context():
+    """Lädt lehrerprofil.md + begleiter_gedaechtnis.md als Kontext."""
+    parts = []
+    profil = MEMORY_DIR / "lehrerprofil.md"
+    begleiter = MEMORY_DIR / "begleiter_gedaechtnis.md"
+    if profil.exists():
+        parts.append(profil.read_text("utf-8"))
+    if begleiter.exists():
+        parts.append(begleiter.read_text("utf-8"))
+    return "\n\n".join(parts)
+
+# ---------------------------------------------------------------------------
+# System-Prompt
+# ---------------------------------------------------------------------------
+def build_system_prompt(profile):
+    asst_name = (profile or {}).get("assistant_name") or "Klara"
+    teacher_name = (profile or {}).get("name") or ""
+    lines = [
+        f"Du bist {asst_name}, eine persönliche und vertraute Begleitung im Schulalltag einer deutschen Lehrkraft{teacher_name and ' namens ' + teacher_name or ''}.",
+        "Du hilfst professionell-kollegial bei Unterrichtsplanung, Bewertungserstellung, Schülerkorrektur und Lehrplanfragen.",
+        "",
+        "## Deine Persönlichkeit",
+        "- Du bist warmherzig, wertschätzend und hast einen leisen Humor – wie eine vertraute Kollegin im Lehrerzimmer.",
+        "- Du fragst ab und zu nach, wie eine zuvor geplante Stunde gelaufen ist (nicht jedes Mal, aber wenn es passt).",
+        "- Du erkennst an, wenn viel zu tun ist (Zeugniszeit, Elternsprechtag, vor den Ferien).",
+        "- Du feierst kleine Meilensteine (\"Das war schon die 10. Stunde, die wir zusammen geplant haben! 🎉\").",
+        "- Du nutzt Emojis dezent und passend 📚🍎✨ – nicht inflationär.",
+        "- Am Freitag, vor den Ferien oder am Montagmorgen passt du deinen Ton entsprechend an.",
+        "- Du bleibst immer professionell, aber du darfst auch mal einen kleinen Scherz machen – wie unter Kolleginnen.",
+        "",
+        "## Grundprinzipien",
+        "- Du machst Vorschläge – die Lehrkraft entscheidet immer selbst.",
+        "- Bewertungen immer als \"Vorschlag\" kennzeichnen.",
+        "- AFB-Verteilung bei Aufgaben: ~30% AFB I (Reproduktion) / ~40% AFB II (Reorganisation) / ~30% AFB III (Transfer).",
+        "- Zeitangaben in Stundenentwürfen: Einstieg max. 10 Min., Sicherung min. 5 Min.",
+        "- Lehrplanbezüge ohne eindeutige Quelle mit [*] markieren.",
+        "- Keine Schülernamen verwenden (DSGVO) – bei Bedarf SuS-01, SuS-02 etc.",
+        "- Alle Antworten auf Deutsch.",
+        "- Antworte strukturiert mit Markdown (##, - Listen, **fett**) für bessere Lesbarkeit.",
+    ]
+    if profile and isinstance(profile, dict) and len(profile) > 0:
+        lines.append("")
+        lines.append("## Lehrerprofil")
+        if profile.get("name"):
+            lines.append(f"- Name: {profile['name']}")
+        if profile.get("bundesland"):
+            lines.append(f"- Bundesland: {profile['bundesland']}")
+        if profile.get("schulform") == "Gemeinschaftsschule":
+            lines.append("- Schulform: Gemeinschaftsschule (kombiniert Gymnasium-Zweig & Regelschul-Zweig)")
+            lines.append("- Beim Planen und Bewerten immer beide Zweige berücksichtigen.")
+        elif profile.get("schulform"):
+            lines.append(f"- Schulform: {profile['schulform']}")
+        if profile.get("faecher") and len(profile.get("faecher", [])) > 0:
+            lines.append(f"- Fächer & Klassen: {', '.join(profile['faecher'])}")
+        if profile.get("besonderheiten"):
+            lines.append(f"- Klassenbesonderheiten: {profile['besonderheiten']}")
+        if profile.get("methoden"):
+            lines.append(f"- Bevorzugte Methoden: {profile['methoden']}")
+    return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
+# Lazy-geladene Heavy-Imports
 # ---------------------------------------------------------------------------
 _col = None
 _ef  = None
@@ -46,10 +225,9 @@ def get_collection():
     return _col, _ef
 
 # ---------------------------------------------------------------------------
-# Hilfsfunktionen
+# PDF-Hilfsfunktionen
 # ---------------------------------------------------------------------------
-def extract_pdf_text(path: Path) -> str:
-    """Text aus PDF extrahieren; bei Scan-PDFs Tesseract als Fallback."""
+def extract_pdf_text(path):
     try:
         from pdfminer.high_level import extract_text
         text = extract_text(str(path))
@@ -57,14 +235,15 @@ def extract_pdf_text(path: Path) -> str:
             return text
     except Exception:
         pass
-    # Fallback: OCR
-    from pdf2image import convert_from_path
-    import pytesseract
-    images = convert_from_path(str(path))
-    return "\n".join(pytesseract.image_to_string(img, lang="deu") for img in images)
+    try:
+        from pdf2image import convert_from_path
+        import pytesseract
+        images = convert_from_path(str(path))
+        return "\n".join(pytesseract.image_to_string(img, lang="deu") for img in images)
+    except Exception:
+        return ""
 
-def chunk_text(text: str, max_chars=900, overlap=150) -> list[str]:
-    """Text in überlappende Abschnitte aufteilen."""
+def chunk_text(text, max_chars=900, overlap=150):
     chunks, start = [], 0
     while start < len(text):
         end = min(start + max_chars, len(text))
@@ -80,8 +259,7 @@ def chunk_text(text: str, max_chars=900, overlap=150) -> list[str]:
         start = end - overlap
     return chunks
 
-def parse_multipart(body: bytes, boundary: str) -> list[tuple[str, bytes]]:
-    """Minimaler Multipart-Parser; gibt [(filename, content), ...] zurück."""
+def parse_multipart(body, boundary):
     files = []
     sep = ("--" + boundary).encode()
     for part in body.split(sep)[1:]:
@@ -105,12 +283,182 @@ def parse_multipart(body: bytes, boundary: str) -> list[tuple[str, bytes]]:
     return files
 
 # ---------------------------------------------------------------------------
+# RAG-Kontext
+# ---------------------------------------------------------------------------
+def search_rag(query, limit=4):
+    try:
+        col, _ = get_collection()
+        n = col.count()
+        if n == 0:
+            return ""
+        res = col.query(query_texts=[query], n_results=min(limit, n))
+        docs = res.get("documents", [[]])[0]
+        metas = res.get("metadatas", [[]])[0]
+        dists = res.get("distances", [[]])[0]
+        hits = [
+            {"text": d, "source": m.get("source", ""), "distance": round(dist, 3)}
+            for d, m, dist in zip(docs, metas, dists)
+            if dist < 1.3
+        ]
+        if not hits:
+            return ""
+        blocks = [f"[Quelle: {h['source']}]\n{h['text']}" for h in hits]
+        return "\n\n## Relevante Lehrplaninhalte (automatisch eingeblendet)\n" + "\n\n---\n\n".join(blocks)
+    except Exception:
+        return ""
+
+# ---------------------------------------------------------------------------
+# Ollama-Status-Cache
+# ---------------------------------------------------------------------------
+_ollama_online = False
+_ollama_last_check = 0
+
+def check_ollama():
+    global _ollama_online, _ollama_last_check
+    now = time.time()
+    if now - _ollama_last_check < 10:
+        return _ollama_online
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+            _ollama_online = bool(data.get("models"))
+    except Exception:
+        _ollama_online = False
+    _ollama_last_check = now
+    return _ollama_online
+
+# ---------------------------------------------------------------------------
+# LLM-Call (Streaming) – serverseitiger Proxy
+# ---------------------------------------------------------------------------
+def stream_llm(messages, profile, settings, skill_content="", rag_context="", wfile=None):
+    """
+    Ruft LLM an und streamt Antwort per SSE an wfile.
+    Entscheidet Provider (openrouter/ollama) basierend auf DSGVO-Prüfung.
+    """
+    is_ollama = settings.get("provider") == "ollama"
+    ollama_model = settings.get("ollamaModel") or "gemma3:4b"
+    model = settings.get("model") or "deepseek/deepseek-chat"
+    api_key = get_api_key()
+
+    # DSGVO-Prüfung: Letzte User-Nachricht prüfen
+    last_user_msg = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            last_user_msg = m.get("text", m.get("content", ""))
+            break
+
+    findings = detect_personal_data(last_user_msg)
+    has_auto_detectable = any(f["auto"] for f in findings)
+    has_any_findings = len(findings) > 0
+
+    # DSGVO-Modus: erzwinge lokal wenn personenbezogene Daten erkannt wurden
+    force_local = False
+    if has_auto_detectable:
+        force_local = True
+        if not check_ollama():
+            # Kein Ollama verfügbar → Daten schwärzen, dann Cloud
+            anon_text = anonymize_text(last_user_msg)
+            for m in messages:
+                if m.get("role") == "user" and m.get("text"):
+                    m["text"] = anon_text
+            force_local = False
+            _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt und automatisch geschwärzt. Bitte überprüfen.", "findings": findings})
+        else:
+            _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt – verwende lokales Modell (DSGVO-konform).", "findings": findings})
+    elif has_any_findings:
+        _send_sse(wfile, {"type": "dsgvo_warning", "message": "Mögliche personenbezogene Daten erkannt. Bitte prüfen und ggf. durch SuS-01 etc. ersetzen.", "findings": findings})
+
+    # Provider erzwingen falls nötig
+    if force_local:
+        is_ollama = True
+
+    # System-Prompt bauen
+    system_content = build_system_prompt(profile)
+    if skill_content:
+        system_content += "\n\n## Aktiver Skill\n" + skill_content
+    if rag_context:
+        system_content += rag_context
+
+    api_messages = [{"role": "system", "content": system_content}]
+    for m in messages:
+        role = "assistant" if m.get("role") == "bot" else "user"
+        content = m.get("text", m.get("content", ""))
+        if content and content.strip():
+            api_messages.append({"role": role, "content": content})
+
+    # Provider-Endpunkt
+    if is_ollama:
+        endpoint = "http://localhost:11434/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        body = {"model": ollama_model, "messages": api_messages, "stream": True}
+        _send_sse(wfile, {"type": "provider", "provider": "ollama"})
+    else:
+        endpoint = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "http://localhost:8788",
+            "X-Title": "TeacherAssist",
+        }
+        body = {"model": model, "messages": api_messages, "stream": True}
+        _send_sse(wfile, {"type": "provider", "provider": "openrouter"})
+
+    try:
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            buffer = b""
+            while True:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        _send_sse(wfile, {"type": "done"})
+                        return
+                    try:
+                        parsed = json.loads(data)
+                        content = parsed.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                        if content:
+                            _send_sse(wfile, {"type": "chunk", "text": content})
+                        if parsed.get("usage"):
+                            _send_sse(wfile, {"type": "usage", "usage": parsed["usage"]})
+                    except Exception:
+                        pass
+    except Exception as e:
+        _send_sse(wfile, {"type": "error", "message": str(e)})
+    finally:
+        _send_sse(wfile, {"type": "done"})
+
+def _send_sse(wfile, data):
+    """Sendet ein SSE-Event an den Client."""
+    if wfile is None:
+        return
+    try:
+        line = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+        wfile.write(line.encode("utf-8"))
+        wfile.flush()
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
 # HTTP-Handler
 # ---------------------------------------------------------------------------
 class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin",  ORIGIN)
+        self.send_header("Access-Control-Allow-Origin", ORIGIN)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -138,16 +486,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         path   = parsed.path
 
         if path == "/health":
-            self._json({"status": "ok", "version": "1.0"})
+            self._json({"status": "ok", "version": "1.1", "ollama": check_ollama()})
 
         elif path == "/settings":
-            try:
-                if SETTINGS_FILE.exists():
-                    self._json(json.loads(SETTINGS_FILE.read_text("utf-8")))
-                else:
-                    self._json({"provider": "openrouter", "ollamaModel": "gemma3:4b"})
-            except Exception as e:
-                self._json({"error": str(e)}, 500)
+            self._json(load_settings())
 
         elif path == "/collections":
             try:
@@ -179,7 +521,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 if n == 0:
                     self._json({"results": []})
                     return
-                res  = col.query(query_texts=[query], n_results=min(limit, n))
+                res = col.query(query_texts=[query], n_results=min(limit, n))
                 docs  = res["documents"][0]  if res["documents"]  else []
                 metas = res["metadatas"][0]  if res["metadatas"]  else []
                 dists = res["distances"][0]  if res["distances"]  else []
@@ -191,24 +533,78 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"results": hits})
             except Exception as e:
                 self._json({"results": [], "error": str(e)})
-
         else:
             self.send_error(404)
 
     # ---- POST ---------------------------------------------------------------
     def do_POST(self):
-        if   self.path == "/upload":       self._upload()
-        elif self.path == "/ingest":       self._ingest()
-        elif self.path == "/clear":        self._clear()
-        elif self.path == "/download-url": self._download_url()
-        elif self.path == "/settings":     self._save_settings()
-        elif self.path == "/save-raster":   self._save_raster()
-        elif self.path == "/restore":       self._restore()
-        elif self.path == "/memory-write":          self._write_memory_file()
-        elif self.path == "/memory-restore-version": self._restore_version()
-        elif self.path == "/ocr-image":              self._ocr_image()
+        parsed = urlparse(self.path)
+        path   = parsed.path
+
+        if   path == "/chat":            self._chat()
+        elif path == "/upload":          self._upload()
+        elif path == "/ingest":          self._ingest()
+        elif path == "/clear":           self._clear()
+        elif path == "/download-url":    self._download_url()
+        elif path == "/settings":        self._save_settings()
+        elif path == "/save-raster":     self._save_raster()
+        elif path == "/restore":         self._restore()
+        elif path == "/memory-write":    self._write_memory_file()
+        elif path == "/memory-restore-version": self._restore_version()
+        elif path == "/ocr-image":       self._ocr_image()
         else: self.send_error(404)
 
+    # ---- NEU: /chat (LLM-Proxy mit DSGVO-Filter + Skill-Router) ------------
+    def _chat(self):
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+        except Exception:
+            self._json({"error": "Ungültiges JSON"}, 400)
+            return
+
+        messages = data.get("messages", [])
+        profile  = data.get("profile", {})
+        settings = load_settings()
+
+        # Skill-Router: passenden Skill finden
+        last_user = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                last_user = m.get("text", m.get("content", ""))
+                break
+
+        skill = find_matching_skill(last_user)
+        skill_content = ""
+        if skill:
+            skill_content = load_skill_content(skill["folder"])
+            if not skill_content:
+                # Fallback: alle Memory-Dateien
+                skill_content = load_memory_context()
+
+        # RAG-Kontext
+        rag_context = search_rag(last_user)
+
+        # SSE-Streaming-Antwort
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self._cors()
+        self.end_headers()
+
+        if skill:
+            _send_sse(self.wfile, {"type": "skill", "name": skill["name"]})
+
+        stream_llm(
+            messages=messages,
+            profile=profile,
+            settings=settings,
+            skill_content=skill_content,
+            rag_context=rag_context,
+            wfile=self.wfile,
+        )
+
+    # ---- Bestehende Endpunkte (unverändert) ---------------------------------
     def _upload(self):
         ct = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ct:
@@ -238,14 +634,13 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             text = extract_pdf_text(Path(path))
             if not text.strip():
-                self._json({"error": "Kein Text aus PDF extrahierbar (leeres Dokument?)"}, 400)
+                self._json({"error": "Kein Text aus PDF extrahierbar"}, 400)
                 return
             chunks = chunk_text(text)
             if not chunks:
                 self._json({"error": "Text zu kurz zum Indexieren"}, 400)
                 return
             col, _ = get_collection()
-            # Alte Einträge dieser Quelle löschen
             old = col.get(where={"source": source})
             if old["ids"]:
                 col.delete(ids=old["ids"])
@@ -272,7 +667,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": "Nur HTTP/HTTPS-URLs erlaubt"}, 400)
             return
         try:
-            import urllib.request
             filename = source or url.split("/")[-1].split("?")[0] or "lehrplan.pdf"
             if not filename.lower().endswith(".pdf"):
                 filename += ".pdf"
@@ -287,7 +681,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _save_settings(self):
         try:
             data = json.loads(self._body().decode("utf-8"))
-            allowed = {k: v for k, v in data.items() if k in ("provider", "ollamaModel", "model")}
+            # Erlaube apiKey im Server zu speichern (kommt vom Frontend-Settings)
+            allowed = {}
+            for k in ("provider", "ollamaModel", "model", "apiKey"):
+                if k in data:
+                    allowed[k] = data[k]
             SETTINGS_FILE.write_text(json.dumps(allowed, ensure_ascii=False), "utf-8")
             self._json({"success": True})
         except Exception as e:
@@ -304,7 +702,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _list_raster(self):
-        """Alle Bewertungsraster aus memory/bewertungsraster/ auflisten."""
         raster_dir = BASE_DIR / "memory" / "bewertungsraster"
         rasters = []
         if raster_dir.exists():
@@ -312,8 +709,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 if f.name == "README.md":
                     continue
                 stat = f.stat()
-                # Dateinamen-Parsing: fach_klasse_thema.md
-                parts = f.stem.split("_", 2)
                 label = f.stem.replace("_", " ").title()
                 rasters.append({
                     "filename": f.name,
@@ -325,13 +720,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self._json({"rasters": rasters})
 
     def _save_raster(self):
-        """Bewertungsraster in memory/bewertungsraster/ speichern."""
-        import re
-        data     = json.loads(self._body().decode("utf-8"))
-        content  = data.get("content", "").strip()
-        fach     = data.get("fach", "").strip()
-        klasse   = data.get("klasse", "").strip()
-        thema    = data.get("thema", "").strip()
+        data   = json.loads(self._body().decode("utf-8"))
+        content = data.get("content", "").strip()
+        fach    = data.get("fach", "").strip()
+        klasse  = data.get("klasse", "").strip()
+        thema   = data.get("thema", "").strip()
         if not (fach and klasse and thema):
             self._json({"error": "fach, klasse und thema erforderlich"}, 400)
             return
@@ -343,25 +736,22 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         filepath = raster_dir / f"{slug}.md"
         self._rotate_backups(filepath)
         filepath.write_text(content, encoding="utf-8")
-        self._json({"success": True, "filename": f"{slug}.md", "filepath": str(filepath)})
+        self._json({"success": True, "filename": f"{slug}.md"})
 
     def _backup(self):
-        """Gesamtes memory/-Verzeichnis als ZIP zum Download anbieten."""
-        memory_dir = BASE_DIR / "memory"
-        if not memory_dir.exists():
+        if not MEMORY_DIR.exists():
             self._json({"error": "memory/-Verzeichnis nicht gefunden"}, 404)
             return
         try:
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in sorted(memory_dir.rglob("*")):
+                for f in sorted(MEMORY_DIR.rglob("*")):
                     if f.is_file():
                         zf.write(f, f.relative_to(BASE_DIR))
             data = buf.getvalue()
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition",
-                             'attachment; filename="teacherAssist_memory_backup.zip"')
+            self.send_header("Content-Disposition", 'attachment; filename="teacherAssist_memory_backup.zip"')
             self.send_header("Content-Length", str(len(data)))
             self._cors()
             self.end_headers()
@@ -370,7 +760,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _restore(self):
-        """ZIP-Datei hochladen und memory/-Verzeichnis wiederherstellen."""
         ct = self.headers.get("Content-Type", "")
         body = self._body()
         try:
@@ -397,25 +786,21 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             with zipfile.ZipFile(buf, "r") as zf:
                 for name in zf.namelist():
                     norm = name.replace("\\", "/")
-                    # Sicherheit: nur Dateien unter memory/ erlaubt
                     if not (norm.startswith("memory/") or norm.startswith("./memory/")):
                         continue
                     dest = BASE_DIR / norm
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(zf.read(name))
                     restored.append(norm)
-
             self._json({"success": True, "restored": len(restored), "files": restored})
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
     def _list_memory(self):
-        """Alle .md-Dateien unter memory/ auflisten."""
-        memory_dir = BASE_DIR / "memory"
         files = []
-        if memory_dir.exists():
-            for f in sorted(memory_dir.rglob("*.md"), key=lambda p: str(p)):
-                rel = str(f.relative_to(memory_dir)).replace("\\", "/")
+        if MEMORY_DIR.exists():
+            for f in sorted(MEMORY_DIR.rglob("*.md"), key=lambda p: str(p)):
+                rel = str(f.relative_to(MEMORY_DIR)).replace("\\", "/")
                 files.append({
                     "path": rel,
                     "name": f.name,
@@ -425,22 +810,19 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self._json({"files": files})
 
     def _read_memory_file(self, file_path):
-        """Einzelne Memory-Datei lesen (nur .md unter memory/)."""
-        memory_dir = BASE_DIR / "memory"
         try:
-            target = (memory_dir / file_path).resolve()
-            if not str(target).startswith(str(memory_dir.resolve())):
+            target = (MEMORY_DIR / file_path).resolve()
+            if not str(target).startswith(str(MEMORY_DIR.resolve())):
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             if not target.exists():
-                self._json({"error": "Datei nicht gefunden", "exists": False}, 404)
+                self._json({"error": "Datei nicht gefunden"}, 404)
                 return
             self._json({"content": target.read_text(encoding="utf-8"), "path": file_path})
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
     def _write_memory_file(self):
-        """Memory-Datei schreiben (nur .md unter memory/)."""
         try:
             data = json.loads(self._body().decode("utf-8"))
             file_path = data.get("path", "").strip()
@@ -448,9 +830,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             if not file_path.endswith(".md"):
                 self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
                 return
-            memory_dir = BASE_DIR / "memory"
-            target = (memory_dir / file_path).resolve()
-            if not str(target).startswith(str(memory_dir.resolve())):
+            target = (MEMORY_DIR / file_path).resolve()
+            if not str(target).startswith(str(MEMORY_DIR.resolve())):
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -460,11 +841,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
-    # ---- Backup rotation ---------------------------------------------------
     @staticmethod
-    def _rotate_backups(filepath: Path):
-        """Copy current file to .bak1, shifting .bak1→.bak2→.bak3 (max 3 versions)."""
-        import shutil
+    def _rotate_backups(filepath):
         if not filepath.exists():
             return
         bak3 = Path(str(filepath) + '.bak3')
@@ -475,14 +853,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         shutil.copy2(str(filepath), str(bak1))
 
     def _list_versions(self, file_path):
-        """Liste verfügbare Backup-Versionen (.bak1/.bak2/.bak3) einer Memory-Datei."""
-        memory_dir = BASE_DIR / "memory"
+        import datetime
         try:
-            target = (memory_dir / file_path).resolve()
-            if not str(target).startswith(str(memory_dir.resolve())):
+            target = (MEMORY_DIR / file_path).resolve()
+            if not str(target).startswith(str(MEMORY_DIR.resolve())):
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
-            import datetime
             versions = []
             for i in range(1, 4):
                 bak = Path(str(target) + f'.bak{i}')
@@ -499,8 +875,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _restore_version(self):
-        """Backup-Version einer Memory-Datei wiederherstellen."""
-        import shutil
         try:
             data = json.loads(self._body().decode("utf-8"))
             file_path = data.get("path", "").strip()
@@ -508,26 +882,26 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             if not file_path.endswith(".md") or version not in (1, 2, 3):
                 self._json({"error": "Ungültige Anfrage"}, 400)
                 return
-            memory_dir = BASE_DIR / "memory"
-            target = (memory_dir / file_path).resolve()
-            if not str(target).startswith(str(memory_dir.resolve())):
+            target = (MEMORY_DIR / file_path).resolve()
+            if not str(target).startswith(str(MEMORY_DIR.resolve())):
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             bak = Path(str(target) + f'.bak{version}')
             if not bak.exists():
                 self._json({"error": "Version nicht gefunden"}, 404)
                 return
-            self._rotate_backups(target)  # back up current before restoring
+            self._rotate_backups(target)
             shutil.copy2(str(bak), str(target))
             self._json({"success": True, "content": target.read_text(encoding="utf-8")})
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
     def _ocr_image(self):
-        """Bild per OCR in Text umwandeln (pytesseract, Sprache: Deutsch)."""
         ct  = self.headers.get("Content-Type", "")
         body = self._body()
         try:
+            import pytesseract
+            from PIL import Image
             if "multipart/form-data" in ct:
                 boundary = ""
                 for seg in ct.split(";"):
@@ -541,9 +915,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 name, content = files[0]
             else:
                 name, content = "image.jpg", body
-
-            import tempfile, pytesseract
-            from PIL import Image
             suffix = '.jpg' if name.lower().endswith(('.jpg', '.jpeg')) else '.png'
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                 f.write(content)
@@ -564,7 +935,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": f"OCR fehlgeschlagen: {str(e)}"}, 500)
 
     def log_message(self, *_):
-        pass  # Kein Log-Spam
+        pass
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

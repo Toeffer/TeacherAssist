@@ -10,7 +10,7 @@ KI-Assistent für deutsche Lehrkräfte. Self-hosted, DSGVO-konform, modell-agnos
 Nimmt Lehrern Routinearbeit ab: Unterrichtsplanung, Bewertungserstellung, Korrektur.
 
 **Kernprinzip:** Der Agent schlägt vor – die Lehrkraft entscheidet.
-**Lizenz:** MIT (OpenClaw). Kommerziell nutzbar. Copyright-Vermerk in Distributions pflegen.
+**Lizenz:** MIT. Kommerziell nutzbar. Copyright-Vermerk in Distributions pflegen.
 
 ---
 
@@ -39,21 +39,24 @@ Python-Code schreiben wir nur für Tools (Ebene 2).
 
 ---
 
-## Gesamtarchitektur
+## Gesamtarchitektur (v4 – ohne OpenClaw)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                  DESKTOP (lokal / VPS)                    │
 │                                                          │
 │  ┌─────────────────────────────────────────────────┐    │
-│  │  OpenClaw Runtime (:18789)                      │    │
-│  │  Brain (LLM) ←→ Skills (Markdown) ←→ Tools     │    │
-│  │  Memory (~/.openclaw/memory/*.md)               │    │
-│  └─────────────────────────────────────────────────┘    │
+│  │  Tool-Server (:8789)  –  LLM-Proxy + RAG        │    │
+│  │  • POST /chat → DSGVO-Filter → Skill-Router     │    │
+│  │    → OpenRouter (schnell) ODER Ollama (lokal)   │    │
+│  │  • ChromaDB (Embedding-Suche)                   │    │
+│  │  • Memory-Dateien (lehrerprofil.md etc.)        │    │
+│  │  • Skills als Prompt-Bibliothek (Markdown)      │    │
+│  └──────────────────────┬──────────────────────────┘    │
 │                          ↕                               │
 │  ┌──────────────────────────────────────────────┐       │
-│  │  Tool-Server (:8789)   Web-Server (:8788)    │       │
-│  │  PDF-Upload/OCR/RAG    index.html + app.jsx  │       │
+│  │  Web-Server (:8788)                           │       │
+│  │  index.html + app.jsx + components.jsx       │       │
 │  └──────────────────────────────────────────────┘       │
 └──────────────────────────┬───────────────────────────────┘
                            │ WLAN / Tailscale VPN
@@ -70,7 +73,7 @@ Python-Code schreiben wir nur für Tools (Ebene 2).
 
 | Schicht | Technologie | Version | Warum |
 |---------|-------------|---------|-------|
-| Agent-Runtime | OpenClaw | MIT, aktuell | Self-hosted, model-agnostic, Skills-System |
+| LLM-Proxy | tool_server.py (Python) | 1.1 | Eigenbau – DSGVO-Filter, Skill-Router, Streaming |
 | LLM | Claude Sonnet (claude-sonnet-4-6) | aktuell | Bestes Modell für Deutsch + Strukturaufgaben |
 | Tools | Python | 3.11+ | PDF-Parsing, Dateisystem, OCR, Bildempfang |
 | PDF-Parsing | pypdf | 4.x | Text-PDFs; zuverlässig, kein C-Build nötig |

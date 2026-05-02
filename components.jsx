@@ -307,7 +307,8 @@ ${body}
 }
 
 /* ---------- Avatar ---------- */
-function BotAvatar({ size = 32 }) {
+function BotAvatar({ size = 32, name = '' }) {
+  const initial = name ? name.charAt(0).toUpperCase() : 'K';
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%',
@@ -315,7 +316,7 @@ function BotAvatar({ size = 32 }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       flexShrink: 0, fontSize: size * 0.45, fontWeight: 700,
     }}>
-      TA
+      {initial}
     </div>
   );
 }
@@ -336,7 +337,7 @@ function TypingDots() {
 }
 
 /* ---------- Chat Bubble ---------- */
-function ChatBubble({ message, isBot, isTyping, onExport }) {
+function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
   const [hovered, setHovered] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const hasContent = isBot && !isTyping && message && message.length > 80;
@@ -370,7 +371,7 @@ function ChatBubble({ message, isBot, isTyping, onExport }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {isBot && <BotAvatar />}
+      {isBot && <BotAvatar name={assistantName} />}
       <div style={{ maxWidth: '75%', display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{
           background: isBot ? 'var(--bubble-bot)' : 'var(--bubble-user)',
@@ -467,7 +468,7 @@ function OnboardingProgress({ step, total }) {
 }
 
 /* ---------- Sidebar ---------- */
-function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, onDeleteChat, onNavigate, currentView, dark, onToggleDark }) {
+function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, onDeleteChat, onNavigate, currentView, dark, onToggleDark, assistantName }) {
   return (
     <>
       {open && <div onClick={onClose} style={{
@@ -488,10 +489,10 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
           padding: '16px 16px 12px', display: 'flex', alignItems: 'center', gap: 10,
           borderBottom: '1px solid var(--border)',
         }}>
-          <BotAvatar size={36} />
+          <BotAvatar size={36} name={assistantName} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text-primary)' }}>TeacherAssist</div>
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Dein Lehrerassistent</div>
+            <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text-primary)' }}>{assistantName || 'Klara'}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Deine Begleitung im Schulalltag</div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: 4 }}>
             {Icons.close}
