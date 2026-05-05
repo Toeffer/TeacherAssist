@@ -86,6 +86,12 @@ const Icons = {
       <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
     </svg>
   ),
+  power: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+      <line x1="12" y1="2" x2="12" y2="12"></line>
+    </svg>
+  ),
   arrow: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -308,6 +314,101 @@ function openPrintWindow(text, title) {
   win.document.close();
 }
 
+/* ---------- Bot Avatar ---------- */
+function BotAvatar({ size = 36, name = 'Mila' }) {
+  const initial = (name || 'M')[0].toUpperCase();
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%',
+      background: 'linear-gradient(135deg, var(--accent), #c4623e)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: '#fff', fontWeight: 700,
+      fontSize: Math.round(size * 0.42),
+      flexShrink: 0,
+      userSelect: 'none',
+    }}>
+      {initial}
+    </div>
+  );
+}
+
+/* ---------- Typing Dots ---------- */
+function TypingDots() {
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center', padding: '3px 0' }}>
+      {[0, 1, 2].map(i => (
+        <span key={i} style={{
+          width: 7, height: 7, borderRadius: '50%',
+          background: 'var(--text-tertiary)',
+          display: 'inline-block',
+          animation: `typingBounce 1.2s ease-in-out ${i * 0.2}s infinite`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Chat Bubble ---------- */
+function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
+  if (!isBot) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'flex-end', animation: 'fadeInUp 0.2s ease' }}>
+        <div style={{
+          maxWidth: '80%',
+          background: 'var(--bubble-user)',
+          color: 'var(--bubble-user-text)',
+          borderRadius: '18px 18px 4px 18px',
+          padding: '10px 14px',
+          fontSize: 15, lineHeight: 1.6,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}>
+          {message}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', animation: 'fadeInUp 0.2s ease' }}>
+      <BotAvatar size={32} name={assistantName || 'Mila'} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          background: 'var(--bubble-bot)',
+          borderRadius: '4px 18px 18px 18px',
+          padding: '10px 14px',
+          fontSize: 15, lineHeight: 1.65,
+          color: 'var(--text-primary)',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+          wordBreak: 'break-word',
+        }}>
+          {isTyping && !message ? (
+            <TypingDots />
+          ) : (
+            <div dangerouslySetInnerHTML={{ __html: mdToHtml(message || '') }} />
+          )}
+        </div>
+        {onExport && message && (
+          <button
+            onClick={() => onExport(message)}
+            title="Exportieren / Drucken"
+            style={{
+              marginTop: 4, background: 'none', border: 'none',
+              cursor: 'pointer', color: 'var(--text-tertiary)',
+              fontSize: 12, padding: '2px 6px', borderRadius: 4,
+              transition: 'color 0.15s',
+            }}
+            onMouseEnter={e => e.target.style.color = 'var(--accent)'}
+            onMouseLeave={e => e.target.style.color = 'var(--text-tertiary)'}
+          >
+            ↗ Exportieren
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Quick Reply Buttons ---------- */
 function QuickReplies({ options, onSelect }) {
   if (!options || options.length === 0) return null;
@@ -357,6 +458,81 @@ function OnboardingProgress({ step, total }) {
         }}></div>
       </div>
     </div>
+  );
+}
+
+/* ---------- Shutdown Button ---------- */
+function ShutdownButton() {
+  const [state, setState] = React.useState('idle'); // idle | confirm | shutting_down
+
+  const handleClick = () => {
+    if (state === 'idle') { setState('confirm'); return; }
+    if (state === 'confirm') {
+      setState('shutting_down');
+      fetch('http://localhost:8789/shutdown', { method: 'POST' })
+        .catch(() => {})
+        .finally(() => {
+          setTimeout(() => window.close(), 800);
+        });
+    }
+  };
+
+  if (state === 'shutting_down') {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+        padding: '10px 10px', borderRadius: 8,
+        color: 'var(--text-tertiary)', fontSize: 14,
+      }}>
+        <span style={{
+          width: 14, height: 14, flexShrink: 0,
+          border: '2px solid var(--text-tertiary)', borderTopColor: 'transparent',
+          borderRadius: '50%', animation: 'spin 0.7s linear infinite', display: 'inline-block',
+        }} />
+        Wird beendet…
+      </div>
+    );
+  }
+
+  if (state === 'confirm') {
+    return (
+      <div style={{ padding: '6px 4px' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6, paddingLeft: 6 }}>
+          Server wirklich beenden?
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={handleClick} style={{
+            flex: 1, padding: '7px 0', borderRadius: 7, border: 'none',
+            background: 'var(--danger)', color: '#fff',
+            cursor: 'pointer', fontSize: 13, fontWeight: 600,
+          }}>
+            Ja, beenden
+          </button>
+          <button onClick={() => setState('idle')} style={{
+            flex: 1, padding: '7px 0', borderRadius: 7,
+            border: '1.5px solid var(--border)', background: 'transparent',
+            color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 13,
+          }}>
+            Abbrechen
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button onClick={handleClick} style={{
+      display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+      padding: '10px 10px', borderRadius: 8, border: 'none',
+      background: 'transparent', color: 'var(--text-tertiary)',
+      cursor: 'pointer', fontSize: 14, textAlign: 'left',
+      transition: 'color 0.15s',
+    }}
+    onMouseEnter={e => e.currentTarget.style.color = 'var(--danger)'}
+    onMouseLeave={e => e.currentTarget.style.color = 'var(--text-tertiary)'}
+    >
+      {Icons.power} Server beenden
+    </button>
   );
 }
 
@@ -504,6 +680,7 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
           }}>
             {dark ? Icons.sun : Icons.moon} {dark ? 'Light Mode' : 'Dark Mode'}
           </button>
+          <ShutdownButton />
         </div>
       </aside>
     </>
