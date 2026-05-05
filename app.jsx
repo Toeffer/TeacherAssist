@@ -15,7 +15,7 @@ const ONBOARDING_STEPS = [
   },
   {
     id: 'name',
-    bot: 'Wie darf ich dich nennen? Und wie soll ich heißen?\n\nSchreib z.B. "Ich bin Sabine, du bist Klara"\n– oder einfach nur deinen Namen.',
+    bot: 'Wie darf ich dich nennen? Und wie soll ich heißen?\n\nSchreib z.B. "Ich bin Sabine, du bist Mila"\n– oder einfach nur deinen Namen.',
     field: 'name',
     placeholder: 'Dein Name oder "Ich bin …, du bist …"',
     phase: 2,
@@ -58,6 +58,13 @@ const ONBOARDING_STEPS = [
     phase: 2,
   },
   {
+    id: 'ollama_setup',
+    bot: '🔒 **Datenschutz & lokale KI (Ollama)**\n\nFür Schülerarbeiten und personenbezogene Daten ist es wichtig, dass die Verarbeitung lokal auf deinem Rechner stattfindet.\n\nOllama ist ein kostenloses Tool, das KI-Modelle lokal ausführt – nichts verlässt deinen Computer.',
+    field: 'ollama_choice',
+    phase: 2,
+    quickReplies: ['Ollama installieren', 'Ich hab Ollama bereits', 'Später einrichten'],
+  },
+  {
     id: 'lehrplan',
     bot: 'Möchtest du direkt einen Lehrplan einrichten?\n\nDas geht so:\n• Schick mir einfach ein Lehrplan-PDF – ich lese es automatisch ein.\n• Oder sag mir Fach + Klasse, ich trage einen Standardeintrag ein.\n• Oder überspringe das jetzt – du kannst das jederzeit nachholen.',
     quickReplies: ['Später einrichten', 'Ich möchte einen Lehrplan angeben'],
@@ -78,7 +85,7 @@ function getTimeBasedGreeting(teacherName, asstName) {
   const hour = now.getHours();
   const day = now.getDay(); // 0=So, 1=Mo, ..., 5=Fr, 6=Sa
   const month = now.getMonth(); // 0=Jan, ..., 5=Jun, 6=Jul, 11=Dez
-  const asst = asstName || 'Klara';
+  const asst = asstName || 'Mila';
   const prefix = teacherName ? `${teacherName}, ` : '';
 
   let greeting = '';
@@ -110,7 +117,7 @@ function parseNameInput(raw) {
   const text = raw.trim();
 
   // Muster: "Ich bin X, du bist Y"
-  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*und?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+))?\s*$/i);
+  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*(?:und\s+)?du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+))?\s*$/i);
   if (m) {
     return {
       name: m[1].trim(),
@@ -127,8 +134,14 @@ function parseNameInput(raw) {
     };
   }
 
+  // Du-bist-Muster muss vor der "Nur ein Name"-Prüfung stehen
+  const m3 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*,?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+)\s*$/i);
+  if (m3) {
+    return { name: m3[1].trim(), assistant_name: m3[2].trim() };
+  }
+
   // Nur ein Name → nur Lehrkraft-Name, assistant_name bleibt bestehen
-  if (text.length <= 40 && !/[\s]{3,}/.test(text) && !text.includes('?')) {
+  if (text.length <= 40 && !/[\s]{3,}/.test(text) && !text.includes('?') && !/\bdu\s+(bist|heißt)\b/i.test(text)) {
     return { name: text, assistant_name: '' };
   }
 
@@ -259,11 +272,18 @@ function normalizeFachname(entry) {
 }
 
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
-async function callChatViaServer(messages, profile, onChunk, onMeta) {
+async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '') {
   const response = await fetch('http://localhost:8789/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, profile }),
+    body: JSON.stringify({
+      messages,
+      profile,
+      customEndpoint,
+      customApiKey,
+      customModel,
+      apiKey,
+    }),
   });
 
   if (!response.ok) {
@@ -316,8 +336,8 @@ function App() {
   const [profile, setProfile] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('ta_profile')) || {};
-      return { assistant_name: 'Klara', ...saved };
-    } catch { return { assistant_name: 'Klara' }; }
+      return { assistant_name: 'Mila', ...saved };
+    } catch { return { assistant_name: 'Mila' }; }
   });
   const [chats, setChats] = useState(() => {
     try {
@@ -347,6 +367,12 @@ function App() {
   const [ollamaModels, setOllamaModels] = useState([]);
   const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
   const [sessionTokens, setSessionTokens] = useState(0);
+  const [customEndpoint, setCustomEndpoint] = useState(() => localStorage.getItem('ta_custom_endpoint') || '');
+  const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('ta_custom_apikey') || '');
+  const [customModel, setCustomModel] = useState(() => localStorage.getItem('ta_custom_model') || 'gpt-3.5-turbo');
+  const [tailscaleStatus, setTailscaleStatus] = useState('unknown');
+  const [showStylePopover, setShowStylePopover] = useState(false);
+  const [dsgvoRoutingActive, setDsgvoRoutingActive] = useState(false);
   const [uploadPhase, setUploadPhase] = useState(null); // null | 'uploading' | 'indexing'
   const [batchQueue,  setBatchQueue]  = useState([]);   // [{file, status:'pending'|'active'|'done'|'error'}]
   const batchRunning = useRef(false);
@@ -362,15 +388,18 @@ function App() {
   useEffect(() => { localStorage.setItem('ta_model', model); }, [model]);
   useEffect(() => { localStorage.setItem('ta_provider', provider); }, [provider]);
   useEffect(() => { localStorage.setItem('ta_ollama_model', ollamaModel); }, [ollamaModel]);
+  useEffect(() => { localStorage.setItem('ta_custom_endpoint', customEndpoint); }, [customEndpoint]);
+  useEffect(() => { localStorage.setItem('ta_custom_apikey', customApiKey); }, [customApiKey]);
+  useEffect(() => { localStorage.setItem('ta_custom_model', customModel); }, [customModel]);
 
-  // Provider-Wahl auf Disk speichern, damit start.bat OpenClaw korrekt startet
+  // Provider-Wahl, API-Key und Custom-Felder an Tool-Server senden
   useEffect(() => {
     fetch('http://localhost:8789/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, ollamaModel, model }),
+      body: JSON.stringify({ provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel }),
     }).catch(() => {});
-  }, [provider, ollamaModel, model]);
+  }, [provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -476,7 +505,9 @@ function App() {
           try {
             await callChatViaServer(
               [{ role: 'user', text }], {},
-              chunk => { answer += chunk; }
+              chunk => { answer += chunk; },
+              undefined,
+              customEndpoint, customApiKey, customModel
             );
           } catch { answer = 'Das beantworte ich gerne – lass uns aber erst das Profil abschließen!'; }
           setIsTyping(false);
@@ -489,7 +520,7 @@ function App() {
       }
 
       // Feldwert normalisiert speichern
-      if (step?.field && step.field !== 'lehrplan_choice') {
+      if (step?.field && step.field !== 'lehrplan_choice' && step.field !== 'ollama_choice') {
         const raw = text === 'nein' || text === '-' ? '' : text;
         if (step.field === 'faecher') {
           const items = raw.split(/[,\n]+/).map(s => normalizeFachname(s.trim())).filter(Boolean);
@@ -503,10 +534,52 @@ function App() {
           setProfile(p => ({
             ...p,
             name: parsed.name || raw,
-            assistant_name: parsed.assistant_name || p.assistant_name || 'Klara',
+            assistant_name: parsed.assistant_name || p.assistant_name || 'Mila',
           }));
         } else {
           setProfile(p => ({ ...p, [step.field]: raw }));
+        }
+      }
+
+      // Ollama-Setup: Installationsanleitung oder Modell-Empfehlung
+      if (step?.id === 'ollama_setup') {
+        const choice = text.toLowerCase();
+        if (choice.includes('installieren') || choice.includes('ollama installieren')) {
+          addBotMessage(`Super! So installierst du Ollama:\n\n1. Gehe auf **ollama.com/download** und lade die Windows-Version herunter\n2. Installiere wie gewohnt – kein Admin-Passwort nötig\n3. Starte danach TeacherAssist neu\n\nIch erkenne Ollama beim nächsten Start automatisch und empfehle dir passende Modelle.\n\n**Warum Ollama?** 🔒\n• Alle Daten bleiben auf deinem Rechner\n• Keine Internetverbindung nötig für lokale Anfragen\n• Perfekt für Schülerarbeiten & personenbezogene Daten\n• DSGVO-konform\n\n📸 Für Handschrifterkennung empfehle ich zusätzlich ein VLM wie **granite3.2-vision** (2GB) – damit kann ich Fotos von Schülerarbeiten direkt lesen.`, 1000);
+          setTimeout(() => {
+            setOnboardingStep(onboardingStep + 1);
+            addBotMessage(ONBOARDING_STEPS[onboardingStep + 1]?.bot || '', 600);
+          }, 2000);
+          return;
+        } else if (choice.includes('bereits') || choice.includes('hab ollama')) {
+          addBotMessage('Perfekt! Dann kann ich deine sensiblen Daten gleich lokal verarbeiten.\n\nIch empfehle diese Modelle für TeacherAssist:\n\n• **Basis (≈3 GB):** gemma3, llama3.2 – schnell, ideal für einfache Planung\n• **Allround (≈5 GB):** mistral, llama3.1 – gute Deutschkenntnisse\n• **Qualität (≈9 GB):** phi4, gemma3:12b – höchste Genauigkeit\n• **📸 Handschrift (≈2 GB):** granite3.2-vision – liest Schüler-Handschrift\n\nDu kannst jederzeit mit `/pull <modell>` ein Modell herunterladen.', 1200);
+        }
+        // Always advance
+        setTimeout(() => {
+          setOnboardingStep(onboardingStep + 1);
+          addBotMessage(ONBOARDING_STEPS[onboardingStep + 1]?.bot || '', 600);
+        }, choice.includes('später') ? 400 : 2000);
+        return;
+      }
+
+      // Lehrplan-Entscheidung: Wenn "angeben", auf Upload warten
+      if (step?.id === 'lehrplan') {
+        const lower = text.toLowerCase();
+        if (lower.includes('angeben') || lower.includes('hochladen') || lower.includes('pdf')) {
+          addBotMessage('📄 Super! Schick mir jetzt einfach das PDF über den 📎-Button im Eingabefeld.\n\nIch lese es automatisch ein und speichere es in der Wissensdatenbank. Wenn der Upload fertig ist, sag einfach "weiter" oder klicke eine Quick-Reply.', 400);
+          return;
+        }
+        if (lower.includes('später') || lower.includes('nein') || lower.includes('nicht')) {
+          const nextIdx = onboardingStep + 1;
+          if (nextIdx < ONBOARDING_STEPS.length) {
+            setOnboardingStep(nextIdx);
+            const nextStep = ONBOARDING_STEPS[nextIdx];
+            addBotMessage(nextStep.bot, 800);
+            if (nextStep.id === 'done') {
+              setTimeout(() => setOnboardingDone(true), 1200);
+            }
+          }
+          return;
         }
       }
 
@@ -522,6 +595,61 @@ function App() {
         if (nextStep.id === 'done') {
           setTimeout(() => setOnboardingDone(true), 1200);
         }
+      }
+      return;
+    }
+
+    // Slash-Befehle
+    const pullMatch = text.match(/^\/pull\s+(.+)$/i);
+    if (pullMatch) {
+      const model = pullMatch[1].trim();
+      addMessage(activeChatId, { role: 'bot', text: `⏳ Lade **${model}** über Ollama herunter… Das kann einige Minuten dauern.`, ts: Date.now() });
+      try {
+        const res = await fetch('http://localhost:8789/ollama-pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let lastPct = -1;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === 'progress' && evt.percent !== lastPct) {
+                lastPct = evt.percent;
+                // Update last bot message in chat
+                setChats(prev => prev.map(c => {
+                  if (c.id !== activeChatId) return c;
+                  const msgs = [...c.messages];
+                  if (msgs.length > 0 && msgs[msgs.length - 1]?.role === 'bot') {
+                    msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], text: `⏳ Lade **${model}**… ${lastPct}%\n\n${'█'.repeat(Math.floor(lastPct / 5))}${'░'.repeat(20 - Math.floor(lastPct / 5))}` };
+                  }
+                  return { ...c, messages: msgs };
+                }));
+              }
+              if (evt.type === 'done' && evt.success) {
+                addMessage(activeChatId, { role: 'bot', text: `✅ **${model}** wurde erfolgreich installiert!\n\nDu kannst jetzt unter Einstellungen zu Ollama wechseln und das Modell auswählen.`, ts: Date.now() });
+                return;
+              }
+              if (evt.type === 'error') {
+                addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler beim Download: ${evt.message}`, ts: Date.now() });
+                return;
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler: ${err.message}\n\nIst Ollama installiert? Versuche: ollama pull ${model}`, ts: Date.now() });
       }
       return;
     }
@@ -569,10 +697,15 @@ function App() {
         setStreamingText(fullText);
       }, (type, data) => {
         if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
-        else if (type === 'dsgvo' && data.message) {
-          addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
+        else if (type === 'dsgvo') {
+          if (data.routing === 'dsgvo_local') {
+            setDsgvoRoutingActive(true);
+          }
+          if (data.message) {
+            addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
+          }
         }
-      });
+      }, customEndpoint, customApiKey, customModel, apiKey);
     } catch (err) {
       fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
     }
@@ -580,7 +713,7 @@ function App() {
     setIsStreaming(false);
     setStreamingText('');
     addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
-  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider]);
+  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
 
   const handleFileUpload = useCallback(async (file, track) => {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
@@ -788,6 +921,52 @@ function App() {
     setSidebarOpen(false);
   }, []);
 
+  const handleSessionSummary = useCallback(async () => {
+    const msgs = chats.find(c => c.id === activeChatId)?.messages || [];
+    if (msgs.filter(m => m.role === 'user').length < 2) {
+      addMessage(activeChatId, { role: 'bot', text: 'Es gibt noch nicht genug Nachrichten zum Zusammenfassen. Stelle erst ein paar Fragen.', ts: Date.now() });
+      return;
+    }
+    addMessage(activeChatId, { role: 'user', text: '📝 Sitzung zusammenfassen und speichern', ts: Date.now() });
+    setIsTyping(true);
+    try {
+      const res = await fetch('http://localhost:8789/session-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: msgs, profile, apiKey }),
+      });
+      const data = await res.json();
+      setIsTyping(false);
+      if (data.error) throw new Error(data.error);
+      addMessage(activeChatId, {
+        role: 'bot',
+        text: `✅ Sitzung gespeichert!\n\n📝 **Zusammenfassung:**\n${data.summary}\n\n*(Im Memory-Editor unter "vergangene_stunden.md" einsehbar)*`,
+        ts: Date.now(),
+      });
+    } catch (err) {
+      setIsTyping(false);
+      addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler beim Zusammenfassen: ${err.message}`, ts: Date.now() });
+    }
+  }, [activeChatId, chats, profile, apiKey, addMessage]);
+
+  // Tastaturkürzel
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey && e.key === 'n') { e.preventDefault(); handleNewChat(); }
+      if (e.ctrlKey && e.key === 'b') { e.preventDefault(); setSidebarOpen(s => !s); }
+      if (e.ctrlKey && e.key === ',') { e.preventDefault(); setCurrentView(v => v === 'settings' ? 'chat' : 'settings'); }
+      if (e.ctrlKey && e.key === 's') { e.preventDefault(); handleSessionSummary(); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [handleNewChat, handleSessionSummary]);
+
+  const handleShutdown = useCallback(() => {
+    if (!confirm('TeacherAssist wirklich beenden?\n\nWeb-Server und Tool-Server werden beendet. Das Browserfenster kannst du danach schließen.')) return;
+    fetch('http://localhost:8789/shutdown', { method: 'POST' }).catch(() => {});
+    alert('TeacherAssist wurde beendet. Du kannst das Fenster jetzt schließen.');
+  }, []);
+
   const handleResetOnboarding = useCallback(() => {
     if (!confirm('Profil wirklich zurücksetzen? Das Onboarding startet neu.')) return;
     localStorage.removeItem('ta_onboarded');
@@ -810,6 +989,7 @@ function App() {
     return provider;
   }, [provider, openrouterStatus, ollamaStatus, apiKey]);
   const isFallbackActive = effectiveProvider !== provider;
+  const isDsgvoRouting = dsgvoRoutingActive;
 
   const showApiKeyModal = onboardingDone && provider === 'openrouter' && !apiKey && !apiKeyModalDismissed;
 
@@ -837,7 +1017,8 @@ function App() {
         onNavigate={handleNavigate}
         currentView={currentView}
         dark={dark} onToggleDark={() => setDark(d => !d)}
-        assistantName={profile.assistant_name || 'Klara'}
+        assistantName={profile.assistant_name || 'Mila'}
+        onShutdown={handleShutdown}
       />
 
       <header style={{
@@ -852,32 +1033,68 @@ function App() {
         }}>
           {Icons.menu}
         </button>
-        <BotAvatar size={30} name={profile.assistant_name || 'Klara'} />
+        <div
+          title="Klicken zum Anpassen des Antwortstils"
+          style={{ position: 'relative', cursor: 'pointer' }}
+          onClick={() => setShowStylePopover(!showStylePopover)}
+          onMouseEnter={e => { e.currentTarget.querySelector('.avatar-badge')?.style.setProperty('opacity', '1'); }}
+          onMouseLeave={e => { e.currentTarget.querySelector('.avatar-badge')?.style.setProperty('opacity', '0'); }}
+        >
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <BotAvatar size={30} name={profile.assistant_name || 'Mila'} />
+            <span className="avatar-badge" style={{
+              position: 'absolute', bottom: -2, right: -2,
+              width: 14, height: 14, borderRadius: '50%',
+              background: 'var(--accent)', color: '#fff',
+              fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: '2px solid var(--surface)',
+              opacity: 0, transition: 'opacity 0.2s',
+            }}>⚙</span>
+          </div>
+          {showStylePopover && (
+            <AssistantStylePopover
+              profile={profile}
+              onUpdate={setProfile}
+              onClose={() => setShowStylePopover(false)}
+            />
+          )}
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>{profile.assistant_name || 'Klara'}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>{profile.assistant_name || 'Mila'}</div>
           {(() => {
-            const namePrefix = (profile.assistant_name || 'Klara');
+            const namePrefix = (profile.assistant_name || 'Mila');
             const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : !!apiKey);
             const label = isStreaming ? namePrefix + ' · antwortet…' : isTyping ? namePrefix + ' · schreibt…'
-              : isFallbackActive
-                ? (provider === 'openrouter'
-                    ? '⚠ OpenRouter offline · 🔒 Ollama Fallback'
-                    : '⚠ Ollama offline · ☁️ OpenRouter Fallback')
-                : provider === 'ollama'
-                  ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : '⚠ Ollama offline'
-                  : apiKey ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
-            const color = isStreaming || isTyping ? 'var(--text-tertiary)'
+              : isDsgvoRouting
+                ? '🔒 Lokales Modell (DSGVO)'
+                : isFallbackActive
+                  ? (provider === 'openrouter'
+                      ? '⚠ OpenRouter offline · 🔒 Ollama Fallback'
+                      : '⚠ Ollama offline · ☁️ OpenRouter Fallback')
+                  : provider === 'ollama'
+                    ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : '⚠ Ollama offline'
+                    : apiKey ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
+            const dsgvoColor = '#d97706';
+            const color = isDsgvoRouting ? dsgvoColor
+              : isStreaming || isTyping ? 'var(--text-tertiary)'
               : isFallbackActive ? '#d97706'
-              : isActive ? (provider === 'ollama' ? '#2a9d5c' : 'var(--accent)') : 'var(--danger)';
+              : isActive ? (provider === 'ollama' ? '#2a9d5c' : '#3b82f6') : 'var(--danger)';
             return <div style={{ fontSize: 12, color }}>{label}</div>;
           })()}
         </div>
         {sessionTokens > 0 && (
-          <div title="Token-Verbrauch dieser Sitzung" style={{
+          <div title="Kosten dieser Sitzung" style={{
             fontSize: 11, color: 'var(--text-tertiary)',
             whiteSpace: 'nowrap', userSelect: 'none',
           }}>
-            {sessionTokens.toLocaleString('de-DE')} Tokens
+            {(() => {
+              const p = MODEL_PRICES[model];
+              if (!p || !sessionTokens) return null;
+              const cost = (p.in * 0.0003 + p.out * 0.0006) / 1.08;
+              const eur = (sessionTokens / 900) * cost;
+              if (eur < 0.0001) return '< 0,001 €';
+              return '≈ ' + eur.toLocaleString('de-DE', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' €';
+            })()}
           </div>
         )}
         <button onClick={() => setDark(d => !d)} style={{
@@ -906,12 +1123,12 @@ function App() {
             display: 'flex', flexDirection: 'column', gap: 14,
           }}>
             {activeChat.messages.map((msg, i) => (
-              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} onExport={msg.role === 'bot' ? handleExport : undefined} assistantName={profile.assistant_name || 'Klara'} />
+              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} onExport={msg.role === 'bot' ? handleExport : undefined} assistantName={profile.assistant_name || 'Mila'} />
             ))}
             {isStreaming && (
-              <ChatBubble message={streamingText} isBot isTyping={!streamingText} assistantName={profile.assistant_name || 'Klara'} />
+              <ChatBubble message={streamingText} isBot isTyping={!streamingText} assistantName={profile.assistant_name || 'Mila'} />
             )}
-            {isTyping && !isStreaming && <ChatBubble isBot isTyping assistantName={profile.assistant_name || 'Klara'} />}
+            {isTyping && !isStreaming && <ChatBubble isBot isTyping assistantName={profile.assistant_name || 'Mila'} />}
             {showQuickReplies && (
               <QuickReplies options={currentOnboardingStep.quickReplies} onSelect={handleQuickReply} />
             )}
@@ -946,8 +1163,8 @@ function App() {
             onSend={() => handleSend()}
             placeholder={currentOnboardingStep?.placeholder || 'Nachricht eingeben…'}
             disabled={isBusy || !!uploadPhase}
-            onFileUpload={onboardingDone ? handleFileUpload : null}
-            onFilesUpload={onboardingDone && toolStatus === 'online' ? handleFilesUpload : null}
+            onFileUpload={(onboardingDone || currentOnboardingStep?.id === 'lehrplan') ? handleFileUpload : null}
+            onFilesUpload={(onboardingDone || currentOnboardingStep?.id === 'lehrplan') && toolStatus === 'online' ? handleFilesUpload : null}
             toolOnline={toolStatus === 'online'}
             showDsgvoHint={onboardingDone && effectiveProvider === 'openrouter'}
             showLocalHint={onboardingDone && effectiveProvider === 'ollama'}
@@ -991,6 +1208,9 @@ function App() {
             ollamaStatus={ollamaStatus} ollamaModels={ollamaModels}
             openrouterStatus={openrouterStatus}
             isFallbackActive={isFallbackActive} effectiveProvider={effectiveProvider}
+            customEndpoint={customEndpoint} onCustomEndpointChange={setCustomEndpoint}
+            customApiKey={customApiKey} onCustomApiKeyChange={setCustomApiKey}
+            tailscaleStatus={tailscaleStatus}
             onBackup={handleBackup} onRestore={handleRestore}
           />
         </div>

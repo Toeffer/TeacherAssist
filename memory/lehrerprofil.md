@@ -4,7 +4,7 @@
 
 ## Persönliche Angaben
 - **Name:** (noch nicht eingerichtet)
-- **Meine Begleitung:** (noch nicht eingerichtet)
+- **Meine Begleitung (assistent_name):** (noch nicht eingerichtet; Standard: Mila)
 - **Bundesland:** (noch nicht eingerichtet)
 - **Schulform:** (noch nicht eingerichtet)
 

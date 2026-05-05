@@ -1,10 +1,25 @@
 @echo off
 chcp 65001 >nul 2>&1
-title LehrerAgent
+title TeacherAssist
 cd /d "%~dp0"
 
+:: Desktop-Verknüpfung mit Icon anlegen (einmalig)
+set "SHORTCUT=%USERPROFILE%\Desktop\TeacherAssist.lnk"
+if not exist "%SHORTCUT%" (
+    :: PowerShell-Script zum Erstellen der .lnk-Datei
+    powershell -Command ^
+        $ws = New-Object -ComObject WScript.Shell; ^
+        $sc = $ws.CreateShortcut('%SHORTCUT%'); ^
+        $sc.TargetPath = '%~dp0start.bat'; ^
+        $sc.WorkingDirectory = '%~dp0'; ^
+        $sc.Description = 'TeacherAssist – KI-Assistent für Lehrer'; ^
+        $sc.IconLocation = '%~dp0teacherassist.ico'; ^
+        $sc.Save(); ^
+        Write-Host '✅ Desktop-Verknüpfung angelegt'
+)
+
 echo.
-echo  Starte LehrerAgent...
+echo  Starte TeacherAssist...
 echo.
 
 :: Python bestimmen (venv bevorzugt, dann System-Python)
@@ -32,11 +47,11 @@ if not exist "%~dp0index.html" (
 
 :: Web-Server starten
 echo  Starte Web-Server...
-start "" /min "%PYTHON%" -m http.server 8788
+start "TeacherAssist Web" /min "%PYTHON%" -m http.server 8788
 
 :: Tool-Server starten (PDF-Upload, OCR, Lehrplan-Suche)
 echo  Starte Tool-Server...
-start "" /min "%PYTHON%" "%~dp0tool_server.py"
+start "TeacherAssist Tool" /min "%PYTHON%" "%~dp0tool_server.py"
 
 :: Kurz warten bis Server bereit ist
 timeout /t 3 /nobreak >nul
@@ -46,7 +61,7 @@ echo  Oeffne Browser...
 start "" http://localhost:8788
 
 echo.
-echo  LehrerAgent laeuft!
+echo  TeacherAssist laeuft!
 echo  (Dieses Fenster kann minimiert werden)
 echo.
 

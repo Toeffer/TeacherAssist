@@ -17,6 +17,7 @@
   {"name": "lerntagebuch_feedback", "folder": "lerntagebuch_feedback", "triggers": ["lerntagebuch", "reflexion", "tagebucheintrag", "lernreflexion", "feedback tagebuch"]},
   {"name": "schuelerarbeit_bewerten", "folder": "schuelerarbeit_bewerten", "triggers": ["schülerarbeit", "korrektur", "bewerten", "korrigieren", "schüleraufsatz", "schülertext"]},
   {"name": "lehrplan_einlesen", "folder": "lehrplan_einlesen", "triggers": ["lehrplan einlesen", "lehrplan hochladen", "pdf lehrplan", "lehrplan importieren"]},
+  {"name": "begleiter", "folder": "begleiter", "triggers": []},
   {"name": "methodenrotation", "folder": "methodenrotation", "triggers": ["methoden", "methodenwechsel", "neue methoden", "methodenvariation", "vielfältige methoden"]},
   {"name": "lehrplan_coverage", "folder": "lehrplan_coverage", "triggers": ["lehrplan abdeckung", "was fehlt", "lehrplanlücke", "noch nicht behandelt", "lehrplan check"]}
 ]

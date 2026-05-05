@@ -24,6 +24,7 @@ Stellt lokale Endpunkte bereit:
   POST /memory-write         – Memory-Datei schreiben
   POST /memory-restore-version – Backup-Version wiederherstellen
   POST /ocr-image            – Bild per OCR in Text umwandeln
+  POST /session-summary      – Chat-Verlauf zusammenfassen und in vergangene_stunden.md speichern
 
 Sicherheit:
   - API-Key NUR serverseitig in settings.json
@@ -162,7 +163,7 @@ def load_memory_context():
 # System-Prompt
 # ---------------------------------------------------------------------------
 def build_system_prompt(profile):
-    asst_name = (profile or {}).get("assistant_name") or "Klara"
+    asst_name = (profile or {}).get("assistant_name") or "Mila"
     teacher_name = (profile or {}).get("name") or ""
     lines = [
         f"Du bist {asst_name}, eine persönliche und vertraute Begleitung im Schulalltag einer deutschen Lehrkraft{teacher_name and ' namens ' + teacher_name or ''}.",
@@ -205,6 +206,27 @@ def build_system_prompt(profile):
             lines.append(f"- Klassenbesonderheiten: {profile['besonderheiten']}")
         if profile.get("methoden"):
             lines.append(f"- Bevorzugte Methoden: {profile['methoden']}")
+
+        # ── Stil-Präferenzen vom Avatar-Popover ──
+        style_lines = []
+        formality = profile.get("style_formality", "")
+        detail = profile.get("style_detail", "")
+
+        if formality == "locker":
+            style_lines.append("- Du sprichst im kollegialen Du-Ton, herzlich und locker – wie eine vertraute Kollegin im Lehrerzimmer.")
+        elif formality == "formal":
+            style_lines.append("- Du antwortest sachlich-neutral und distanziert, im professionellen Beratungsstil.")
+
+        if detail == "knapp":
+            style_lines.append("- Du antwortest extrem knapp: Stichworte, Bullet Points, keine ausschweifenden Erklärungen. Kein Satz länger als nötig.")
+        elif detail == "ausführlich":
+            style_lines.append("- Du antwortest ausführlich: mit Begründungen, Beispielen und didaktischen Erläuterungen. Ganze Sätze, Prosa-Stil.")
+
+        if style_lines:
+            lines.append("")
+            lines.append("## Gewünschter Antwortstil")
+            lines.extend(style_lines)
+
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
@@ -329,9 +351,30 @@ def check_ollama():
     return _ollama_online
 
 # ---------------------------------------------------------------------------
+# DSGVO-Modell-Routing – Skill-basierte Erzwingung lokaler Modelle
+# ---------------------------------------------------------------------------
+DSGVO_PFLICHT_LOKAL = [
+    "schuelerarbeit_bewerten",   # Schülerarbeiten enthalten ggf. Namen
+    "zeugnis_formulieren",       # Schülerbezogene Bewertungen
+    "foerderplan_erstellen",     # Individuelle Förderdaten
+    "lerntagebuch_feedback",     # SuS-Reflexionen
+    "klassenstatistik",          # Aggregierte Schülerdaten
+]
+
+def route_model(skill_name: str, user_preferred_model: str) -> str:
+    """
+    Gibt das tatsächlich zu verwendende Modell zurück.
+    Bei DSGVO-pflichtigen Skills wird IMMER auf Ollama geroutet,
+    unabhängig von der Nutzerpräferenz.
+    """
+    if skill_name and skill_name in DSGVO_PFLICHT_LOKAL:
+        return "ollama"  # Lokales Modell erzwingen
+    return user_preferred_model  # Nutzerwahl respektieren
+
+# ---------------------------------------------------------------------------
 # LLM-Call (Streaming) – serverseitiger Proxy
 # ---------------------------------------------------------------------------
-def stream_llm(messages, profile, settings, skill_content="", rag_context="", wfile=None):
+def stream_llm(messages, profile, settings, skill_content="", rag_context="", wfile=None, skill_name=None):
     """
     Ruft LLM an und streamt Antwort per SSE an wfile.
     Entscheidet Provider (openrouter/ollama) basierend auf DSGVO-Prüfung.
@@ -339,39 +382,55 @@ def stream_llm(messages, profile, settings, skill_content="", rag_context="", wf
     is_ollama = settings.get("provider") == "ollama"
     ollama_model = settings.get("ollamaModel") or "gemma3:4b"
     model = settings.get("model") or "deepseek/deepseek-chat"
-    api_key = get_api_key()
+    api_key = settings.get("apiKey") or get_api_key()
 
-    # DSGVO-Prüfung: Letzte User-Nachricht prüfen
-    last_user_msg = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            last_user_msg = m.get("text", m.get("content", ""))
-            break
-
-    findings = detect_personal_data(last_user_msg)
-    has_auto_detectable = any(f["auto"] for f in findings)
-    has_any_findings = len(findings) > 0
-
-    # DSGVO-Modus: erzwinge lokal wenn personenbezogene Daten erkannt wurden
-    force_local = False
-    if has_auto_detectable:
-        force_local = True
-        if not check_ollama():
-            # Kein Ollama verfügbar → Daten schwärzen, dann Cloud
-            anon_text = anonymize_text(last_user_msg)
-            for m in messages:
-                if m.get("role") == "user" and m.get("text"):
-                    m["text"] = anon_text
-            force_local = False
-            _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt und automatisch geschwärzt. Bitte überprüfen.", "findings": findings})
+    # DSGVO-Skill-basiertes Routing (VOR content-basierter Prüfung)
+    routed_provider = route_model(skill_name, "ollama" if is_ollama else "openrouter")
+    dsgvo_routing_active = False
+    if routed_provider == "ollama" and not is_ollama:
+        # DSGVO-Skill: lokales Modell erzwungen
+        dsgvo_routing_active = True
+        if check_ollama():
+            is_ollama = True
+            _send_sse(wfile, {"type": "dsgvo_warning", "message": "🔒 Lokales Modell (DSGVO): Dieser Skill erfordert lokale Verarbeitung – verwende Ollama.", "routing": "dsgvo_local"})
         else:
-            _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt – verwende lokales Modell (DSGVO-konform).", "findings": findings})
-    elif has_any_findings:
-        _send_sse(wfile, {"type": "dsgvo_warning", "message": "Mögliche personenbezogene Daten erkannt. Bitte prüfen und ggf. durch SuS-01 etc. ersetzen.", "findings": findings})
+            # Ollama offline + DSGVO-Skill → KEIN Cloud-Fallback
+            _send_sse(wfile, {"type": "error", "message": "🔒 DSGVO-Pflicht: Dieser Skill (Klasse: " + skill_name + ") muss lokal verarbeitet werden. Ollama ist nicht verfügbar. Bitte starte Ollama und versuche es erneut."})
+            _send_sse(wfile, {"type": "done"})
+            return
 
-    # Provider erzwingen falls nötig
-    if force_local:
-        is_ollama = True
+    # DSGVO-Prüfung: Letzte User-Nachricht prüfen (nur wenn nicht bereits durch Skill geroutet)
+    if not dsgvo_routing_active:
+        last_user_msg = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                last_user_msg = m.get("text", m.get("content", ""))
+                break
+
+        findings = detect_personal_data(last_user_msg)
+        has_auto_detectable = any(f["auto"] for f in findings)
+        has_any_findings = len(findings) > 0
+
+        # DSGVO-Modus: erzwinge lokal wenn personenbezogene Daten erkannt wurden
+        force_local = False
+        if has_auto_detectable:
+            force_local = True
+            if not check_ollama():
+                # Kein Ollama verfügbar → Daten schwärzen, dann Cloud
+                anon_text = anonymize_text(last_user_msg)
+                for m in messages:
+                    if m.get("role") == "user" and m.get("text"):
+                        m["text"] = anon_text
+                force_local = False
+                _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt und automatisch geschwärzt. Bitte überprüfen.", "findings": findings})
+            else:
+                _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt – verwende lokales Modell (DSGVO-konform).", "findings": findings})
+        elif has_any_findings:
+            _send_sse(wfile, {"type": "dsgvo_warning", "message": "Mögliche personenbezogene Daten erkannt. Bitte prüfen und ggf. durch SuS-01 etc. ersetzen.", "findings": findings})
+
+        # Provider erzwingen falls nötig
+        if force_local:
+            is_ollama = True
 
     # System-Prompt bauen
     system_content = build_system_prompt(profile)
@@ -393,6 +452,20 @@ def stream_llm(messages, profile, settings, skill_content="", rag_context="", wf
         headers = {"Content-Type": "application/json"}
         body = {"model": ollama_model, "messages": api_messages, "stream": True}
         _send_sse(wfile, {"type": "provider", "provider": "ollama"})
+    elif settings.get("provider") == "custom":
+        custom_endpoint = settings.get("customEndpoint", "").strip()
+        custom_apikey = settings.get("customApiKey", "").strip()
+        custom_model = settings.get("customModel", "gpt-3.5-turbo").strip()
+        if not custom_endpoint:
+            _send_sse(wfile, {"type": "error", "message": "Custom-Endpoint nicht konfiguriert. Bitte in den Einstellungen eintragen."})
+            _send_sse(wfile, {"type": "done"})
+            return
+        endpoint = custom_endpoint
+        headers = {"Content-Type": "application/json"}
+        if custom_apikey:
+            headers["Authorization"] = f"Bearer {custom_apikey}"
+        body = {"model": custom_model, "messages": api_messages, "stream": True}
+        _send_sse(wfile, {"type": "provider", "provider": "custom"})
     else:
         endpoint = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
@@ -551,7 +624,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/restore":         self._restore()
         elif path == "/memory-write":    self._write_memory_file()
         elif path == "/memory-restore-version": self._restore_version()
+        elif path == "/ollama-pull":     self._ollama_pull()
+        elif path == "/shutdown":       self._shutdown()
         elif path == "/ocr-image":       self._ocr_image()
+        elif path == "/session-summary": self._session_summary()
         else: self.send_error(404)
 
     # ---- NEU: /chat (LLM-Proxy mit DSGVO-Filter + Skill-Router) ------------
@@ -565,6 +641,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         messages = data.get("messages", [])
         profile  = data.get("profile", {})
         settings = load_settings()
+        # API-Key aus Request-Body überschreibt gespeicherten Key (kein Race-Condition)
+        if data.get("apiKey"):
+            settings["apiKey"] = data["apiKey"]
 
         # Skill-Router: passenden Skill finden
         last_user = ""
@@ -602,6 +681,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             skill_content=skill_content,
             rag_context=rag_context,
             wfile=self.wfile,
+            skill_name=skill["name"] if skill else None,
         )
 
     # ---- Bestehende Endpunkte (unverändert) ---------------------------------
@@ -683,7 +763,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data = json.loads(self._body().decode("utf-8"))
             # Erlaube apiKey im Server zu speichern (kommt vom Frontend-Settings)
             allowed = {}
-            for k in ("provider", "ollamaModel", "model", "apiKey"):
+            for k in ("provider", "ollamaModel", "model", "apiKey", "customEndpoint", "customApiKey", "customModel"):
                 if k in data:
                     allowed[k] = data[k]
             SETTINGS_FILE.write_text(json.dumps(allowed, ensure_ascii=False), "utf-8")
@@ -900,8 +980,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         ct  = self.headers.get("Content-Type", "")
         body = self._body()
         try:
-            import pytesseract
-            from PIL import Image
             if "multipart/form-data" in ct:
                 boundary = ""
                 for seg in ct.split(";"):
@@ -915,10 +993,72 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 name, content = files[0]
             else:
                 name, content = "image.jpg", body
+
             suffix = '.jpg' if name.lower().endswith(('.jpg', '.jpeg')) else '.png'
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                 f.write(content)
                 tmp_path = f.name
+
+            # ── VLM-Pfad: Versuche Ollama Vision-Modell für Handschrift ──
+            if check_ollama():
+                try:
+                    import base64
+                    with open(tmp_path, "rb") as bf:
+                        b64 = base64.b64encode(bf.read()).decode("ascii")
+                    # Nutze das erste verfügbare VLM oder das aktuelle Ollama-Modell
+                    settings = load_settings()
+                    vision_model = ""
+                    # Prüfe ob ein Vision-Modell verfügbar ist
+                    req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        tags_data = json.loads(resp.read())
+                        models = [m.get("name", "") for m in tags_data.get("models", [])]
+                        for vm in ["granite3.2-vision", "minicpm-v", "gemma3:12b", "llava", "bakllava"]:
+                            if any(m.startswith(vm) for m in models):
+                                vision_model = next(m for m in models if m.startswith(vm))
+                                break
+                    if not vision_model:
+                        vision_model = settings.get("ollamaModel", "gemma3:4b")
+
+                    vlm_body = {
+                        "model": vision_model,
+                        "prompt": "Lies den Text auf diesem Bild. Gib nur den erkannten Text zurück, keine zusätzlichen Erklärungen. Wenn es sich um handgeschriebenen Text handelt, gib ihn so genau wie möglich wieder. Erwähne nichts über das Bild selbst.",
+                        "images": [b64],
+                        "stream": False,
+                    }
+                    vlm_req = urllib.request.Request(
+                        "http://localhost:11434/api/generate",
+                        data=json.dumps(vlm_body).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(vlm_req, timeout=60) as vlm_resp:
+                        vlm_text = ""
+                        for line in vlm_resp:
+                            try:
+                                p = json.loads(line)
+                                vlm_text += p.get("response", "")
+                            except Exception:
+                                pass
+                        vlm_text = vlm_text.strip()
+                        if vlm_text and len(vlm_text) > 5:
+                            try: os.unlink(tmp_path)
+                            except: pass
+                            self._json({"text": vlm_text, "method": "ollama", "model": vision_model})
+                            return
+                except Exception:
+                    pass  # VLM fehlgeschlagen → Fallback zu Tesseract
+
+            # ── Tesseract-Fallback ──
+            try:
+                import pytesseract
+                from PIL import Image
+            except Exception:
+                try: os.unlink(tmp_path)
+                except: pass
+                self._json({"error": "OCR nicht verfügbar – bitte Tesseract installieren oder Ollama mit VLM starten."}, 500)
+                return
+
             try:
                 img  = Image.open(tmp_path)
                 text = pytesseract.image_to_string(img, lang="deu")
@@ -933,6 +1073,158 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"text": text.strip()})
         except Exception as e:
             self._json({"error": f"OCR fehlgeschlagen: {str(e)}"}, 500)
+
+    def _ollama_pull(self):
+        """Lädt ein Ollama-Modell herunter und streamt den Fortschritt per SSE."""
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+        except Exception:
+            self._json({"error": "Ungültiges JSON"}, 400)
+            return
+        model = data.get("model", "").strip()
+        if not model:
+            self._json({"error": "Kein Modellname angegeben"}, 400)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self._cors()
+        self.end_headers()
+
+        try:
+            proc = subprocess.Popen(
+                ["ollama", "pull", model],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    if "completed" in parsed and "total" in parsed:
+                        pct = int(parsed["completed"] / max(parsed["total"], 1) * 100)
+                        _send_sse(self.wfile, {"type": "progress", "percent": pct, "status": parsed.get("status", "downloading")})
+                    elif "status" in parsed:
+                        _send_sse(self.wfile, {"type": "status", "message": parsed["status"]})
+                except json.JSONDecodeError:
+                    _send_sse(self.wfile, {"type": "status", "message": line})
+
+            proc.wait()
+            if proc.returncode == 0:
+                _send_sse(self.wfile, {"type": "done", "success": True, "model": model})
+            else:
+                _send_sse(self.wfile, {"type": "error", "message": f"ollama pull fehlgeschlagen (code {proc.returncode})"})
+        except FileNotFoundError:
+            _send_sse(self.wfile, {"type": "error", "message": "Ollama ist nicht installiert. Bitte von ollama.com/download herunterladen."})
+        except Exception as e:
+            _send_sse(self.wfile, {"type": "error", "message": str(e)})
+
+    def _shutdown(self):
+        """Beendet den Tool-Server und den Web-Server."""
+        self._json({"success": True, "message": "TeacherAssist wird beendet."})
+        # Web-Server auf Port 8788 beenden
+        try:
+            subprocess.run(["taskkill", "/F", "/FI", "WINDOWTITLE eq TeacherAssist Web*"], capture_output=True)
+        except Exception:
+            pass
+        # Browser-Fenster, die diesen Server referenzieren, bleiben offen – nur Server sterben
+        import threading
+        def _exit():
+            time.sleep(0.5)
+            os._exit(0)
+        threading.Thread(target=_exit, daemon=True).start()
+
+    def _session_summary(self):
+        """Fasst den Chat-Verlauf zusammen und speichert ihn in vergangene_stunden.md."""
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+        except Exception:
+            self._json({"error": "Ungültiges JSON"}, 400)
+            return
+
+        messages = data.get("messages", [])
+        profile  = data.get("profile", {})
+        settings = load_settings()
+        if data.get("apiKey"):
+            settings["apiKey"] = data["apiKey"]
+
+        # Nur User-Nachrichten extrahieren (ohne System/Bot)
+        user_texts = []
+        for m in messages:
+            if m.get("role") == "user":
+                text = m.get("text", m.get("content", "")).strip()
+                if text:
+                    user_texts.append(text)
+
+        if not user_texts:
+            self._json({"error": "Keine User-Nachrichten zum Zusammenfassen"}, 400)
+            return
+
+        # Zusammenfassung per LLM generieren
+        summary_prompt = (
+            "Fasse den folgenden Chat-Verlauf einer Lehrkraft mit ihrem KI-Assistenten "
+            "in 3-5 Sätzen zusammen. Was war das Thema? Welche Fächer/Klassen wurden besprochen? "
+            "Welche Ergebnisse/Pläne wurden erarbeitet? "
+            "Schreibe im Stil eines Verlaufsprotokolls für die Lehrkraft.\n\n"
+            + "\n".join(f"- {t}" for t in user_texts[-20:])  # max 20 Nachrichten
+        )
+
+        summary = ""
+        try:
+            is_ollama = settings.get("provider") == "ollama"
+            ollama_model = settings.get("ollamaModel") or "gemma3:4b"
+            model = settings.get("model") or "deepseek/deepseek-chat"
+            api_key = settings.get("apiKey") or get_api_key()
+
+            if is_ollama:
+                endpoint = "http://localhost:11434/v1/chat/completions"
+                headers = {"Content-Type": "application/json"}
+                body = {"model": ollama_model, "messages": [{"role": "user", "content": summary_prompt}], "stream": False}
+            else:
+                endpoint = "https://openrouter.ai/api/v1/chat/completions"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "HTTP-Referer": "http://localhost:8788",
+                    "X-Title": "TeacherAssist",
+                }
+                body = {"model": model, "messages": [{"role": "user", "content": summary_prompt}], "stream": False}
+
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(body).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                summary = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception as e:
+            summary = f"Chat-Sitzung: {user_texts[0][:100]}…"
+
+        if not summary.strip():
+            summary = f"Chat-Sitzung: {user_texts[0][:100]}…"
+
+        # In vergangene_stunden.md speichern
+        now = time.strftime("%d.%m.%Y %H:%M")
+        entry = f"\n\n## {now}\n{summary.strip()}\n"
+
+        vergangene = MEMORY_DIR / "vergangene_stunden.md"
+        if vergangene.exists():
+            existing = vergangene.read_text("utf-8").strip()
+            lines = existing.split("\n")
+            if len(lines) > 300:
+                existing = "\n".join(lines[-300:])
+            vergangene.write_text(existing + entry, encoding="utf-8")
+        else:
+            vergangene.parent.mkdir(parents=True, exist_ok=True)
+            vergangene.write_text(f"# Vergangene Stunden – Verlaufsprotokoll\n\nErstellt am {now}\n{entry}", encoding="utf-8")
+
+        self._json({"success": True, "summary": summary.strip()})
 
     def log_message(self, *_):
         pass

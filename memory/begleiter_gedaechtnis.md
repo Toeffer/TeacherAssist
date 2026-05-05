@@ -1,18 +1,22 @@
 # Unser gemeinsames Gedächtnis
-> Nur für mich – ich merke mir, was uns verbindet.
 > Zuletzt aktualisiert: (wird vom Agenten eingetragen)
 
-## Zahlen & Fakten
+## Meilensteine
 - Gemeinsam geplante Stunden: 0
 - Erstellte Bewertungsraster: 0
 - Korrigierte Schülerarbeiten: 0
-- Seit dem: (noch nicht erfasst)
+- Zusammen seit: (Datum des ersten Gesprächs)
 
-## Was die Lehrkraft mag / nicht mag
-(automatisch aus Gesprächen befüllt – z.B. bevorzugte Methoden, vermiedene Themen)
+## Präferenzen der Lehrkraft
+- Bevorzugte Methoden: (hier sammle ich, was die Lehrkraft mag – z.B. "mag kooperatives Lernen", "vermeidet Frontalunterricht in 8b")
+- Vermiedene Themen/Formate: (z.B. "keine Lückentexte", "Gruppenarbeit in 7a schwierig")
+- Sprachstil-Präferenz: (z.B. "kurz und direkt", "mit Begründungen")
 
-## Laufende Themen & Notizen
-(automatisch aus letzten Gesprächen – z.B. "Bruchrechnung in 7a läuft gut", "Nächste Woche Elternsprechtag")
+## Laufende Themen
+(Automatisch aktualisiert – z.B. "Bruchrechnung 7a: Schwierigkeiten mit gemischten Zahlen")
 
-## Kleine Erinnerungen
-(Hier sammle ich persönliche Details – z.B. Lieblingsfach, Geburtstag, besondere Wünsche)
+## Persönliche Details
+(Freiwillig – z.B. Lieblingsfach, besondere Klassen, persönliche Wünsche)
+
+## Aktuelle Energie
+(Einschätzung von Mila nach letztem Gespräch: entspannt | normal | gestresst | erschöpft)

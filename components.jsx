@@ -297,122 +297,15 @@ function openPrintWindow(text, title) {
 <body>
 <div class="toolbar">
   <span>📄 <strong>Export bereit</strong> – als PDF drucken oder speichern</span>
-  <button class="btn-print" onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
-</div>
-${body}
-<div class="footer">Erstellt mit TeacherAssist · ${today}</div>
-</body>
-</html>`);
-  win.document.close();
-}
-
-/* ---------- Avatar ---------- */
-function BotAvatar({ size = 32, name = '' }) {
-  const initial = name ? name.charAt(0).toUpperCase() : 'K';
-  return (
-    <div style={{
-      width: size, height: size, borderRadius: '50%',
-      background: 'var(--accent)', color: '#fff',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      flexShrink: 0, fontSize: size * 0.45, fontWeight: 700,
-    }}>
-      {initial}
-    </div>
-  );
-}
-
-/* ---------- Typing indicator ---------- */
-function TypingDots() {
-  return (
-    <div style={{ display: 'flex', gap: 4, padding: '8px 0' }}>
-      {[0, 1, 2].map(i => (
-        <div key={i} style={{
-          width: 7, height: 7, borderRadius: '50%',
-          background: 'var(--text-tertiary)',
-          animation: `typingBounce 1.2s ease-in-out ${i * 0.15}s infinite`,
-        }}></div>
-      ))}
-    </div>
-  );
-}
-
-/* ---------- Chat Bubble ---------- */
-function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
-  const [hovered, setHovered] = React.useState(false);
-  const [copied, setCopied] = React.useState(false);
-  const hasContent = isBot && !isTyping && message && message.length > 80;
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(message);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {}
-  };
-
-  const btnBase = {
-    display: 'flex', alignItems: 'center', gap: 5,
-    padding: '4px 10px', borderRadius: 8, fontSize: 12,
-    background: 'var(--surface-elevated)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-secondary)',
-    cursor: 'pointer', fontFamily: 'inherit',
-    transition: 'all 0.15s',
-  };
-
-  return (
-    <div
-      style={{
-        display: 'flex', gap: 12, alignItems: 'flex-start',
-        flexDirection: isBot ? 'row' : 'row-reverse',
-        maxWidth: '100%',
-        animation: 'fadeInUp 0.3s ease',
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {isBot && <BotAvatar name={assistantName} />}
-      <div style={{ maxWidth: '75%', display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{
-          background: isBot ? 'var(--bubble-bot)' : 'var(--bubble-user)',
-          color: isBot ? 'var(--text-primary)' : 'var(--bubble-user-text)',
-          padding: '10px 16px',
-          borderRadius: isBot ? '4px 18px 18px 18px' : '18px 4px 18px 18px',
-          fontSize: 15, lineHeight: 1.55,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}>
-          {isTyping || !message ? <TypingDots /> : message}
+          <button class="btn-print" onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
         </div>
-        {hasContent && (
-          <div style={{
-            display: 'flex', gap: 6,
-            opacity: hovered ? 1 : 0,
-            transition: 'opacity 0.2s',
-          }}>
-            <button
-              onClick={handleCopy}
-              title="Text kopieren (für Word / LibreOffice)"
-              style={{ ...btnBase, ...(copied ? { background: '#2a9d5c', color: '#fff', borderColor: '#2a9d5c' } : {}) }}
-              onMouseEnter={e => { if (!copied) { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; } }}
-              onMouseLeave={e => { if (!copied) { e.currentTarget.style.background = 'var(--surface-elevated)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border)'; } }}
-            >
-              {copied ? Icons.check : Icons.copy} {copied ? 'Kopiert!' : 'Kopieren'}
-            </button>
-            <button
-              onClick={() => onExport ? onExport(message) : openPrintWindow(message, 'TeacherAssist Export')}
-              title="Drucken / Als PDF speichern"
-              style={btnBase}
-              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface-elevated)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border)'; }}
-            >
-              {Icons.print} Exportieren
-            </button>
-          </div>
-        )}
       </div>
-    </div>
-  );
+      <div class="footer">
+        Erstellt mit TeacherAssist &bull; Exportiert am ${new Date().toLocaleDateString('de-DE')}
+      </div>
+    </body>
+    </html>`);
+  win.document.close();
 }
 
 /* ---------- Quick Reply Buttons ---------- */
@@ -469,6 +362,7 @@ function OnboardingProgress({ step, total }) {
 
 /* ---------- Sidebar ---------- */
 function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, onDeleteChat, onNavigate, currentView, dark, onToggleDark, assistantName }) {
+  const [chatSearch, setChatSearch] = React.useState('');
   return (
     <>
       {open && <div onClick={onClose} style={{
@@ -511,10 +405,24 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
           </button>
         </div>
 
+        {/* Chat search */}
+        <div style={{ padding: '8px 12px 0' }}>
+          <input
+            placeholder="🔍 Chat suchen…"
+            value={chatSearch}
+            onChange={e => setChatSearch(e.target.value)}
+            style={{
+              width: '100%', padding: '8px 10px', borderRadius: 8,
+              border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+              color: 'var(--text-primary)', fontSize: 13, outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
         {/* Chat list */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 1, padding: '8px 4px 4px', marginBottom: 2 }}>Chats</div>
-          {chats.map(c => (
+          {chats.filter(c => !chatSearch || c.title.toLowerCase().includes(chatSearch.toLowerCase())).map(c => (
             <div key={c.id}
               onClick={() => { onSelectChat(c.id); onNavigate('chat'); }}
               style={{
@@ -610,6 +518,9 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
   const [recError, setRecError]       = React.useState('');
   const [showCamera, setShowCamera]   = React.useState(false);
   const recognitionRef = React.useRef(null);
+  const historyRef = React.useRef([]);
+  const historyIdxRef = React.useRef(-1);
+  const draftBeforeHistoryRef = React.useRef('');
   const cameraSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -643,7 +554,38 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
   };
 
   const handleKey = (e) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const hist = historyRef.current;
+      if (hist.length === 0) return;
+      e.preventDefault();
+      if (e.key === 'ArrowUp') {
+        if (historyIdxRef.current === -1) draftBeforeHistoryRef.current = value;
+        if (historyIdxRef.current < hist.length - 1) {
+          historyIdxRef.current++;
+          onChange(hist[hist.length - 1 - historyIdxRef.current]);
+        }
+      } else {
+        if (historyIdxRef.current > 0) {
+          historyIdxRef.current--;
+          onChange(hist[hist.length - 1 - historyIdxRef.current]);
+        } else if (historyIdxRef.current === 0) {
+          historyIdxRef.current = -1;
+          onChange(draftBeforeHistoryRef.current);
+        }
+      }
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
+  };
+
+  const recordToHistory = (text) => {
+    const hist = historyRef.current;
+    if (!text.trim()) return;
+    const filtered = hist.filter(h => h.trim() !== text.trim());
+    filtered.push(text.trim());
+    if (filtered.length > 10) filtered.shift();
+    historyRef.current = filtered;
+    historyIdxRef.current = -1;
   };
   const handleFile = (e) => {
     const file = e.target.files?.[0];
@@ -766,7 +708,7 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
             {isRecording ? Icons.micOff : Icons.mic}
           </button>
         )}
-        <button onClick={onSend} disabled={disabled || !value.trim()} style={{
+        <button onClick={() => { recordToHistory(value); onSend(); }} disabled={disabled || !value.trim()} style={{
           width: 40, height: 40, borderRadius: 12,
           background: value.trim() ? 'var(--accent)' : 'var(--border)',
           color: '#fff', border: 'none', cursor: value.trim() ? 'pointer' : 'default',
@@ -1086,6 +1028,41 @@ function calcMessagesPerEuro(prices) {
   return Math.round(1 * usdPerEuro / costPerMsg / 100) * 100; // gerundet auf 100
 }
 
+function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) {
+  const [open, setOpen] = React.useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('ta_collapse_' + title)) ?? defaultOpen; } catch { return defaultOpen; }
+  });
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    try { sessionStorage.setItem('ta_collapse_' + title, JSON.stringify(next)); } catch {}
+  };
+  return (
+    <div style={{
+      background: 'var(--surface-elevated)', borderRadius: 14,
+      border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16,
+    }}>
+      <button onClick={toggle} style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        width: '100%', padding: '16px 20px',
+        background: 'none', border: 'none', cursor: 'pointer',
+        color: 'var(--text-primary)', fontSize: 15, fontWeight: 600,
+        fontFamily: 'inherit', textAlign: 'left',
+      }}>
+        <div>
+          <div style={{ color: 'var(--text-primary)' }}>{title}</div>
+          {subtitle && <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2, fontWeight: 400 }}>{subtitle}</div>}
+        </div>
+        <span style={{
+          transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+          transition: 'transform 0.2s', color: 'var(--text-tertiary)', fontSize: 14,
+        }}>▾</span>
+      </button>
+      {open && <div style={{ borderTop: '1px solid var(--border)' }}>{children}</div>}
+    </div>
+  );
+}
+
 function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore }) {
   const [showKey, setShowKey] = React.useState(false);
   const [keyInput, setKeyInput] = React.useState(apiKey || '');
@@ -1105,16 +1082,9 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
         Passe TeacherAssist an deine Bedürfnisse an.
       </p>
 
-      {/* KI-Anbieter */}
-      <div style={{
-        background: 'var(--surface-elevated)', borderRadius: 14,
-        border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16,
-      }}>
+      {/* KI-Anbieter (immer sichtbar) */}
+      <CollapsibleSection title="KI-Anbieter" subtitle="Cloud oder lokal – wähle deinen KI-Dienst" defaultOpen={true}>
         <div style={{ padding: '16px 20px' }}>
-          <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3 }}>KI-Anbieter</div>
-          <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 12 }}>
-            Cloud: leistungsstärker, erfordert API-Key · Lokal: kein Internet, DSGVO-konform für Schülerarbeiten
-          </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={() => onProviderChange('openrouter')} style={{
               flex: 1, padding: '10px 8px', borderRadius: 10, cursor: 'pointer',
@@ -1134,7 +1104,7 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
             }}>🔒 Ollama (Lokal)</button>
           </div>
         </div>
-      </div>
+      </CollapsibleSection>
 
       {/* Fallback-Hinweis */}
       {isFallbackActive && (
@@ -1347,19 +1317,8 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
       )}
 
       {/* Wissensdatenbank */}
-      <div style={{
-        background: 'var(--surface-elevated)', borderRadius: 14,
-        border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16,
-      }}>
+      <CollapsibleSection title="📚 Wissensdatenbank (Lehrpläne)" subtitle="PDF-Lehrpläne hochladen – automatischer RAG-Kontext bei jeder Anfrage">
         <div style={{ padding: '16px 20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-            {Icons.database}
-            <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Wissensdatenbank (Lehrpläne)</div>
-          </div>
-          <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 12, lineHeight: 1.6 }}>
-            Lade PDF-Lehrpläne hoch – sie werden per OCR eingelesen und lokal gespeichert.
-            Bei jeder Anfrage wird automatisch passender Kontext aus den Plänen eingeblendet.
-          </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <div style={{
@@ -1426,22 +1385,12 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
             )
           )}
         </div>
-      </div>
+      </CollapsibleSection>
 
       {/* Backup & Restore */}
       {toolStatus === 'online' && (
-        <div style={{
-          background: 'var(--surface-elevated)', borderRadius: 14,
-          border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16,
-        }}>
+        <CollapsibleSection title="💾 Backup und Wiederherstellung" subtitle="Profil, Lehrplan-Index und Raster als ZIP sichern">
           <div style={{ padding: '16px 20px' }}>
-            <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3 }}>
-              Backup &amp; Restore
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 14, lineHeight: 1.6 }}>
-              Sicher dein Profil, Lehrerprofil, Lehrplan-Index und Bewertungsraster als ZIP-Datei.
-              Beim Restore werden bestehende Dateien überschrieben.
-            </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button onClick={onBackup} style={{
                 display: 'flex', alignItems: 'center', gap: 6,
@@ -1469,73 +1418,72 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
               🔒 Backup enthält keine Schülerdaten – nur dein Lehrerprofil und Unterrichtsunterlagen
             </div>
           </div>
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* Erscheinungsbild + Reset + About */}
-      <div style={{
-        background: 'var(--surface-elevated)', borderRadius: 14,
-        border: '1px solid var(--border)', overflow: 'hidden',
-      }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px', borderBottom: '1px solid var(--border)',
-        }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Erscheinungsbild</div>
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2 }}>{dark ? 'Dark Mode aktiv' : 'Light Mode aktiv'}</div>
-          </div>
-          <button onClick={onToggleDark} style={{
-            width: 52, height: 28, borderRadius: 14, border: 'none', cursor: 'pointer',
-            background: dark ? 'var(--accent)' : 'var(--border)',
-            position: 'relative', transition: 'background 0.2s',
-          }}>
-            <div style={{
-              width: 22, height: 22, borderRadius: '50%', background: '#fff',
-              position: 'absolute', top: 3,
-              left: dark ? 27 : 3,
-              transition: 'left 0.2s ease',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-            }}></div>
-          </button>
-        </div>
-
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px', borderBottom: '1px solid var(--border)',
-        }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Profil zurücksetzen</div>
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2 }}>Onboarding erneut durchlaufen</div>
-          </div>
-          <button onClick={onResetOnboarding} style={{
-            padding: '8px 16px', borderRadius: 8,
-            background: 'transparent', border: '1.5px solid var(--danger)',
-            color: 'var(--danger)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
-          }}>
-            Zurücksetzen
-          </button>
-        </div>
-
+      <CollapsibleSection title="🎨 Erscheinungsbild und System" subtitle="Dark/Light-Modus, Profil zurücksetzen, Version">
         <div style={{ padding: '16px 20px' }}>
-          <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Über TeacherAssist</div>
-          <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2 }}>
-            Version 1.0 · {provider === 'ollama' ? `Ollama (Lokal) · ${ollamaModel}` : `OpenRouter · ${(model || '').split('/')[1] || model}`}
-          </div>
           <div style={{
-            marginTop: 12, padding: '10px 14px', borderRadius: 8,
-            background: 'var(--bg)', fontSize: 12, color: 'var(--text-tertiary)',
-            lineHeight: 1.6, borderLeft: '3px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            marginBottom: 16,
           }}>
-            <strong style={{ color: 'var(--text-secondary)' }}>Hinweis gem. EU AI Act Art. 52:</strong> Diese Anwendung verwendet
-            KI-Sprachmodelle über den Dienst <em>OpenRouter</em> (openrouter.ai).
-            Antworten werden von einem KI-System generiert und stellen keine
-            rechtsverbindliche Beratung dar. Inhalte immer auf fachliche
-            Richtigkeit prüfen. Es werden keine personenbezogenen Schülerdaten
-            an externe Server übermittelt.
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Erscheinungsbild</div>
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2 }}>{dark ? 'Dark Mode aktiv' : 'Light Mode aktiv'}</div>
+            </div>
+            <button onClick={onToggleDark} style={{
+              width: 52, height: 28, borderRadius: 14, border: 'none', cursor: 'pointer',
+              background: dark ? 'var(--accent)' : 'var(--border)',
+              position: 'relative', transition: 'background 0.2s',
+            }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: '50%', background: '#fff',
+                position: 'absolute', top: 3,
+                left: dark ? 27 : 3,
+                transition: 'left 0.2s ease',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+              }}></div>
+            </button>
+          </div>
+
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            marginBottom: 16,
+          }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Profil zurücksetzen</div>
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2 }}>Onboarding erneut durchlaufen</div>
+            </div>
+            <button onClick={onResetOnboarding} style={{
+              padding: '8px 16px', borderRadius: 8,
+              background: 'transparent', border: '1.5px solid var(--danger)',
+              color: 'var(--danger)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+            }}>
+              Zurücksetzen
+            </button>
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Über TeacherAssist</div>
+            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 2 }}>
+              Version 1.0 · {provider === 'ollama' ? `Ollama (Lokal) · ${ollamaModel}` : `OpenRouter · ${(model || '').split('/')[1] || model}`}
+            </div>
+            <div style={{
+              marginTop: 12, padding: '10px 14px', borderRadius: 8,
+              background: 'var(--bg)', fontSize: 12, color: 'var(--text-tertiary)',
+              lineHeight: 1.6, borderLeft: '3px solid var(--border)',
+            }}>
+              <strong style={{ color: 'var(--text-secondary)' }}>Hinweis gem. EU AI Act Art. 52:</strong> Diese Anwendung verwendet
+              KI-Sprachmodelle über den Dienst <em>OpenRouter</em> (openrouter.ai).
+              Antworten werden von einem KI-System generiert und stellen keine
+              rechtsverbindliche Beratung dar. Inhalte immer auf fachliche
+              Richtigkeit prüfen. Es werden keine personenbezogenen Schülerdaten
+              an externe Server übermittelt.
+            </div>
           </div>
         </div>
-      </div>
+      </CollapsibleSection>
     </div>
   );
 }
