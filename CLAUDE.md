@@ -103,17 +103,15 @@ lehreragent/
 ├── components.jsx                         ← React-Komponenten: Settings, Onboarding, etc.
 ├── tweaks-panel.jsx                       ← Erweiterte Einstellungen (Panel)
 ├── tool_server.py                         ← Tool-Server (Port 8789): Upload, OCR, RAG, Settings
-├── start.bat                              ← Startet Web-Server + Tool-Server + OpenClaw
+├── start.bat                              ← Startet Web-Server + Tool-Server (DSGVO-Proxy)
 ├── install.bat                            ← Erstinstallation: Python-Env, Abhängigkeiten
-├── openclaw_config_template.yaml          ← OpenClaw-Konfiguration (Provider, Fallback)
 ├── settings.json                          ← Persistierte Provider-Einstellungen (auto-generiert)
 │
-├── scripts/                               ← Windows-Hilfsscripte
-│   ├── setup_config.ps1                   ← OpenClaw-Konfiguration einrichten
+├── scripts/                               ← Windows-Hilfsscripte (optional)
 │   ├── setup_apikey.ps1                   ← API-Key in Umgebungsvariable speichern
 │   └── create_shortcut.ps1               ← Desktop-Verknüpfung erstellen
 │
-├── skills/                                ← EBENE 1: OpenClaw Skills (Markdown)
+├── skills/                                ← EBENE 1: Skills (Markdown-Instruktionen für das LLM)
 │   ├── begleiter/
 │   │   └── skill.md                      ← Mila-Charakter-Skill (immer aktiv, kein User-Trigger) 🔨
 │   ├── onboarding/
@@ -171,7 +169,7 @@ lehreragent/
 │   ├── setup.bat                         ← Windows: Python-Venv einrichten
 │   └── setup.sh                          ← Linux/macOS: Python-Venv einrichten
 │
-├── memory/                                ← OpenClaw Memory-Dateien (Markdown-Templates)
+├── memory/                                ← Memory-Dateien (Markdown-Templates)
 │   ├── lehrerprofil.md                   ← Profil: Bundesland, Schulform, Fächer, Klassen
 │   ├── lehrplan_index.md                 ← Menschenlesbare Lehrplaneinträge
 │   ├── lehrplan_vectordb/                ← ChromaDB-Verzeichnis (auto-generiert)
@@ -232,13 +230,13 @@ lehreragent/
 ## Tool-Spezifikationen (Ebene 2)
 
 Jedes Tool ist ein Python-Skript mit einer klar definierten Signatur.
-OpenClaw ruft Tools als Subprozess auf und bekommt JSON zurück.
+Der Tool-Server ruft Tools nach Bedarf auf und bekommt JSON zurück.
 
 ### Aufrufkonvention
 
 ```python
 # Alle Tools: stdin = JSON-Input, stdout = JSON-Output, stderr = Fehler
-# OpenClaw ruft auf: python tools/pdf_reader.py '{"filepath": "..."}'
+# Der Tool-Server ruft auf: python tools/pdf_reader.py '{"filepath": "..."}'
 import sys, json
 args = json.loads(sys.argv[1])
 result = do_something(args)
@@ -544,7 +542,7 @@ Wird von Mila via `memory_reader` und `memory_writer` verwaltet.
 - `claude-opus-4-7`: $15.00/M Input, $75.00/M Output
 - `claude-haiku-4-5`: $0.25/M Input, $1.25/M Output
 
-**Daten-Speicherung:** `~/.openclaw/usage/usage_data.json`
+**Daten-Speicherung:** `~/.teacherassist/usage/usage_data.json`
 **Standard-Budget:** $100/Monat
 
 ---
@@ -625,21 +623,14 @@ schuelerarbeit_bewerten (iPhone-Weg)
 
 ---
 
-## OpenClaw Skill-Format (Referenz)
+## Skill-Format (Referenz)
 
 ```
 ---
 name: skill_name
 triggers: ["phrase 1", "phrase 2"]
-permissions: [read_memory, write_memory]
 memory_files: [lehrerprofil.md, ...]
-parameters:
-  required: [param1]
-  optional: [param2]
 priority: 10          # höher = wird zuerst geprüft; onboarding hat 99
-auto_trigger:         # optional: ohne Nutzereingabe auslösen
-  condition: memory_file_missing
-  file: onboarding_complete.md
 ---
 
 # Skill: Name
@@ -651,8 +642,8 @@ Schritt 1 – ...
 ...
 ```
 
-**Der Brain liest die skill.md als Prompt-Erweiterung.**
-Skills sind keine ausführbaren Programme. Niemals Python-Code in skill.md schreiben.
+**Skills sind Instruktionen für das LLM – keine ausführbaren Programme.** 
+Niemals Python-Code in skill.md schreiben.
 
 ---
 
