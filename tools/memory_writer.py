@@ -14,9 +14,8 @@ from pathlib import Path
 
 
 def get_memory_path(relative_path: str) -> Path:
-    """Konvertiert relativen Pfad zu absolutem Pfad im OpenClaw-Memory-Verzeichnis."""
-    home = Path.home()
-    memory_dir = home / ".openclaw" / "memory"
+    """Konvertiert relativen Pfad zu absolutem Pfad im repo-lokalen Memory-Verzeichnis."""
+    memory_dir = Path(__file__).resolve().parents[1] / "memory"
     # Verzeichnisstruktur sicherstellen
     memory_dir.mkdir(parents=True, exist_ok=True)
     return memory_dir / relative_path

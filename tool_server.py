@@ -56,9 +56,51 @@ SETTINGS_FILE = BASE_DIR / "settings.json"
 SKILLS_DIR    = BASE_DIR / "skills"
 MEMORY_DIR    = BASE_DIR / "memory"
 SKILLS_INDEX  = BASE_DIR / "skills_index.json"
+VALID_PROVIDERS = {"openrouter", "ollama", "custom"}
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+
+def apply_request_overrides(settings, data):
+    """Apply non-persistent per-request provider/model overrides from the UI."""
+    provider = data.get("providerOverride")
+    if provider in VALID_PROVIDERS:
+        settings["provider"] = provider
+
+    for request_key, settings_key in (
+        ("modelOverride", "model"),
+        ("ollamaModelOverride", "ollamaModel"),
+        ("customEndpoint", "customEndpoint"),
+        ("customApiKey", "customApiKey"),
+        ("customModel", "customModel"),
+    ):
+        value = data.get(request_key)
+        if isinstance(value, str) and value.strip():
+            settings[settings_key] = value.strip()
+
+    if data.get("apiKey"):
+        settings["apiKey"] = data["apiKey"]
+    return settings
+
+def memory_zip_destination(name):
+    """Return a safe restore destination below memory/, or None for ignored entries."""
+    norm = name.replace("\\", "/").lstrip("/")
+    if norm.startswith("./"):
+        norm = norm[2:]
+    if not norm.startswith("memory/") or norm.endswith("/"):
+        return None
+
+    rel = norm[len("memory/"):]
+    if not rel:
+        return None
+
+    dest = (MEMORY_DIR / rel).resolve()
+    memory_root = MEMORY_DIR.resolve()
+    try:
+        dest.relative_to(memory_root)
+    except ValueError:
+        raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
+    return dest, "memory/" + rel
 
 ORIGIN = "http://localhost:8788"
 
@@ -640,10 +682,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         messages = data.get("messages", [])
         profile  = data.get("profile", {})
-        settings = load_settings()
-        # API-Key aus Request-Body überschreibt gespeicherten Key (kein Race-Condition)
-        if data.get("apiKey"):
-            settings["apiKey"] = data["apiKey"]
+        settings = apply_request_overrides(load_settings(), data)
 
         # Skill-Router: passenden Skill finden
         last_user = ""
@@ -766,6 +805,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             for k in ("provider", "ollamaModel", "model", "apiKey", "customEndpoint", "customApiKey", "customModel"):
                 if k in data:
                     allowed[k] = data[k]
+            if allowed.get("provider") not in VALID_PROVIDERS:
+                allowed.pop("provider", None)
             SETTINGS_FILE.write_text(json.dumps(allowed, ensure_ascii=False), "utf-8")
             self._json({"success": True})
         except Exception as e:
@@ -865,14 +906,16 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             restored = []
             with zipfile.ZipFile(buf, "r") as zf:
                 for name in zf.namelist():
-                    norm = name.replace("\\", "/")
-                    if not (norm.startswith("memory/") or norm.startswith("./memory/")):
+                    safe = memory_zip_destination(name)
+                    if safe is None:
                         continue
-                    dest = BASE_DIR / norm
+                    dest, norm = safe
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(zf.read(name))
                     restored.append(norm)
             self._json({"success": True, "restored": len(restored), "files": restored})
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
@@ -1148,9 +1191,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         messages = data.get("messages", [])
         profile  = data.get("profile", {})
-        settings = load_settings()
-        if data.get("apiKey"):
-            settings["apiKey"] = data["apiKey"]
+        settings = apply_request_overrides(load_settings(), data)
 
         # Nur User-Nachrichten extrahieren (ohne System/Bot)
         user_texts = []

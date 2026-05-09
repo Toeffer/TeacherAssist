@@ -22,7 +22,7 @@ print(json.dumps(result))
 
 ### 1. `memory_reader.py`
 
-**Zweck:** Liest Memory-Dateien im OpenClaw-Memory-Verzeichnis.
+**Zweck:** Liest Memory-Dateien im repo-lokalen `memory/`-Verzeichnis der Desktop-App.
 
 **Input:**
 ```json
@@ -79,7 +79,7 @@ print(json.dumps(result))
 ```json
 {
   "success": true,
-  "filepath": "/home/user/.openclaw/memory/lehrerprofil.md",
+  "filepath": "<repo>/memory/lehrerprofil.md",
   "error": null
 }
 ```
@@ -197,7 +197,7 @@ print(json.dumps(result))
   "success": true,
   "chunks_indexed": 24,
   "collection": "lehrplan_bayern_gymnasium_mathematik_7_a1b2c3d4",
-  "db_path": "/home/user/.openclaw/memory/lehrplan_vectordb",
+  "db_path": "<repo>/tools/chroma_db",
   "error": null
 }
 ```
@@ -368,5 +368,5 @@ python -c "import json; print(json.dumps({'query': 'Test'}))" | python tools/leh
 
 ### Logging
 - Tools loggen auf `stderr`
-- OpenClaw sammelt Logs in `~/.openclaw/logs/`
+- OpenClaw sammelt Logs in `~/.openclaw/logs/`; die Desktop-App nutzt ihren lokalen Tool-Server auf Port `8789`
 - Bei Problemen: Logs prüfen und `error`-Feld auswerten

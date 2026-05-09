@@ -144,7 +144,8 @@ flutter run -d android
 openclaw start --config ~/.openclaw/config.yaml
 ```
 
-OpenClaw läuft dann auf Port **18789** (WebSocket + HTTP).
+OpenClaw läuft dann auf Port **18789** für die Flutter/iOS-App über WebSocket/Tailscale.
+Die Desktop-Web-App nutzt zusätzlich den lokalen Tool-Server `tool_server.py` auf Port **8789**.
 
 ---
 
@@ -185,12 +186,12 @@ TeacherAssist/
 │   ├── .venv/              # (gitignored – wird durch setup.bat/sh erstellt)
 │   ├── requirements.txt
 │   └── *.py
-├── memory/                 # Memory-Templates (leer, werden vom Agent befüllt)
+├── memory/                 # Repo-lokaler Desktop-Memory
 ├── openclaw_config_template.yaml
 ├── SETUP.md                # Diese Datei
 └── CLAUDE.md               # Bauplan für Claude Code
 
-~/.openclaw/               # Laufzeit-Daten (NICHT im Repo)
+~/.openclaw/               # OpenClaw-/Tailscale-Laufzeit-Daten für mobile Integration
 ├── config.yaml            # Deine persönliche Konfiguration
 ├── memory/                # Vom Agenten befüllte Memory-Dateien
 ├── skills/                # Kopie der Skills aus dem Repo

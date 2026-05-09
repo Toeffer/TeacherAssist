@@ -1,6 +1,6 @@
 // ConnectionService.swift
-// Verwaltet die WebSocket-Verbindung zu OpenClaw im lokalen WLAN.
-// Kein Tailscale, kein VPN – direkter Zugriff auf Mac im Heimnetz.
+// Verwaltet die WebSocket-Verbindung zu OpenClaw über lokales WLAN oder Tailscale.
+// Port 18789 ist die OpenClaw/Tailscale-WebSocket-Integration; der Desktop-Tool-Server nutzt separat 8789.
 //
 // Verwendung:
 //   let service = ConnectionService(host: "192.168.1.42", port: 18789)

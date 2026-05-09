@@ -15,8 +15,7 @@ from typing import List, Dict, Any, Optional
 
 def get_chromadb_path() -> Path:
     """Gibt den Pfad zur ChromaDB zurück."""
-    home = Path.home()
-    db_path = home / ".openclaw" / "memory" / "lehrplan_vectordb"
+    db_path = Path(__file__).resolve().parent / "chroma_db"
     return db_path
 
 

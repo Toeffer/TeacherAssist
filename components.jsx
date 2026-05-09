@@ -208,8 +208,19 @@ const Icons = {
   ),
 };
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
 /* ---------- Markdown → Druck-HTML ---------- */
 function mdToHtml(md) {
+  md = escapeHtml(md || '');
   // Tabellen-Blöcke zuerst (vor Zeilen-Regex)
   let html = md.replace(/(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)+)/g, (block) => {
     const lines = block.trim().split('\n');
@@ -269,6 +280,7 @@ function mdToHtml(md) {
 
 function openPrintWindow(text, title) {
   const body = mdToHtml(text);
+  const safeTitle = escapeHtml(title || 'TeacherAssist Export');
   const today = new Date().toLocaleDateString('de-DE');
   const win = window.open('', '_blank');
   if (!win) return;
@@ -276,7 +288,7 @@ function openPrintWindow(text, title) {
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>${title}</title>
+<title>${safeTitle}</title>
 <style>
   body{font-family:'Segoe UI',Arial,sans-serif;max-width:820px;margin:0 auto;padding:24px 28px;color:#222;font-size:15px;line-height:1.6}
   h1{font-size:1.5em;border-bottom:2px solid #333;padding-bottom:6px;margin-top:0}
@@ -1240,7 +1252,7 @@ function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) 
   );
 }
 
-function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore }) {
+function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore, customEndpoint = '', onCustomEndpointChange = () => {}, customApiKey = '', onCustomApiKeyChange = () => {}, customModel = 'gpt-3.5-turbo', onCustomModelChange = () => {} }) {
   const [showKey, setShowKey] = React.useState(false);
   const [keyInput, setKeyInput] = React.useState(apiKey || '');
   const [saved, setSaved] = React.useState(false);
@@ -1279,6 +1291,14 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
               color: provider === 'ollama' ? '#fff' : 'var(--text-secondary)',
               transition: 'all 0.15s',
             }}>🔒 Ollama (Lokal)</button>
+            <button onClick={() => onProviderChange('custom')} style={{
+              flex: 1, padding: '10px 8px', borderRadius: 10, cursor: 'pointer',
+              fontWeight: 600, fontSize: 13, border: '2px solid',
+              borderColor: provider === 'custom' ? 'var(--accent)' : 'var(--border)',
+              background: provider === 'custom' ? 'var(--accent)' : 'var(--surface-input)',
+              color: provider === 'custom' ? '#fff' : 'var(--text-secondary)',
+              transition: 'all 0.15s',
+            }}>Eigener Dienst</button>
           </div>
         </div>
       </CollapsibleSection>
@@ -1352,6 +1372,40 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
             🔒 <strong>Lokal &amp; DSGVO-konform:</strong> Alle Anfragen laufen auf deinem Computer.
             Kein Internet erforderlich – Schülerarbeiten können bedenkenlos verarbeitet werden.
           </div>
+        </div>
+      </div>
+      )}
+
+      {provider === 'custom' && (
+      <div style={{
+        background: 'var(--surface-elevated)', borderRadius: 14,
+        border: customEndpoint ? '1px solid var(--border)' : '2px solid var(--accent)',
+        overflow: 'hidden', marginBottom: 16,
+      }}>
+        <div style={{ padding: '16px 20px' }}>
+          <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3 }}>Eigener OpenAI-kompatibler Endpunkt</div>
+          <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 12 }}>
+            Nutzt /v1/chat/completions kompatible Streaming-Antworten.
+          </div>
+          <input
+            value={customEndpoint}
+            onChange={e => onCustomEndpointChange(e.target.value)}
+            placeholder="https://example.com/v1/chat/completions"
+            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 8, border: '1.5px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontSize: 13, outline: 'none' }}
+          />
+          <input
+            value={customModel}
+            onChange={e => onCustomModelChange(e.target.value)}
+            placeholder="Modellname"
+            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 8, border: '1.5px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontSize: 13, outline: 'none' }}
+          />
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={customApiKey}
+            onChange={e => onCustomApiKeyChange(e.target.value)}
+            placeholder="Optionaler API-Key"
+            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontSize: 13, outline: 'none' }}
+          />
         </div>
       </div>
       )}

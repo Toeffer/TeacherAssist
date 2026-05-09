@@ -9,7 +9,7 @@ class AppConfig {
   /// OpenClaw Server Host
   final String openClawHost;
 
-  /// OpenClaw Server Port
+  /// OpenClaw/Tailscale WebSocket-Port. Der Desktop-Tool-Server nutzt separat 8789.
   final int openClawPort;
 
   /// Tailscale Hostname (falls verwendet)
@@ -53,7 +53,7 @@ class AppConfig {
             ? '192.168.1.100' // Standard-LAN-IP für Mobile
             : 'localhost');
 
-    // Port-Konfiguration
+    // Port-Konfiguration für OpenClaw/Tailscale, nicht für den lokalen Desktop-Tool-Server (8789)
     final port = int.tryParse(Platform.environment['OPENCLAW_PORT'] ?? '18789') ?? 18789;
 
     // Tailscale-Konfiguration
@@ -79,7 +79,7 @@ class AppConfig {
     );
   }
 
-  /// WebSocket-URL basierend auf aktueller Konfiguration
+  /// WebSocket-URL basierend auf aktueller OpenClaw/Tailscale-Konfiguration
   String get websocketUrl {
     if (tailscaleHostname != null && tailscaleHostname!.isNotEmpty) {
       // Tailscale-Verbindung

@@ -272,7 +272,7 @@ function normalizeFachname(entry) {
 }
 
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '') {
+async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '', providerOverride = '', modelOverride = '', ollamaModelOverride = '') {
   const response = await fetch('http://localhost:8789/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -283,6 +283,9 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
       customApiKey,
       customModel,
       apiKey,
+      providerOverride,
+      modelOverride,
+      ollamaModelOverride,
     }),
   });
 
@@ -379,6 +382,14 @@ function App() {
   const chatContainerRef = useRef(null);
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
+
+  const effectiveProvider = useMemo(() => {
+    if (provider === 'openrouter' && openrouterStatus === 'offline' && ollamaStatus === 'online') return 'ollama';
+    if (provider === 'ollama' && ollamaStatus === 'offline' && apiKey && openrouterStatus === 'online') return 'openrouter';
+    return provider;
+  }, [provider, openrouterStatus, ollamaStatus, apiKey]);
+  const isFallbackActive = effectiveProvider !== provider;
+  const isDsgvoRouting = dsgvoRoutingActive;
 
   useEffect(() => { localStorage.setItem('ta_dark', JSON.stringify(dark)); }, [dark]);
   useEffect(() => { localStorage.setItem('ta_profile', JSON.stringify(profile)); }, [profile]);
@@ -507,7 +518,8 @@ function App() {
               [{ role: 'user', text }], {},
               chunk => { answer += chunk; },
               undefined,
-              customEndpoint, customApiKey, customModel
+              customEndpoint, customApiKey, customModel, apiKey,
+              effectiveProvider, model, ollamaModel
             );
           } catch { answer = 'Das beantworte ich gerne – lass uns aber erst das Profil abschließen!'; }
           setIsTyping(false);
@@ -705,7 +717,7 @@ function App() {
             addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
           }
         }
-      }, customEndpoint, customApiKey, customModel, apiKey);
+      }, customEndpoint, customApiKey, customModel, apiKey, effectiveProvider, model, ollamaModel);
     } catch (err) {
       fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
     }
@@ -933,7 +945,17 @@ function App() {
       const res = await fetch('http://localhost:8789/session-summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: msgs, profile, apiKey }),
+        body: JSON.stringify({
+          messages: msgs,
+          profile,
+          apiKey,
+          providerOverride: effectiveProvider,
+          modelOverride: model,
+          ollamaModelOverride: ollamaModel,
+          customEndpoint,
+          customApiKey,
+          customModel,
+        }),
       });
       const data = await res.json();
       setIsTyping(false);
@@ -947,7 +969,7 @@ function App() {
       setIsTyping(false);
       addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler beim Zusammenfassen: ${err.message}`, ts: Date.now() });
     }
-  }, [activeChatId, chats, profile, apiKey, addMessage]);
+  }, [activeChatId, chats, profile, apiKey, effectiveProvider, model, ollamaModel, customEndpoint, customApiKey, customModel, addMessage]);
 
   // Tastaturkürzel
   useEffect(() => {
@@ -981,15 +1003,6 @@ function App() {
     setCurrentView('chat');
     setSidebarOpen(false);
   }, []);
-
-  // Effektiv verwendeter Provider (berücksichtigt Fallback bei Nichterreichbarkeit)
-  const effectiveProvider = useMemo(() => {
-    if (provider === 'openrouter' && openrouterStatus === 'offline' && ollamaStatus === 'online') return 'ollama';
-    if (provider === 'ollama' && ollamaStatus === 'offline' && apiKey && openrouterStatus === 'online') return 'openrouter';
-    return provider;
-  }, [provider, openrouterStatus, ollamaStatus, apiKey]);
-  const isFallbackActive = effectiveProvider !== provider;
-  const isDsgvoRouting = dsgvoRoutingActive;
 
   const showApiKeyModal = onboardingDone && provider === 'openrouter' && !apiKey && !apiKeyModalDismissed;
 
@@ -1063,7 +1076,7 @@ function App() {
           <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>{profile.assistant_name || 'Mila'}</div>
           {(() => {
             const namePrefix = (profile.assistant_name || 'Mila');
-            const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : !!apiKey);
+            const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : provider === 'custom' ? !!customEndpoint : !!apiKey);
             const label = isStreaming ? namePrefix + ' · antwortet…' : isTyping ? namePrefix + ' · schreibt…'
               : isDsgvoRouting
                 ? '🔒 Lokales Modell (DSGVO)'
@@ -1073,12 +1086,14 @@ function App() {
                       : '⚠ Ollama offline · ☁️ OpenRouter Fallback')
                   : provider === 'ollama'
                     ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : '⚠ Ollama offline'
+                    : provider === 'custom'
+                      ? customEndpoint ? namePrefix + ' · Eigener Dienst' : '⚠ Custom-Endpoint fehlt'
                     : apiKey ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
             const dsgvoColor = '#d97706';
             const color = isDsgvoRouting ? dsgvoColor
               : isStreaming || isTyping ? 'var(--text-tertiary)'
               : isFallbackActive ? '#d97706'
-              : isActive ? (provider === 'ollama' ? '#2a9d5c' : '#3b82f6') : 'var(--danger)';
+              : isActive ? (provider === 'ollama' ? '#2a9d5c' : provider === 'custom' ? '#7c3aed' : '#3b82f6') : 'var(--danger)';
             return <div style={{ fontSize: 12, color }}>{label}</div>;
           })()}
         </div>
@@ -1210,6 +1225,7 @@ function App() {
             isFallbackActive={isFallbackActive} effectiveProvider={effectiveProvider}
             customEndpoint={customEndpoint} onCustomEndpointChange={setCustomEndpoint}
             customApiKey={customApiKey} onCustomApiKeyChange={setCustomApiKey}
+            customModel={customModel} onCustomModelChange={setCustomModel}
             tailscaleStatus={tailscaleStatus}
             onBackup={handleBackup} onRestore={handleRestore}
           />
