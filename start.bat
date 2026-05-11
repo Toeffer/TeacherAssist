@@ -3,21 +3,6 @@ chcp 65001 >nul 2>&1
 title TeacherAssist
 cd /d "%~dp0"
 
-:: Desktop-Verknüpfung mit Icon anlegen (einmalig)
-set "SHORTCUT=%USERPROFILE%\Desktop\TeacherAssist.lnk"
-if not exist "%SHORTCUT%" (
-    :: PowerShell-Script zum Erstellen der .lnk-Datei
-    powershell -Command ^
-        $ws = New-Object -ComObject WScript.Shell; ^
-        $sc = $ws.CreateShortcut('%SHORTCUT%'); ^
-        $sc.TargetPath = '%~dp0start.bat'; ^
-        $sc.WorkingDirectory = '%~dp0'; ^
-        $sc.Description = 'TeacherAssist – KI-Assistent für Lehrer'; ^
-        $sc.IconLocation = '%~dp0teacherassist.ico'; ^
-        $sc.Save(); ^
-        Write-Host '✅ Desktop-Verknüpfung angelegt'
-)
-
 echo.
 echo  Starte TeacherAssist...
 echo.
@@ -36,7 +21,7 @@ if not exist "%PYTHON%" (
     set "PYTHON=python"
 )
 
-:: Prüfen ob index.html vorhanden
+:: Pruefen ob index.html vorhanden
 if not exist "%~dp0index.html" (
     echo  PROBLEM: index.html nicht gefunden.
     echo  Bitte sicherstellen, dass alle Dateien vollstaendig sind.
@@ -45,25 +30,51 @@ if not exist "%~dp0index.html" (
     exit /b 1
 )
 
-:: Web-Server starten
-echo  Starte Web-Server...
-start "TeacherAssist Web" /min "%PYTHON%" -m http.server 8788
-
-:: Tool-Server starten (PDF-Upload, OCR, Lehrplan-Suche)
+:: Tool-Server starten (Web-App, PDF-Upload, OCR, Lehrplan-Suche)
 echo  Starte Tool-Server...
-start "TeacherAssist Tool" /min "%PYTHON%" "%~dp0tool_server.py"
+powershell -NoProfile -Command "try { $c = [Net.Sockets.TcpClient]::new('127.0.0.1', 8789); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
+if errorlevel 1 (
+    start "TeacherAssist Tool" /min "%PYTHON%" "%~dp0tool_server.py"
+) else (
+    echo  Tool-Server laeuft bereits.
+)
 
 :: Kurz warten bis Server bereit ist
 timeout /t 3 /nobreak >nul
 
-:: Browser öffnen
+:: Server pruefen, damit Startfehler sichtbar bleiben
+set "TOOL_OK="
+
+echo  Pruefe Tool-Server...
+for /l %%I in (1,1,15) do (
+    powershell -NoProfile -Command "try { $c = [Net.Sockets.TcpClient]::new('127.0.0.1', 8789); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
+    if not errorlevel 1 (
+        set "TOOL_OK=1"
+        goto tool_ready
+    )
+    timeout /t 1 /nobreak >nul
+)
+
+:tool_ready
+if not defined TOOL_OK (
+    echo.
+    echo  PROBLEM: Tool-Server auf http://localhost:8789/health ist nicht erreichbar.
+    echo  Bitte pruefen, ob Port 8789 bereits belegt ist oder tool_server.py beim Start abstuerzt.
+    echo.
+    pause
+    exit /b 1
+)
+
+:: Browser oeffnen
 echo  Oeffne Browser...
-start "" http://localhost:8788
+explorer.exe "http://localhost:8789/"
+if errorlevel 1 start "" "http://localhost:8789/"
 
 echo.
 echo  TeacherAssist laeuft!
 echo  (Dieses Fenster kann minimiert werden)
 echo.
 
-:: Fenster offen lassen damit der User sieht wenn etwas schiefläuft
+:: Fenster offen lassen damit der User sieht wenn etwas schieflaeuft
 timeout /t 5 /nobreak >nul
+exit /b 0

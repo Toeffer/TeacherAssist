@@ -34,6 +34,7 @@ Sicherheit:
 """
 
 import http.server
+import html
 import io
 import json
 import os
@@ -47,11 +48,12 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 BASE_DIR      = Path(__file__).parent
 UPLOAD_DIR    = BASE_DIR / "uploads"
 CHROMA_DIR    = BASE_DIR / "tools" / "chroma_db"
+EXPORT_DIR    = BASE_DIR / "exports"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 SKILLS_DIR    = BASE_DIR / "skills"
 MEMORY_DIR    = BASE_DIR / "memory"
@@ -60,6 +62,7 @@ VALID_PROVIDERS = {"openrouter", "ollama", "custom"}
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+EXPORT_DIR.mkdir(exist_ok=True)
 
 def apply_request_overrides(settings, data):
     """Apply non-persistent per-request provider/model overrides from the UI."""
@@ -102,7 +105,72 @@ def memory_zip_destination(name):
         raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
     return dest, "memory/" + rel
 
-ORIGIN = "http://localhost:8788"
+def safe_export_name(title, fmt):
+    base = (title or "teacherassist-export").strip().lower()
+    base = re.sub(r"[^\wäöüÄÖÜß-]+", "_", base, flags=re.I)
+    base = re.sub(r"_+", "_", base).strip("_")[:60] or "teacherassist-export"
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}_{base}.{fmt}"
+
+def markdown_to_export_html(content, title="TeacherAssist Export"):
+    text = html.escape(content or "")
+    text = re.sub(r"^#### (.+)$", r"<h4>\1</h4>", text, flags=re.M)
+    text = re.sub(r"^### (.+)$", r"<h3>\1</h3>", text, flags=re.M)
+    text = re.sub(r"^## (.+)$", r"<h2>\1</h2>", text, flags=re.M)
+    text = re.sub(r"^# (.+)$", r"<h1>\1</h1>", text, flags=re.M)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    paragraphs = []
+    for block in re.split(r"\n{2,}", text):
+        block = block.strip()
+        if not block:
+            continue
+        if block.startswith(("<h1", "<h2", "<h3", "<h4")):
+            paragraphs.append(block)
+        else:
+            paragraphs.append(f"<p>{block.replace(chr(10), '<br>')}</p>")
+    body = "\n".join(paragraphs)
+    safe_title = html.escape(title or "TeacherAssist Export")
+    today = time.strftime("%d.%m.%Y")
+    return f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>{safe_title}</title>
+<style>
+body{{font-family:Segoe UI,Arial,sans-serif;max-width:820px;margin:0 auto;padding:28px;color:#222;font-size:15px;line-height:1.65}}
+h1{{font-size:1.55em;border-bottom:2px solid #333;padding-bottom:6px}}
+h2{{font-size:1.25em;border-bottom:1px solid #eee;padding-bottom:4px;margin-top:1.5em}}
+p{{margin:.75em 0}}
+.footer{{margin-top:2em;font-size:12px;color:#777;border-top:1px solid #eee;padding-top:8px}}
+</style>
+</head>
+<body>
+{body}
+<div class="footer">Erstellt mit TeacherAssist · Exportiert am {today}</div>
+</body>
+</html>"""
+
+ALLOWED_ORIGINS = {"http://localhost:8788", "http://localhost:8789"}
+STATIC_FILES = {
+    "/": "index.html",
+    "/index.html": "index.html",
+    "/app.jsx": "app.jsx",
+    "/components.jsx": "components.jsx",
+    "/tweaks-panel.jsx": "tweaks-panel.jsx",
+    "/manifest.json": "manifest.json",
+    "/service-worker.js": "service-worker.js",
+    "/teacherassist.ico": "teacherassist.ico",
+    "/favicon.ico": "favicon.ico",
+}
+STATIC_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".jsx": "text/javascript; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".md": "text/markdown; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+}
 
 # ---------------------------------------------------------------------------
 # Konfiguration laden
@@ -573,7 +641,8 @@ def _send_sse(wfile, data):
 class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", ORIGIN)
+        origin = self.headers.get("Origin", "")
+        self.send_header("Access-Control-Allow-Origin", origin if origin in ALLOWED_ORIGINS else "http://localhost:8789")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -595,12 +664,39 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return self.rfile.read(length)
 
+    def _static(self, filename):
+        path = (BASE_DIR / filename).resolve()
+        try:
+            path.relative_to(BASE_DIR.resolve())
+        except ValueError:
+            self.send_error(404)
+            return
+        if not path.is_file():
+            self.send_error(404)
+            return
+
+        body = path.read_bytes()
+        content_type = STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
     # ---- GET ----------------------------------------------------------------
     def do_GET(self):
         parsed = urlparse(self.path)
         path   = parsed.path
 
-        if path == "/health":
+        if path.startswith("/exports/"):
+            self._download_export(unquote(path[len("/exports/"):]))
+
+        elif path in STATIC_FILES:
+            self._static(STATIC_FILES[path])
+
+        elif path == "/health":
             self._json({"status": "ok", "version": "1.1", "ollama": check_ollama()})
 
         elif path == "/settings":
@@ -662,6 +758,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/clear":           self._clear()
         elif path == "/download-url":    self._download_url()
         elif path == "/settings":        self._save_settings()
+        elif path == "/export-file":     self._export_file()
         elif path == "/save-raster":     self._save_raster()
         elif path == "/restore":         self._restore()
         elif path == "/memory-write":    self._write_memory_file()
@@ -811,6 +908,64 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True})
         except Exception as e:
             self._json({"error": str(e)}, 500)
+
+    def _export_file(self):
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+        except Exception:
+            self._json({"error": "Ungültiges JSON"}, 400)
+            return
+
+        fmt = (data.get("format") or "").strip().lower()
+        if fmt not in {"md", "txt", "html"}:
+            self._json({"error": "Format muss md, txt oder html sein"}, 400)
+            return
+
+        content = (data.get("content") or "").strip()
+        if not content:
+            self._json({"error": "Kein Inhalt zum Exportieren"}, 400)
+            return
+
+        title = (data.get("title") or "TeacherAssist Export").strip()
+        filename = safe_export_name(title, fmt)
+        path = EXPORT_DIR / filename
+
+        if fmt == "html":
+            body = markdown_to_export_html(content, title)
+        else:
+            body = content
+
+        try:
+            path.write_text(body, encoding="utf-8")
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+            return
+
+        self._json({"success": True, "filename": filename, "url": f"/exports/{filename}"})
+
+    def _download_export(self, filename):
+        if not filename or "/" in filename or "\\" in filename:
+            self.send_error(404)
+            return
+        path = (EXPORT_DIR / filename).resolve()
+        try:
+            path.relative_to(EXPORT_DIR.resolve())
+        except ValueError:
+            self.send_error(404)
+            return
+        if not path.is_file():
+            self.send_error(404)
+            return
+
+        data = path.read_bytes()
+        content_type = STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self._cors()
+        self.end_headers()
+        self.wfile.write(data)
 
     def _clear(self):
         try:

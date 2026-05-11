@@ -405,12 +405,13 @@ function App() {
 
   // Provider-Wahl, API-Key und Custom-Felder an Tool-Server senden
   useEffect(() => {
+    if (toolStatus !== 'online') return;
     fetch('http://localhost:8789/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel }),
     }).catch(() => {});
-  }, [provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel]);
+  }, [toolStatus, provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -890,9 +891,40 @@ function App() {
     });
   }, [activeChatId]);
 
-  const handleExport = useCallback((text) => {
-    openPrintWindow(text, 'TeacherAssist Export');
-  }, []);
+  const handleExport = useCallback(async (text, format = 'pdf') => {
+    const title = activeChat?.title && activeChat.title !== 'Neuer Chat' ? activeChat.title : 'TeacherAssist Export';
+    if (format === 'pdf') {
+      openPrintWindow(text, title);
+      return;
+    }
+
+    try {
+      const res = await fetch('/export-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content: text, format }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error || 'Export fehlgeschlagen');
+
+      const a = document.createElement('a');
+      a.href = data.url;
+      a.download = data.filename;
+      a.click();
+
+      addMessage(activeChatId, {
+        role: 'bot',
+        text: `✅ Export erstellt: **${data.filename}**\n\n[Datei herunterladen](${data.url})`,
+        ts: Date.now(),
+      });
+    } catch (err) {
+      addMessage(activeChatId, {
+        role: 'bot',
+        text: `⚠️ Export fehlgeschlagen: ${err.message}\n\nIst der Tool-Server gestartet?`,
+        ts: Date.now(),
+      });
+    }
+  }, [activeChat?.title, activeChatId, addMessage]);
 
   const handleBackup = useCallback(async () => {
     try {
@@ -971,6 +1003,32 @@ function App() {
     }
   }, [activeChatId, chats, profile, apiKey, effectiveProvider, model, ollamaModel, customEndpoint, customApiKey, customModel, addMessage]);
 
+  const handleTestModel = useCallback(async () => {
+    let text = '';
+    let usedProvider = provider;
+    await callChatViaServer(
+      [{ role: 'user', text: 'Antworte auf Deutsch mit genau einem kurzen Satz: Modelltest erfolgreich.' }],
+      profile,
+      (chunk) => { text += chunk; },
+      (type, data) => {
+        if (type === 'provider' && data?.provider) usedProvider = data.provider;
+      },
+      customEndpoint,
+      customApiKey,
+      customModel,
+      apiKey,
+      provider,
+      model,
+      ollamaModel
+    );
+
+    return {
+      text: text.trim() || '(Keine Antwort erhalten)',
+      provider: usedProvider,
+      model: provider === 'ollama' ? ollamaModel : provider === 'custom' ? customModel : model,
+    };
+  }, [apiKey, customApiKey, customEndpoint, customModel, model, ollamaModel, profile, provider]);
+
   // Tastaturkürzel
   useEffect(() => {
     const handler = (e) => {
@@ -984,9 +1042,7 @@ function App() {
   }, [handleNewChat, handleSessionSummary]);
 
   const handleShutdown = useCallback(() => {
-    if (!confirm('TeacherAssist wirklich beenden?\n\nWeb-Server und Tool-Server werden beendet. Das Browserfenster kannst du danach schließen.')) return;
-    fetch('http://localhost:8789/shutdown', { method: 'POST' }).catch(() => {});
-    alert('TeacherAssist wurde beendet. Du kannst das Fenster jetzt schließen.');
+    return fetch('http://localhost:8789/shutdown', { method: 'POST' }).catch(() => {});
   }, []);
 
   const handleResetOnboarding = useCallback(() => {
@@ -1228,6 +1284,7 @@ function App() {
             customModel={customModel} onCustomModelChange={setCustomModel}
             tailscaleStatus={tailscaleStatus}
             onBackup={handleBackup} onRestore={handleRestore}
+            onTestModel={handleTestModel}
           />
         </div>
       )}

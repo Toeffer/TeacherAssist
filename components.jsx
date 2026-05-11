@@ -250,6 +250,7 @@ function mdToHtml(md) {
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
   // Blockquotes
   html = html.replace(/(^> .+\n?)+/gm, block => {
@@ -317,7 +318,7 @@ function openPrintWindow(text, title) {
   <span>📄 <strong>Export bereit</strong> – als PDF drucken oder speichern</span>
           <button class="btn-print" onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
         </div>
-      </div>
+      <main>${body}</main>
       <div class="footer">
         Erstellt mit TeacherAssist &bull; Exportiert am ${new Date().toLocaleDateString('de-DE')}
       </div>
@@ -362,6 +363,8 @@ function TypingDots() {
 
 /* ---------- Chat Bubble ---------- */
 function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
+  const [exportOpen, setExportOpen] = React.useState(false);
+
   if (!isBot) {
     return (
       <div style={{ display: 'flex', justifyContent: 'flex-end', animation: 'fadeInUp 0.2s ease' }}>
@@ -401,8 +404,9 @@ function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
           )}
         </div>
         {onExport && message && (
+          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', marginTop: 4 }}>
           <button
-            onClick={() => onExport(message)}
+            onClick={() => setExportOpen(v => !v)}
             title="Exportieren / Drucken"
             style={{
               marginTop: 4, background: 'none', border: 'none',
@@ -415,6 +419,30 @@ function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
           >
             ↗ Exportieren
           </button>
+          {exportOpen && (
+            <div style={{
+              position: 'absolute', top: 24, left: 0, zIndex: 20,
+              display: 'flex', gap: 4, padding: 6,
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 8, boxShadow: '0 8px 22px rgba(0,0,0,0.12)',
+            }}>
+              {[
+                ['pdf', 'PDF'],
+                ['md', 'MD'],
+                ['txt', 'TXT'],
+                ['html', 'HTML'],
+              ].map(([fmt, label]) => (
+                <button key={fmt} onClick={() => { setExportOpen(false); onExport(message, fmt); }} style={{
+                  border: 'none', borderRadius: 6, padding: '6px 8px',
+                  background: 'var(--surface-input)', color: 'var(--text-secondary)',
+                  cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          </div>
         )}
       </div>
     </div>
@@ -474,14 +502,17 @@ function OnboardingProgress({ step, total }) {
 }
 
 /* ---------- Shutdown Button ---------- */
-function ShutdownButton() {
+function ShutdownButton({ onShutdown }) {
   const [state, setState] = React.useState('idle'); // idle | confirm | shutting_down
 
   const handleClick = () => {
     if (state === 'idle') { setState('confirm'); return; }
     if (state === 'confirm') {
       setState('shutting_down');
-      fetch('http://localhost:8789/shutdown', { method: 'POST' })
+      const shutdown = onShutdown
+        ? Promise.resolve(onShutdown())
+        : fetch('http://localhost:8789/shutdown', { method: 'POST' });
+      shutdown
         .catch(() => {})
         .finally(() => {
           setTimeout(() => window.close(), 800);
@@ -543,13 +574,13 @@ function ShutdownButton() {
     onMouseEnter={e => e.currentTarget.style.color = 'var(--danger)'}
     onMouseLeave={e => e.currentTarget.style.color = 'var(--text-tertiary)'}
     >
-      {Icons.power} Server beenden
+      {Icons.power} TeacherAssist beenden
     </button>
   );
 }
 
 /* ---------- Sidebar ---------- */
-function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, onDeleteChat, onNavigate, currentView, dark, onToggleDark, assistantName }) {
+function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, onDeleteChat, onNavigate, currentView, dark, onToggleDark, assistantName, onShutdown }) {
   const [chatSearch, setChatSearch] = React.useState('');
   return (
     <>
@@ -692,7 +723,11 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
           }}>
             {dark ? Icons.sun : Icons.moon} {dark ? 'Light Mode' : 'Dark Mode'}
           </button>
-          <ShutdownButton />
+        </div>
+
+        {/* Shutdown */}
+        <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px 12px' }}>
+          <ShutdownButton onShutdown={onShutdown} />
         </div>
       </aside>
     </>
@@ -1252,16 +1287,44 @@ function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) 
   );
 }
 
-function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore, customEndpoint = '', onCustomEndpointChange = () => {}, customApiKey = '', onCustomApiKeyChange = () => {}, customModel = 'gpt-3.5-turbo', onCustomModelChange = () => {} }) {
+function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore, customEndpoint = '', onCustomEndpointChange = () => {}, customApiKey = '', onCustomApiKeyChange = () => {}, customModel = 'gpt-3.5-turbo', onCustomModelChange = () => {}, onTestModel = null }) {
   const [showKey, setShowKey] = React.useState(false);
   const [keyInput, setKeyInput] = React.useState(apiKey || '');
   const [saved, setSaved] = React.useState(false);
+  const [testState, setTestState] = React.useState('idle'); // idle | running | success | error
+  const [testResult, setTestResult] = React.useState(null);
   const restoreRef = React.useRef(null);
 
   const handleSaveKey = () => {
     onApiKeyChange(keyInput.trim());
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const selectedModelName = provider === 'ollama' ? ollamaModel : provider === 'custom' ? customModel : model;
+  const modelTestDisabledReason = (() => {
+    if (!onTestModel) return 'Modelltest nicht verfügbar';
+    if (toolStatus !== 'online') return 'Tool-Server offline';
+    if (provider === 'openrouter' && !apiKey) return 'API-Key fehlt';
+    if (provider === 'ollama' && ollamaStatus !== 'online') return 'Ollama offline';
+    if (provider === 'custom' && !customEndpoint.trim()) return 'Custom-Endpoint fehlt';
+    if (!selectedModelName) return 'Modell fehlt';
+    return '';
+  })();
+  const canTestModel = !modelTestDisabledReason && testState !== 'running';
+
+  const handleTestModel = async () => {
+    if (!canTestModel) return;
+    setTestState('running');
+    setTestResult(null);
+    try {
+      const result = await onTestModel();
+      setTestResult(result);
+      setTestState('success');
+    } catch (err) {
+      setTestResult({ error: err.message || String(err), model: selectedModelName, provider });
+      setTestState('error');
+    }
   };
 
   return (
@@ -1546,6 +1609,71 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
         </div>
       </div>
       )}
+
+      <div style={{
+        background: 'var(--surface-elevated)', borderRadius: 14,
+        border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16,
+      }}>
+        <div style={{ padding: '16px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3 }}>Modell testen</div>
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                Sendet eine kurze Anfrage an <strong>{selectedModelName || 'kein Modell gewählt'}</strong>.
+              </div>
+            </div>
+            <button
+              onClick={handleTestModel}
+              disabled={!canTestModel}
+              title={modelTestDisabledReason || 'Kurzen Modelltest senden'}
+              style={{
+                padding: '9px 16px', borderRadius: 10, border: 'none',
+                background: canTestModel ? 'var(--accent)' : 'var(--border)',
+                color: '#fff', cursor: canTestModel ? 'pointer' : 'default',
+                fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap',
+                opacity: canTestModel ? 1 : 0.7,
+              }}
+            >
+              {testState === 'running' ? 'Teste...' : 'Test senden'}
+            </button>
+          </div>
+          {modelTestDisabledReason && (
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10 }}>
+              Nicht bereit: {modelTestDisabledReason}
+            </div>
+          )}
+          {testState === 'running' && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8, background: 'var(--bg)',
+              color: 'var(--text-secondary)', fontSize: 13,
+            }}>
+              Testanfrage läuft...
+            </div>
+          )}
+          {testResult && testState !== 'running' && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8,
+              background: testState === 'success' ? 'rgba(42,157,92,0.08)' : 'rgba(217,54,54,0.08)',
+              border: `1px solid ${testState === 'success' ? 'rgba(42,157,92,0.25)' : 'rgba(217,54,54,0.25)'}`,
+              color: testState === 'success' ? '#2a9d5c' : 'var(--danger)',
+              fontSize: 13, lineHeight: 1.6,
+            }}>
+              {testState === 'success' ? (
+                <>
+                  <strong>Antwort:</strong> {testResult.text}<br />
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    Provider: {testResult.provider || provider} · Modell: {testResult.model || selectedModelName}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong>Test fehlgeschlagen:</strong> {testResult.error}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Wissensdatenbank */}
       <CollapsibleSection title="📚 Wissensdatenbank (Lehrpläne)" subtitle="PDF-Lehrpläne hochladen – automatischer RAG-Kontext bei jeder Anfrage">

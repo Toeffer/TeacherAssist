@@ -8,6 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="LehrerAgent" />
   <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/teacherassist.ico" sizes="any" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23d97757'/><text x='50' y='68' font-size='55' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'>📚</text></svg>" />
   <meta name="theme-color" content="#d97757" />
   <meta name="description" content="Persönlicher KI-Assistent für den Schulalltag" />
@@ -97,7 +98,9 @@
   <!-- Service Worker (PWA) -->
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/service-worker.js').catch(function() {
+      navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).then(function(registration) {
+        registration.update();
+      }).catch(function() {
         // Offline-Cache ist optional – App funktioniert trotzdem
       });
     }
