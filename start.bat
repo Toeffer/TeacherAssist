@@ -67,8 +67,7 @@ if not defined TOOL_OK (
 
 :: Browser oeffnen
 echo  Oeffne Browser...
-explorer.exe "http://localhost:8789/"
-if errorlevel 1 start "" "http://localhost:8789/"
+start "" "http://localhost:8789/"
 
 echo.
 echo  TeacherAssist laeuft!

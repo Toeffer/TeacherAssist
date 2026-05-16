@@ -49,6 +49,7 @@ const ONBOARDING_STEPS = [
     field: 'besonderheiten',
     placeholder: 'Optional – Enter zum Überspringen',
     phase: 2,
+    optional: true,
   },
   {
     id: 'methoden',
@@ -56,6 +57,7 @@ const ONBOARDING_STEPS = [
     field: 'methoden',
     placeholder: 'Optional – Enter zum Überspringen',
     phase: 2,
+    optional: true,
   },
   {
     id: 'ollama_setup',
@@ -152,8 +154,20 @@ function parseNameInput(raw) {
 function isOnboardingQuestion(text) {
   if (text.includes('?')) return true;
   const lower = text.trim().toLowerCase();
-  const starters = ['was ', 'wie ', 'wann ', 'warum ', 'wieso ', 'weshalb ', 'wer ', 'wo ', 'welche', 'kann ', 'kannst ', 'darf ', 'gibt ', 'haben ', 'hast ', 'muss ', 'musst '];
-  return starters.some(s => lower.startsWith(s));
+  const starters = [
+    'was ', 'wie ', 'wann ', 'warum ', 'wieso ', 'weshalb ', 'wer ', 'wo ', 'welche',
+    'wofür ', 'wozu ', 'inwiefern ', 'in welch', 'an welch', 'auf welch', 'mit welch',
+    'kann ', 'kannst ', 'könnte ', 'könnt ', 'darf ', 'gibt ', 'haben ', 'hast ',
+    'muss ', 'musst ', 'sollte ', 'soll ',
+    'meinst du', 'wie meinst', 'was meinst',
+  ];
+  if (starters.some(s => lower.startsWith(s))) return true;
+  const markers = [
+    'verstehe nicht', 'verstehe ich nicht', 'kapiere nicht',
+    'weiß nicht', 'weiss nicht', 'keine ahnung',
+    'hilfe', 'erklär',
+  ];
+  return markers.some(m => lower.includes(m));
 }
 
 const ONBOARDING_FAQ = [
@@ -271,6 +285,20 @@ function normalizeFachname(entry) {
   return m[1].charAt(0).toUpperCase() + m[1].slice(1) + rest;
 }
 
+// Findet alle Klassenstufen-Zahlen in einem Free-Form-Text wie
+// "Mathe 7a, 8b – Deutsch 5a, 7a". Liefert Number[].
+function extractKlassenStufen(text) {
+  if (!text) return [];
+  const out = [];
+  const re = /\b(\d{1,2})\s*[a-zäöüß]?\b/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (!Number.isNaN(n)) out.push(n);
+  }
+  return out;
+}
+
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
 async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '', providerOverride = '', modelOverride = '', ollamaModelOverride = '') {
   const response = await fetch('http://localhost:8789/chat', {
@@ -365,7 +393,7 @@ function App() {
   const [toolStatus, setToolStatus] = useState('unknown');
   const [ragDocCount, setRagDocCount] = useState(0);
   const [provider, setProvider] = useState(() => localStorage.getItem('ta_provider') || 'openrouter');
-  const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ta_ollama_model') || 'gemma3:4b');
+  const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ta_ollama_model') || 'gemma4:e4b');
   const [ollamaStatus, setOllamaStatus] = useState('unknown');
   const [ollamaModels, setOllamaModels] = useState([]);
   const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
@@ -494,6 +522,24 @@ function App() {
 
   const handleSend = useCallback(async (overrideText, skipDsgvo = false) => {
     const text = (overrideText || inputValue).trim();
+
+    // Leer-Enter im Onboarding: optionale Schritte überspringen
+    if (!text && !isStreaming && !isTyping && !onboardingDone) {
+      const step = ONBOARDING_STEPS[onboardingStep];
+      if (step?.optional && step.field) {
+        setInputValue('');
+        setProfile(p => ({ ...p, [step.field]: '' }));
+        const nextIdx = onboardingStep + 1;
+        const nextStep = ONBOARDING_STEPS[nextIdx];
+        if (nextStep) {
+          setOnboardingStep(nextIdx);
+          addBotMessage(nextStep.bot, 600);
+          if (nextStep.id === 'done') setTimeout(() => setOnboardingDone(true), 1200);
+        }
+        return;
+      }
+    }
+
     if (!text || isStreaming || isTyping) return;
     setInputValue('');
 
@@ -536,6 +582,15 @@ function App() {
       if (step?.field && step.field !== 'lehrplan_choice' && step.field !== 'ollama_choice') {
         const raw = text === 'nein' || text === '-' ? '' : text;
         if (step.field === 'faecher') {
+          const ungueltige = [...new Set(extractKlassenStufen(raw).filter(n => n < 1 || n > 13))];
+          if (ungueltige.length) {
+            addBotMessage(
+              `Hmm, du hast Klasse ${ungueltige.join(', ')} genannt – in deutschen Schulen gibt es nur die Stufen 1 bis 13. ` +
+              `Magst du das nochmal eingeben? (Beispiel: "Mathe 7a, 8b – Deutsch 5a, 7a")`,
+              600
+            );
+            return;
+          }
           const items = raw.split(/[,\n]+/).map(s => normalizeFachname(s.trim())).filter(Boolean);
           setProfile(p => ({ ...p, faecher: items }));
         } else if (step.field === 'bundesland') {
@@ -558,14 +613,14 @@ function App() {
       if (step?.id === 'ollama_setup') {
         const choice = text.toLowerCase();
         if (choice.includes('installieren') || choice.includes('ollama installieren')) {
-          addBotMessage(`Super! So installierst du Ollama:\n\n1. Gehe auf **ollama.com/download** und lade die Windows-Version herunter\n2. Installiere wie gewohnt – kein Admin-Passwort nötig\n3. Starte danach TeacherAssist neu\n\nIch erkenne Ollama beim nächsten Start automatisch und empfehle dir passende Modelle.\n\n**Warum Ollama?** 🔒\n• Alle Daten bleiben auf deinem Rechner\n• Keine Internetverbindung nötig für lokale Anfragen\n• Perfekt für Schülerarbeiten & personenbezogene Daten\n• DSGVO-konform\n\n📸 Für Handschrifterkennung empfehle ich zusätzlich ein VLM wie **granite3.2-vision** (2GB) – damit kann ich Fotos von Schülerarbeiten direkt lesen.`, 1000);
+          addBotMessage(`Super! So installierst du Ollama:\n\n1. Gehe auf **ollama.com/download** und lade die Windows-Version herunter\n2. Installiere wie gewohnt – kein Admin-Passwort nötig\n3. Starte danach TeacherAssist neu\n\nIch erkenne Ollama beim nächsten Start automatisch und empfehle dir passende Modelle.\n\n**Warum Ollama?** 🔒\n• Alle Daten bleiben auf deinem Rechner\n• Keine Internetverbindung nötig für lokale Anfragen\n• Perfekt für Schülerarbeiten & personenbezogene Daten\n• DSGVO-konform\n\n📸 Für Handschrifterkennung empfehle ich zusätzlich ein VLM wie **qwen3-vl** – damit kann ich Fotos von Schülerarbeiten direkt lesen.`, 1000);
           setTimeout(() => {
             setOnboardingStep(onboardingStep + 1);
             addBotMessage(ONBOARDING_STEPS[onboardingStep + 1]?.bot || '', 600);
           }, 2000);
           return;
         } else if (choice.includes('bereits') || choice.includes('hab ollama')) {
-          addBotMessage('Perfekt! Dann kann ich deine sensiblen Daten gleich lokal verarbeiten.\n\nIch empfehle diese Modelle für TeacherAssist:\n\n• **Basis (≈3 GB):** gemma3, llama3.2 – schnell, ideal für einfache Planung\n• **Allround (≈5 GB):** mistral, llama3.1 – gute Deutschkenntnisse\n• **Qualität (≈9 GB):** phi4, gemma3:12b – höchste Genauigkeit\n• **📸 Handschrift (≈2 GB):** granite3.2-vision – liest Schüler-Handschrift\n\nDu kannst jederzeit mit `/pull <modell>` ein Modell herunterladen.', 1200);
+          addBotMessage('Perfekt! Dann kann ich deine sensiblen Daten gleich lokal verarbeiten.\n\nIch empfehle diese Modelle für TeacherAssist:\n\n• **Basis (≈4 GB):** gemma4:e4b, llama3.2 – schnell, ideal für Planung & Korrektur\n• **Allround (≈6–7 GB):** qwen3:8b – starke deutsche Sprache, ausgewogen\n• **Qualität (≈9 GB):** phi4 – höchste Genauigkeit, etwas langsamer\n• **📸 Handschrift / Bilder:** qwen3-vl – liest Schüler-Handschrift\n\nDu kannst jederzeit mit `/pull <modell>` ein Modell herunterladen.', 1200);
         }
         // Always advance
         setTimeout(() => {

@@ -738,6 +738,7 @@ function Sidebar({ open, onClose, chats, activeChatId, onSelectChat, onNewChat, 
 function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUpload, onFilesUpload, toolOnline, showDsgvoHint, showLocalHint, quickActions }) {
   const fileRef = React.useRef(null);
   const batchRef = React.useRef(null);
+  const textareaRef = React.useRef(null);
   const [isRecording, setIsRecording] = React.useState(false);
   const [recError, setRecError]       = React.useState('');
   const [showCamera, setShowCamera]   = React.useState(false);
@@ -799,7 +800,12 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
       }
       return;
     }
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAndRefocus(); }
+  };
+
+  const sendAndRefocus = () => {
+    onSend();
+    requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const recordToHistory = (text) => {
@@ -897,6 +903,7 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
           </>
         )}
         <textarea
+          ref={textareaRef}
           value={value}
           onChange={e => onChange(e.target.value)}
           onKeyDown={handleKey}
@@ -932,7 +939,7 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
             {isRecording ? Icons.micOff : Icons.mic}
           </button>
         )}
-        <button onClick={() => { recordToHistory(value); onSend(); }} disabled={disabled || !value.trim()} style={{
+        <button onClick={() => { recordToHistory(value); sendAndRefocus(); }} disabled={disabled || !value.trim()} style={{
           width: 40, height: 40, borderRadius: 12,
           background: value.trim() ? 'var(--accent)' : 'var(--border)',
           color: '#fff', border: 'none', cursor: value.trim() ? 'pointer' : 'default',
@@ -1422,7 +1429,7 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
               ) : (
                 <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 12 }}>
                   Kein Modell gefunden. Lade eines:<br />
-                  <code style={{ fontFamily: 'monospace', fontSize: 12 }}>ollama pull gemma3:4b</code>
+                  <code style={{ fontFamily: 'monospace', fontSize: 12 }}>ollama pull gemma4:e4b</code>
                 </div>
               )}
             </>
@@ -2062,6 +2069,20 @@ function genRasterMarkdown(form, nsTyp) {
   return md;
 }
 
+// Akzeptiert Klassenstufe 1–13, optional gefolgt von einem Klassenbuchstaben.
+// Liefert { ok: true } oder { ok: false, hinweis: '…' }.
+function validateKlasse(value) {
+  const v = (value || '').trim();
+  if (!v) return { ok: true };
+  const m = v.match(/^(\d{1,2})\s*([a-zäöüß]?)$/i);
+  if (!m) return { ok: false, hinweis: 'Bitte als Zahl mit optionalem Buchstaben angeben, z. B. "7a" oder "11".' };
+  const n = parseInt(m[1], 10);
+  if (n < 1 || n > 13) {
+    return { ok: false, hinweis: 'In deutschen Schulen gibt es die Klassenstufen 1 bis 13 – mit einer anderen Zahl kann ich leider nichts anfangen.' };
+  }
+  return { ok: true };
+}
+
 function RasterEditorView({ toolStatus }) {
   const emptyForm = { fach:'', klasse:'', thema:'', art:'Klassenarbeit', kriterien:[
     { name:'Inhalt / Fachlichkeit', punkte:30, afb:'II', beschreibung:'' },
@@ -2069,14 +2090,15 @@ function RasterEditorView({ toolStatus }) {
     { name:'Form / Darstellung',    punkte:5,  afb:'I',  beschreibung:'' },
   ]};
 
-  const [mode,     setMode]     = React.useState('list');
-  const [rasters,  setRasters]  = React.useState([]);
-  const [loading,  setLoading]  = React.useState(true);
-  const [form,     setForm]     = React.useState(emptyForm);
-  const [nsTyp,    setNsTyp]    = React.useState('standard');
-  const [saving,   setSaving]   = React.useState(false);
-  const [saved,    setSaved]    = React.useState(false);
-  const [error,    setError]    = React.useState('');
+  const [mode,        setMode]        = React.useState('list');
+  const [rasters,     setRasters]     = React.useState([]);
+  const [loading,     setLoading]     = React.useState(true);
+  const [form,        setForm]        = React.useState(emptyForm);
+  const [nsTyp,       setNsTyp]       = React.useState('standard');
+  const [saving,      setSaving]      = React.useState(false);
+  const [saved,       setSaved]       = React.useState(false);
+  const [error,       setError]       = React.useState('');
+  const [klasseError, setKlasseError] = React.useState('');
 
   const TOOL = 'http://localhost:8789';
 
@@ -2095,6 +2117,7 @@ function RasterEditorView({ toolStatus }) {
     setForm(emptyForm);
     setNsTyp('standard');
     setError('');
+    setKlasseError('');
     setSaved(false);
     setMode('edit');
   }
@@ -2132,6 +2155,12 @@ function RasterEditorView({ toolStatus }) {
   async function handleSave() {
     if (!form.fach || !form.klasse || !form.thema) {
       setError('Bitte Fach, Klasse und Thema angeben.');
+      return;
+    }
+    const klasseCheck = validateKlasse(form.klasse);
+    if (!klasseCheck.ok) {
+      setKlasseError(klasseCheck.hinweis);
+      setError(klasseCheck.hinweis);
       return;
     }
     setSaving(true); setError('');
@@ -2255,9 +2284,19 @@ function RasterEditorView({ toolStatus }) {
           </div>
           <div>
             <label style={labelStyle}>Klasse *</label>
-            <input value={form.klasse} onChange={e => setForm(f => ({...f, klasse: e.target.value}))}
-              placeholder="z.B. 7a" style={inputStyle}
-              onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/>
+            <input value={form.klasse}
+              onChange={e => { setForm(f => ({...f, klasse: e.target.value})); if (klasseError) setKlasseError(''); }}
+              placeholder="z.B. 7a"
+              style={{...inputStyle, borderColor: klasseError ? 'var(--danger)' : 'var(--border)'}}
+              onFocus={e => { if (!klasseError) e.target.style.borderColor='var(--accent)'; }}
+              onBlur={e => {
+                const r = validateKlasse(e.target.value);
+                setKlasseError(r.ok ? '' : r.hinweis);
+                e.target.style.borderColor = r.ok ? 'var(--border)' : 'var(--danger)';
+              }}/>
+            {klasseError && (
+              <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{klasseError}</div>
+            )}
           </div>
         </div>
         <div style={{ marginBottom: 12 }}>

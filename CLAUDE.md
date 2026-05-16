@@ -855,11 +855,11 @@ def route_model(skill_name: str, user_preferred_model: str) -> str:
 
 | Modell | RAM | Stärke |
 |--------|-----|--------|
-| `llama3.2:3b` | ~4 GB | Schnell, für einfache Texte |
-| `llama3.1:8b` | ~8 GB | Guter Allrounder für Deutsch |
-| `mistral:7b` | ~8 GB | Gut für strukturierte Ausgaben |
-| `qwen2.5:14b` | ~16 GB | Beste Qualität lokal, empfohlen |
-| `llava:13b` | ~16 GB | VLM – wenn Bildanalyse lokal nötig |
+| `gemma4:e4b` | ~4 GB | Schnell, ideal für Planung & Korrektur (Default) |
+| `llama3.2:3b` | ~4 GB | Sehr schnell, für einfache Texte |
+| `qwen3:8b` | ~7 GB | Starker Allrounder mit gutem Deutsch |
+| `phi4` | ~9 GB | Beste Qualität lokal für komplexe Aufgaben |
+| `qwen3-vl` | ~6 GB | VLM – für Handschrift / Schülerarbeiten |
 
 In `README.md` und Onboarding auf diese Anforderung hinweisen: Für DSGVO-relevante
 Skills muss Ollama lokal installiert und mindestens ein Modell verfügbar sein.

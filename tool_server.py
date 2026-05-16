@@ -181,7 +181,7 @@ def load_settings():
             return json.loads(SETTINGS_FILE.read_text("utf-8"))
     except Exception:
         pass
-    return {"provider": "openrouter", "ollamaModel": "gemma3:4b", "model": "deepseek/deepseek-chat"}
+    return {"provider": "openrouter", "ollamaModel": "gemma4:e4b", "model": "deepseek/deepseek-chat"}
 
 def get_api_key():
     """API-Key aus settings.json oder Umgebungsvariable."""
@@ -490,7 +490,7 @@ def stream_llm(messages, profile, settings, skill_content="", rag_context="", wf
     Entscheidet Provider (openrouter/ollama) basierend auf DSGVO-Prüfung.
     """
     is_ollama = settings.get("provider") == "ollama"
-    ollama_model = settings.get("ollamaModel") or "gemma3:4b"
+    ollama_model = settings.get("ollamaModel") or "gemma4:e4b"
     model = settings.get("model") or "deepseek/deepseek-chat"
     api_key = settings.get("apiKey") or get_api_key()
 
@@ -1211,12 +1211,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                     with urllib.request.urlopen(req, timeout=3) as resp:
                         tags_data = json.loads(resp.read())
                         models = [m.get("name", "") for m in tags_data.get("models", [])]
-                        for vm in ["granite3.2-vision", "minicpm-v", "gemma3:12b", "llava", "bakllava"]:
+                        for vm in ["qwen3-vl", "granite3.2-vision", "minicpm-v", "llava", "bakllava"]:
                             if any(m.startswith(vm) for m in models):
                                 vision_model = next(m for m in models if m.startswith(vm))
                                 break
                     if not vision_model:
-                        vision_model = settings.get("ollamaModel", "gemma3:4b")
+                        vision_model = settings.get("ollamaModel", "gemma4:e4b")
 
                     vlm_body = {
                         "model": vision_model,
@@ -1372,7 +1372,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         summary = ""
         try:
             is_ollama = settings.get("provider") == "ollama"
-            ollama_model = settings.get("ollamaModel") or "gemma3:4b"
+            ollama_model = settings.get("ollamaModel") or "gemma4:e4b"
             model = settings.get("model") or "deepseek/deepseek-chat"
             api_key = settings.get("apiKey") or get_api_key()
 
