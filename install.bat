@@ -1,18 +1,17 @@
 @echo off
 chcp 65001 >nul 2>&1
-title LehrerAgent – Installation
+title TeacherAssist – Installation
 setlocal EnableDelayedExpansion
 
 :: Arbeitsverzeichnis = Speicherort dieser Datei
 cd /d "%~dp0"
 set "INSTALL_DIR=%~dp0"
-:: Trailing-Backslash entfernen
 if "%INSTALL_DIR:~-1%"=="\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
 
 cls
 echo.
 echo  ====================================================
-echo   LehrerAgent - Automatische Installation
+echo   TeacherAssist - Automatische Installation
 echo  ====================================================
 echo.
 echo  Dieser Vorgang dauert ca. 5-10 Minuten.
@@ -22,7 +21,7 @@ pause
 
 :: ── 1. Python prüfen / installieren ─────────────────────────────────────────
 echo.
-echo  [1/6]  Pruefe Python...
+echo  [1/4]  Pruefe Python...
 
 python --version >nul 2>&1
 if %errorlevel% equ 0 goto python_ok
@@ -59,7 +58,7 @@ for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo         OK: %%v
 
 :: ── 2. Tesseract OCR installieren ────────────────────────────────────────────
 echo.
-echo  [2/6]  Pruefe Tesseract OCR (fuer Fotos und gescannte Dokumente)...
+echo  [2/4]  Pruefe Tesseract OCR (fuer Fotos und gescannte Dokumente)...
 
 tesseract --version >nul 2>&1
 if %errorlevel% equ 0 (
@@ -97,9 +96,11 @@ echo         OK: Tesseract installiert.
 :tesseract_ok
 
 
-:: ── 3. Python-Pakete installieren ────────────────────────────────────────────
+:: ── 3. Python-venv + Abhaengigkeiten ─────────────────────────────────────────
+:: tool_server.py erwartet zwingend tools\.venv\Scripts\python.exe.
+:: start.bat verweigert den Start ohne dieses venv.
 echo.
-echo  [3/6]  Installiere Programm-Komponenten (ca. 3-5 Minuten)...
+echo  [3/4]  Installiere Programm-Komponenten in tools\.venv (ca. 3-5 Minuten)...
 
 cd tools
 
@@ -119,52 +120,13 @@ echo         OK: Alle Komponenten installiert.
 cd ..
 
 
-:: ── 4. Programmverzeichnis einrichten ────────────────────────────────────────
+:: ── 4. Desktop-Verknuepfung ──────────────────────────────────────────────────
+:: tool_server.py legt memory/, logs/, uploads/, exports/, tools/chroma_db/ beim
+:: ersten Start selbst an – wir erzwingen keine Spiegelung nach %USERPROFILE%.
+:: Settings (Provider, Modell, API-Key) werden zur Laufzeit ueber die Web-UI in
+:: settings.json gespeichert. Keine separate Config-Datei mehr noetig.
 echo.
-echo  [4/6]  Richte Programmverzeichnis ein...
-
-set "OC_DIR=%USERPROFILE%\.openclaw"
-if not exist "%OC_DIR%"                            mkdir "%OC_DIR%"
-if not exist "%OC_DIR%\memory"                     mkdir "%OC_DIR%\memory"
-if not exist "%OC_DIR%\memory\bewertungsraster"    mkdir "%OC_DIR%\memory\bewertungsraster"
-if not exist "%OC_DIR%\skills"                     mkdir "%OC_DIR%\skills"
-if not exist "%OC_DIR%\logs"                       mkdir "%OC_DIR%\logs"
-
-:: Memory-Vorlagen kopieren (nur wenn noch nicht vorhanden)
-for %%f in (lehrerprofil.md lehrplan_index.md korrekturprotokoll.md vergangene_stunden.md) do (
-    if not exist "%OC_DIR%\memory\%%f" copy "memory\%%f" "%OC_DIR%\memory\%%f" >nul
-)
-
-:: Skills kopieren (immer aktuell halten)
-xcopy "skills" "%OC_DIR%\skills" /E /I /Y /Q >nul 2>&1
-
-echo         OK: Programmverzeichnis eingerichtet.
-
-
-:: ── 5. Konfiguration erstellen ───────────────────────────────────────────────
-echo.
-echo  [5/6]  Konfiguration einrichten...
-
-set "CONFIG=%OC_DIR%\config.yaml"
-
-if not exist "%CONFIG%" (
-    powershell -NoProfile -ExecutionPolicy Bypass ^
-        -File "%INSTALL_DIR%\scripts\setup_config.ps1" ^
-        -InstallDir "%INSTALL_DIR%" ^
-        -ConfigFile "%CONFIG%"
-) else (
-    echo         OK: Konfiguration bereits vorhanden.
-)
-
-:: API-Schlüssel abfragen
-powershell -NoProfile -ExecutionPolicy Bypass ^
-    -File "%INSTALL_DIR%\scripts\setup_apikey.ps1" ^
-    -ConfigFile "%CONFIG%"
-
-
-:: ── 6. Desktop-Verknüpfung erstellen ─────────────────────────────────────────
-echo.
-echo  [6/6]  Erstelle Desktop-Verknuepfung...
+echo  [4/4]  Erstelle Desktop-Verknuepfung...
 
 powershell -NoProfile -ExecutionPolicy Bypass ^
     -File "%INSTALL_DIR%\scripts\create_shortcut.ps1" ^
@@ -177,12 +139,17 @@ echo  ====================================================
 echo   Installation abgeschlossen!
 echo  ====================================================
 echo.
-echo   So startest du den LehrerAgent:
+echo   So startest du TeacherAssist:
 echo.
 echo     Doppelklick auf "LehrerAgent starten" auf deinem Desktop
+echo     (oder direkt start.bat aus diesem Ordner)
 echo.
-echo   Beim ersten Start wird der Assistent dich durch
-echo   die Einrichtung deines Profils fuehren.
+echo   Beim ersten Start oeffnet sich der Browser auf
+echo   http://localhost:8789/ und der Assistent fuehrt
+echo   dich durch die Einrichtung deines Profils.
+echo.
+echo   API-Key und Provider werden in den Einstellungen
+echo   der Web-UI hinterlegt (gespeichert in settings.json).
 echo.
 echo  ====================================================
 echo.

@@ -1,6 +1,6 @@
 # LehrerAgent – CLAUDE.md
 > Vollständiger Bauplan für Claude Code. Wird bei jeder Session automatisch geladen.
-> Letzte Aktualisierung: Mai 2026 (v4 – Persönlichkeitsschicht Mila + DSGVO-Modell-Routing)
+> Letzte Aktualisierung: 2026-05-28 (v4 – Architektur korrigiert: ein Prozess auf :8789, Venv-Pflicht, Server-Log, Operate-Sektion)
 
 ---
 
@@ -41,31 +41,46 @@ Python-Code schreiben wir nur für Tools (Ebene 2).
 
 ## Gesamtarchitektur (v4 – ohne OpenClaw)
 
+**Ein einziger Prozess.** `tool_server.py` auf Port 8789 liefert sowohl die
+statischen Frontend-Dateien (index.html, app.jsx, components.jsx, …) als auch
+alle API-Endpunkte aus. Es gibt **keinen** separaten Web-Server auf 8788 — der
+Wert 8788 taucht nur als zusätzlicher CORS-Allowlist-Eintrag in `tool_server.py`
+auf und wird nirgendwo gebunden.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                  DESKTOP (lokal / VPS)                    │
+│                  DESKTOP (Windows, lokal)                 │
 │                                                          │
 │  ┌─────────────────────────────────────────────────┐    │
-│  │  Tool-Server (:8789)  –  LLM-Proxy + RAG        │    │
-│  │  • POST /chat → DSGVO-Filter → Skill-Router     │    │
-│  │    → OpenRouter (schnell) ODER Ollama (lokal)   │    │
-│  │  • ChromaDB (Embedding-Suche)                   │    │
-│  │  • Memory-Dateien (lehrerprofil.md etc.)        │    │
-│  │  • Skills als Prompt-Bibliothek (Markdown)      │    │
+│  │  tool_server.py (:8789)                          │    │
+│  │  • Static: /, /app.jsx, /components.jsx, /icon  │    │
+│  │  • GET   /health, /collections, /search,        │    │
+│  │           /settings, /memory-*, /backup, …       │    │
+│  │  • POST  /chat (Streaming), /upload, /ingest,   │    │
+│  │           /ocr-image, /save-raster, …            │    │
+│  │  • ChromaDB (lokale Embedding-Suche)            │    │
+│  │  • Memory-Dateien unter ./memory/               │    │
+│  │  • Skills als Prompt-Bibliothek (./skills/)     │    │
+│  │  • Log: ./logs/tool_server.log (rotierend)      │    │
 │  └──────────────────────┬──────────────────────────┘    │
-│                          ↕                               │
-│  ┌──────────────────────────────────────────────┐       │
-│  │  Web-Server (:8788)                           │       │
-│  │  index.html + app.jsx + components.jsx       │       │
-│  └──────────────────────────────────────────────┘       │
-└──────────────────────────┬───────────────────────────────┘
-                            │ WLAN / Tailscale VPN
-               ┌────────────┴─────────────┐
-               │                          │
-       iOS App (Swift)          Flutter App
-       WLAN WebSocket           Desktop + Mobile
-       Kamera → OCR             Chat-Interface
+│                          │ HTTP                          │
+│  ┌──────────────────────┴──────────────────────────┐    │
+│  │  Ollama (:11434, separater Prozess)             │    │
+│  │  • Pflicht für DSGVO-Skills (lokales Modell)    │    │
+│  └─────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+                            ▲
+                            │ Browser → http://localhost:8789/
+                            │
+                       React-SPA (CDN, kein Build)
 ```
+
+**iOS-App und Flutter-App (Abschnitte weiter unten):** sprechen ein
+WebSocket-Protokoll, das ursprünglich für eine OpenClaw-Gateway-Instanz auf
+Port 18789 entworfen wurde. Dieses Gateway existiert in v4 nicht mehr.
+Die mobilen Clients sind in v4 **deaktiviert / nicht angebunden**; bevor sie
+wieder funktionieren, muss das Protokoll auf `tool_server.py` umgezogen werden
+(eigene Phase). Bis dahin sind die Mobile-Abschnitte historischer Kontext.
 
 ---
 
@@ -98,18 +113,20 @@ lehreragent/
 ├── README.md                              ← Schnelleinstieg für Lehrer
 ├── SETUP.md                               ← Detaillierte Einrichtungsanleitung
 │
-├── index.html                             ← Web-UI Entry Point (Port 8788)
+├── index.html                             ← Web-UI Entry Point (von tool_server.py auf :8789 serviert)
 ├── app.jsx                                ← React-App: Chat, Provider-Switch, Upload
 ├── components.jsx                         ← React-Komponenten: Settings, Onboarding, etc.
 ├── tweaks-panel.jsx                       ← Erweiterte Einstellungen (Panel)
-├── tool_server.py                         ← Tool-Server (Port 8789): Upload, OCR, RAG, Settings
-├── start.bat                              ← Startet Web-Server + Tool-Server (DSGVO-Proxy)
-├── install.bat                            ← Erstinstallation: Python-Env, Abhängigkeiten
+├── tool_server.py                         ← Einziger Server (Port 8789): Static + API + RAG
+├── start.bat                              ← Startet tool_server.py (HTTP /health-Probe, Zombie-Kill, Venv-Zwang)
+├── install.bat                            ← Erstinstallation: Python-Env, Abhängigkeiten, Tesseract
 ├── settings.json                          ← Persistierte Provider-Einstellungen (auto-generiert)
+├── logs/tool_server.log                   ← Rotierendes Server-Log (1 MB × 3 Backups, auto-generiert)
 │
-├── scripts/                               ← Windows-Hilfsscripte (optional)
-│   ├── setup_apikey.ps1                   ← API-Key in Umgebungsvariable speichern
-│   └── create_shortcut.ps1               ← Desktop-Verknüpfung erstellen
+├── scripts/                               ← Windows-Hilfsscripte
+│   ├── create_shortcut.ps1                ← Desktop-Verknüpfung (von install.bat aufgerufen)
+│   ├── setup_apikey.ps1                   ← LEGACY: schrieb in OpenClaw-Config; wird nicht mehr aufgerufen
+│   └── setup_config.ps1                   ← LEGACY: las openclaw_config_template.yaml; wird nicht mehr aufgerufen
 │
 ├── skills/                                ← EBENE 1: Skills (Markdown-Instruktionen für das LLM)
 │   ├── begleiter/
@@ -275,7 +292,7 @@ Wird von `schuelerarbeit_bewerten` aufgerufen bevor `ocr_reader.py` läuft.
 { "action": "cleanup_old", "max_age_minutes": 30 }
 ```
 
-**DSGVO:** Bilder werden AUSSCHLIESSLICH in `/tmp/openclaw_images/` gespeichert.
+**DSGVO:** Bilder werden AUSSCHLIESSLICH in einem OS-Temp-Unterverzeichnis (`%TEMP%\teacherassist_images\` auf Windows) gespeichert.
 Nach OCR/Auswertung sofort löschen via `cleanup`-Action.
 Automatische Bereinigung via `cleanup_old` (Heartbeat-Skill alle 30 Min).
 
@@ -344,7 +361,7 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 ```python
 # Input:
 {
-  "filepath": str,          # relativ zu ~/.openclaw/memory/
+  "filepath": str,          # relativ zu ./memory/ (Projektwurzel)
   "mode": "overwrite" | "append" | "update_section",
   "content": str,           # Markdown-Inhalt
   "section": str | None     # bei mode="update_section": Abschnittsname (##-Heading)
@@ -369,7 +386,7 @@ Bei confidence < 60: Warnung in Output, Lehrer darauf hinweisen.
 ```python
 # Input:
 {
-  "filepath": str,          # relativ zu ~/.openclaw/memory/
+  "filepath": str,          # relativ zu ./memory/ (Projektwurzel)
   "section": str | None,    # nur diesen ##-Abschnitt zurückgeben
   "key": str | None         # nach "- **Key:** Value"-Einträgen suchen
 }
@@ -450,7 +467,7 @@ Wird von Mila via `memory_reader` und `memory_writer` verwaltet.
 }
 ```
 
-**DB-Pfad:** `~/.openclaw/memory/lehrplan_vectordb/`
+**DB-Pfad:** `./tools/chroma_db/` (Projektwurzel; siehe `CHROMA_DIR` in `tool_server.py`)
 **Embedding-Modell:** `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
 (läuft vollständig lokal, kein API-Call, DSGVO-konform)
 
@@ -542,7 +559,7 @@ Wird von Mila via `memory_reader` und `memory_writer` verwaltet.
 - `claude-opus-4-7`: $15.00/M Input, $75.00/M Output
 - `claude-haiku-4-5`: $0.25/M Input, $1.25/M Output
 
-**Daten-Speicherung:** `~/.teacherassist/usage/usage_data.json`
+**Daten-Speicherung:** projektrelativ unter `./tools/usage/usage_data.json` (siehe `tools/usage_tracker.py`)
 **Standard-Budget:** $100/Monat
 
 ---
@@ -651,21 +668,60 @@ Niemals Python-Code in skill.md schreiben.
 
 ### Übersicht
 
-```
-Browser (Port 8788)          Tool-Server (Port 8789)
-   index.html                   tool_server.py
-   app.jsx          ←──────────► /upload        (PDF hochladen)
-   components.jsx               /ingest         (PDF → ChromaDB)
-   tweaks-panel.jsx             /search         (RAG-Suche)
-                                 /settings       (Provider speichern)
-                                 /health         (Status)
-                                 /clear          (DB leeren)
-                                 /save-raster    (Bewertungsraster speichern) ✅
-                                 /list-raster    (Raster auflisten) ✅
+Statische Frontend-Dateien **und** API werden vom selben `tool_server.py`-Prozess
+auf Port 8789 ausgeliefert. Es gibt keinen zweiten Webserver.
 
-   app.jsx ──────── WebSocket/HTTP ──────► OpenClaw (:18789)
-                     (callLLM via OpenRouter oder Ollama)
 ```
+Browser → http://localhost:8789/
+   │
+   ├── GET /                  → index.html
+   ├── GET /app.jsx           → React-App-Code
+   ├── GET /components.jsx    → React-Komponenten
+   ├── GET /tweaks-panel.jsx  → Erweiterte Einstellungen
+   │
+   └── HTTP (siehe API-Referenz unten)
+       ├── POST /chat                  Streaming-LLM (DSGVO-Filter + Routing)
+       ├── POST /upload, /ingest       Lehrplan-PDF → ChromaDB
+       ├── POST /ocr-image             Bild → Text
+       ├── POST /save-raster           Bewertungsraster speichern
+       ├── GET  /search?q=...          RAG-Suche
+       ├── GET  /settings, /health, …  Status & Config
+       └── GET  /list-raster, /memory-*, /backup
+
+LLM-Anbindung (vom Server, nicht vom Browser):
+   tool_server.py ──HTTP──► OpenRouter (Cloud)  – wenn provider=openrouter
+   tool_server.py ──HTTP──► Ollama :11434       – wenn provider=ollama oder DSGVO-Pflicht
+```
+
+### HTTP-API-Referenz (`tool_server.py`)
+
+| Methode | Pfad | Zweck |
+|---------|------|-------|
+| GET | `/` und `/index.html`, `/app.jsx`, `/components.jsx`, `/tweaks-panel.jsx`, `/manifest.json`, `/service-worker.js`, `/favicon.ico`, `/teacherassist.ico` | Statische Frontend-Dateien |
+| GET | `/health` | Status: `{"status":"ok","version":"1.1","ollama":bool}` |
+| GET | `/collections` | Anzahl gespeicherter ChromaDB-Chunks |
+| GET | `/search?q=...` | Semantische Lehrplan-Suche (RAG) |
+| GET | `/settings` | Persistierte Einstellungen lesen |
+| GET | `/backup` | Memory-Verzeichnis als ZIP herunterladen |
+| GET | `/list-raster` | Bewertungsraster auflisten |
+| GET | `/memory-list` | Alle `.md`-Dateien unter `./memory/` |
+| GET | `/memory-read?file=...` | Einzelne Memory-Datei lesen |
+| GET | `/memory-versions?file=...` | Backup-Versionen einer Memory-Datei |
+| POST | `/chat` | LLM-Chat mit Streaming, DSGVO-Filter, Skill-Router |
+| POST | `/upload` | PDF-Datei speichern (multipart) |
+| POST | `/ingest` | PDF verarbeiten → ChromaDB |
+| POST | `/clear` | Wissensdatenbank leeren |
+| POST | `/download-url` | Lehrplan per URL holen |
+| POST | `/settings` | Einstellungen speichern |
+| POST | `/save-raster` | Bewertungsraster speichern |
+| POST | `/restore` | Backup wiederherstellen (ZIP) |
+| POST | `/memory-write` | Memory-Datei schreiben |
+| POST | `/memory-restore-version` | Backup-Version wiederherstellen |
+| POST | `/ocr-image` | Bild per OCR in Text umwandeln |
+| POST | `/session-summary` | Chat-Verlauf in `vergangene_stunden.md` speichern |
+
+Quelle der Wahrheit ist der Routing-Block in `tool_server.py` (`do_GET` / `do_POST`).
+Bei Änderungen diese Tabelle synchron halten.
 
 ### Hauptfunktionen
 
@@ -689,8 +745,8 @@ Browser (Port 8788)          Tool-Server (Port 8789)
 | `app.jsx` | App-State, Chat-Loop, Provider-Logik, LLM-Calls |
 | `components.jsx` | SettingsView, OnboardingView, ChatInput, MessageBubble |
 | `tweaks-panel.jsx` | Erweiterte Einstellungen (Temperatur, System-Prompt, etc.) |
-| `tool_server.py` | Python HTTP-Server Port 8789, CORS, alle Tool-Endpunkte |
-| `start.bat` | Startet Web-Server (:8788) + Tool-Server (:8789) + OpenClaw |
+| `tool_server.py` | Python HTTP-Server Port 8789, CORS, statische Frontend-Dateien, alle API-Endpunkte |
+| `start.bat` | Startet `tool_server.py` mit Venv-Python (HTTP `/health`-Probe, Zombie-Kill bei stale Listener) |
 
 ---
 
@@ -1059,51 +1115,46 @@ Signalwörter: "müde", "kein Bock", "muss aber", "muss noch"
 
 ---
 
-## Installation & Setup
+## Installation & Setup (Windows – primärer Zielsystem)
 
-```bash
-# 1. OpenClaw installieren (Node 22 LTS oder Node 24)
-npm install -g openclaw
+```bat
+:: 1. Erstinstallation – legt Venv unter tools\.venv an, installiert
+::    Python, Tesseract, alle pip-Abhängigkeiten und richtet Memory-Templates ein.
+install.bat
 
-# 2. Skills + Memory deployen
-cp -r skills/* ~/.openclaw/skills/
-cp -r memory/* ~/.openclaw/memory/
-openclaw skill load onboarding unterricht_planen bewertung_erstellen \
-  schuelerarbeit_bewerten lehrplan_einlesen
+:: 2. Ollama installieren (Pflicht für DSGVO-Skills)
+::    https://ollama.com/download
+ollama pull gemma3:e4b           :: Schnell, Default für DSGVO-Skills
+ollama pull qwen3:8b             :: Stärkerer Allrounder, optional
 
-# 3. Python-Umgebung für Tools
-cd tools/
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# 4. Tesseract installieren (für OCR)
-# macOS:   brew install tesseract tesseract-lang
-# Ubuntu:  sudo apt install tesseract-ocr tesseract-ocr-deu
-# Windows: Installer von github.com/UB-Mannheim/tesseract
-
-# 5. Tools in OpenClaw registrieren (~/.openclaw/config.yaml)
-# tools_path: /absoluter/pfad/zu/lehreragent/tools
-# tools_python: /absoluter/pfad/zu/lehreragent/tools/.venv/bin/python
-
-# 6. Ollama für DSGVO-Skills installieren (Pflicht!)
-# https://ollama.com/download
-# ollama pull qwen2.5:14b    # empfohlen für DSGVO-Betrieb
-
-# 7. Agent starten – WICHTIG: --host 0.0.0.0 damit iPhone erreichbar ist
-openclaw start --host 0.0.0.0 --port 18789
-# Mac-IP herausfinden:
-ipconfig getifaddr en0   # macOS
-# Diese IP in der iOS-App eingeben
-
-# 8. Web-UI starten (Windows: start.bat doppelklicken)
-python -m http.server 8788          # Web-UI
-python tool_server.py               # Tool-Server
-# → Browser öffnet http://localhost:8788
+:: 3. App starten
+start.bat
+:: → öffnet Browser auf http://localhost:8789/
 ```
 
+**Wichtige Pfade:**
+
+| Was | Pfad |
+|-----|------|
+| Venv-Python (Pflicht) | `tools\.venv\Scripts\python.exe` |
+| Server-Log | `logs\tool_server.log` (rotierend, 1 MB × 3) |
+| Memory-Dateien | `memory\*.md` |
+| ChromaDB | `tools\chroma_db\` |
+| Persistierte Settings | `settings.json` |
+
+`start.bat` startet **ausschliesslich** über das Venv-Python (kein System-Python-
+Fallback) und prüft den Server per HTTP `GET /health` (nicht nur TCP). Wenn auf
+Port 8789 bereits ein hängender Prozess lauscht, der nicht antwortet, wird er
+vor dem Neustart per `Stop-Process` beendet — siehe Abschnitt
+*Betrieb der laufenden App*.
+
+### iOS App in Xcode einrichten (Legacy, v3-Stand)
+
+> ⚠️ In v4 funktioniert die iOS-App nicht, weil das OpenClaw-Gateway auf Port
+> 18789 entfernt wurde. Bis das Protokoll auf `tool_server.py` umgezogen ist,
+> dient diese Anleitung nur als historischer Kontext.
+
 ```
-iOS App in Xcode einrichten:
 1. Xcode → File → New → Project → iOS App
    Name: LehrerAgent | SwiftUI | Swift | Min iOS: 16.0
 2. Alle Dateien aus app_ios/LehrerAgent/ ins Xcode-Projekt ziehen
@@ -1114,6 +1165,64 @@ iOS App in Xcode einrichten:
 6. Run ▶ → App auf iPhone installieren
 7. App öffnen → Mac-IP eingeben → Verbinden
 ```
+
+---
+
+## Betrieb der laufenden App
+
+### Status prüfen (in dieser Reihenfolge)
+
+1. **Im Browser:** Settings-Panel → Indikator "Tool-Server aktiv" / "Ollama aktiv".
+   "Test senden" sendet eine kurze Anfrage an das ausgewählte Modell.
+2. **HTTP `/health`** (definitive Quelle):
+   ```powershell
+   Invoke-WebRequest -Uri http://localhost:8789/health -UseBasicParsing -TimeoutSec 3
+   # Erwartet: {"status":"ok","version":"1.1","ollama":true}
+   ```
+3. **Wer hält den Port?**
+   ```powershell
+   Get-NetTCPConnection -LocalPort 8789 -State Listen |
+     ForEach-Object { Get-Process -Id $_.OwningProcess | Select Id, Path }
+   ```
+4. **Server-Log:**
+   ```powershell
+   Get-Content .\logs\tool_server.log -Tail 50 -Wait
+   ```
+
+### Fehlerbild: "Tool-Server offline" im UI, obwohl Port 8789 belegt
+
+Klassischer Zombie-Prozess: `tool_server.py` wurde mit System-Python statt Venv
+gestartet, die Imports (chromadb/torch) hängen, der Port bleibt aber gebunden.
+**Symptom:** `Test-NetConnection -Port 8789` ist `True`, aber `/health` timeouts.
+
+**Reparatur:**
+```powershell
+$pid = (Get-NetTCPConnection -LocalPort 8789 -State Listen).OwningProcess
+Stop-Process -Id $pid -Force
+.\start.bat   # startet sauber mit Venv-Python und HTTP-Probe
+```
+
+`start.bat` erkennt diesen Fall ab v4 selbst und beendet den hängenden Prozess
+vor dem Neustart.
+
+### Manueller Sauberstart
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like '*tool_server.py*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+.\start.bat
+```
+
+### Autostart bei Windows-Login
+
+Verknüpfung auf `start.bat` im Startup-Ordner anlegen:
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\TeacherAssist.lnk
+```
+Nebenwirkung: `start.bat` öffnet am Ende den Browser. Wenn das stört, eine
+zweite Datei `autostart.bat` ohne den `start "" "http://localhost:8789/"`-Aufruf
+anlegen und stattdessen die verlinken.
 
 ---
 
@@ -1139,6 +1248,11 @@ iOS App in Xcode einrichten:
 
 **Web-UI**
 - Tool-Server nicht gestartet → Upload/RAG/Settings funktionieren nicht (Port 8789)
+- **Zombie-Listener:** Port 8789 ist belegt, aber `/health` timeouts → siehe
+  Abschnitt *Betrieb der laufenden App* (System-Python-Start statt Venv ist
+  die häufigste Ursache; `start.bat` ab v4 fängt das ab).
+- Wrong-Python-Diagnose: im Log steht `WARN: Python ist nicht das erwartete venv`
+  → `start.bat` neu starten, nicht `python tool_server.py` direkt.
 - CORS-Fehler → Tool-Server läuft auf anderem Port oder nicht gestartet
 - Ollama nicht gefunden → `ollama serve` muss laufen, dann /health prüfen
 - OpenRouter-Fallback zeigt Warnung → Provider-Status wird alle 30s geprüft

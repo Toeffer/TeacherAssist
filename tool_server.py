@@ -37,6 +37,7 @@ import http.server
 import html
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -47,6 +48,7 @@ import threading
 import time
 import urllib.request
 import zipfile
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -54,6 +56,7 @@ BASE_DIR      = Path(__file__).parent
 UPLOAD_DIR    = BASE_DIR / "uploads"
 CHROMA_DIR    = BASE_DIR / "tools" / "chroma_db"
 EXPORT_DIR    = BASE_DIR / "exports"
+LOG_DIR       = BASE_DIR / "logs"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 SKILLS_DIR    = BASE_DIR / "skills"
 MEMORY_DIR    = BASE_DIR / "memory"
@@ -63,6 +66,14 @@ VALID_PROVIDERS = {"openrouter", "ollama", "custom"}
 UPLOAD_DIR.mkdir(exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(exist_ok=True)
+
+logger = logging.getLogger("tool_server")
+if not logger.handlers:
+    _h = RotatingFileHandler(LOG_DIR / "tool_server.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 def apply_request_overrides(settings, data):
     """Apply non-persistent per-request provider/model overrides from the UI."""
@@ -1422,12 +1433,29 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         self._json({"success": True, "summary": summary.strip()})
 
-    def log_message(self, *_):
-        pass
+    def log_message(self, format, *args):
+        logger.info("%s - %s", self.address_string(), format % args)
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    port   = 8789
-    server = http.server.ThreadingHTTPServer(("", port), ToolHandler)
+    expected_venv = (BASE_DIR / "tools" / ".venv" / "Scripts" / "python.exe").resolve()
+    if Path(sys.executable).resolve() != expected_venv:
+        msg = f"WARN: Python ist nicht das erwartete venv. running={sys.executable} erwartet={expected_venv}"
+        print(msg, flush=True)
+        logger.warning(msg)
+
+    port = 8789
+    logger.info("Starting Tool-Server port=%d python=%s", port, sys.executable)
+    try:
+        server = http.server.ThreadingHTTPServer(("", port), ToolHandler)
+    except OSError as e:
+        msg = f"Bind fehlgeschlagen auf Port {port}: {e}"
+        print(msg, flush=True)
+        logger.error(msg)
+        sys.exit(1)
     print(f"TeacherAssist Tool-Server -> http://localhost:{port}", flush=True)
-    server.serve_forever()
+    logger.info("Tool-Server bereit auf :%d", port)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Tool-Server beendet (KeyboardInterrupt)")
