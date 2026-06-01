@@ -14,9 +14,10 @@ Vollständige manuelle Einrichtung auf einem neuen Rechner. Reihenfolge einhalte
 | Python | 3.11+ | https://www.python.org/downloads/ |
 | Tesseract OCR | 5.x | https://github.com/UB-Mannheim/tesseract/wiki (Windows) |
 | Poppler | aktuell | https://github.com/oschwartz10612/poppler-windows/releases (Windows) |
-| Flutter SDK | 3.x | https://docs.flutter.dev/get-started/install |
-| OpenClaw | aktuell | (intern) |
+| Ollama (optional, Pflicht für DSGVO-Skills) | aktuell | https://ollama.com/download |
 | Git | aktuell | https://git-scm.com/ |
+
+> **Legacy:** Flutter und OpenClaw werden in v4 nicht mehr benötigt. iOS-/Flutter-Clients sind dokumentiert, aber nicht angebunden — siehe CLAUDE.md.
 
 ---
 
@@ -59,116 +60,59 @@ Das Skript erstellt `.venv/` im `tools/`-Ordner und installiert alle Abhängigke
 
 ---
 
-## Schritt 3 – OpenClaw konfigurieren
+## Schritt 3 – Tool-Server starten und konfigurieren
 
-```bash
-# Konfigurationsverzeichnis anlegen
-mkdir -p ~/.openclaw/memory
-mkdir -p ~/.openclaw/skills
-mkdir -p ~/.openclaw/logs
+In v4 gibt es keinen separaten OpenClaw-Dienst mehr. `tool_server.py` läuft als einziger
+Prozess auf Port **8789** und liefert Frontend und API aus.
 
-# Config-Template kopieren und anpassen
-cp openclaw_config_template.yaml ~/.openclaw/config.yaml
+```bat
+:: Aus dem Projektordner:
+start.bat
 ```
 
-Dann `~/.openclaw/config.yaml` öffnen und diese Felder anpassen:
+`start.bat` prüft das venv unter `tools\.venv`, probiert `GET /health` und beendet einen
+hängenden Vor-Prozess auf Port 8789 falls vorhanden. Browser öffnet sich automatisch.
 
-```yaml
-brain:
-  api_key: "${ANTHROPIC_API_KEY}"   # oder direkt eintragen
+API-Key und Provider werden in der Web-UI unter *Einstellungen → Provider* eingetragen
+und in `settings.json` (im Projektroot) gespeichert. Keine Umgebungsvariable nötig.
 
-tools:
-  path: "/absoluter/pfad/zu/TeacherAssist/tools"
-  python: "/absoluter/pfad/zu/TeacherAssist/tools/.venv/bin/python"
-  # Windows:
-  # python: "C:\\Pfad\\zu\\TeacherAssist\\tools\\.venv\\Scripts\\python.exe"
+**Ollama (optional, Pflicht für DSGVO-Skills):**
+
+```bat
+:: nach Installation von https://ollama.com/download
+ollama pull gemma3:e4b
+ollama serve   :: läuft normalerweise automatisch als Hintergrunddienst
 ```
 
-### Skills und Memory verknüpfen
-
-```bash
-# Skills ins OpenClaw-Verzeichnis kopieren (oder symlink)
-cp -r skills/. ~/.openclaw/skills/
-
-# Memory-Templates kopieren (werden vom Agenten befüllt)
-cp memory/lehrerprofil.md ~/.openclaw/memory/
-cp memory/lehrplan_index.md ~/.openclaw/memory/
-cp memory/korrekturprotokoll.md ~/.openclaw/memory/
-cp memory/vergangene_stunden.md ~/.openclaw/memory/
-mkdir -p ~/.openclaw/memory/bewertungsraster
-```
-
-### API-Key setzen
-
-```bash
-# Windows (PowerShell, dauerhaft):
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
-
-# Linux/macOS (~/.bashrc oder ~/.zshrc):
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
+DSGVO-Pflicht-Skills (`schuelerarbeit_bewerten`, `zeugnis_formulieren`,
+`foerderplan_erstellen`, `lerntagebuch_feedback`, `klassenstatistik`) werden
+serverseitig zwingend auf Ollama geroutet. Wenn Ollama offline ist und ein solcher
+Skill verlangt wird, gibt die UI eine Fehlermeldung aus — **kein Cloud-Fallback**.
 
 ---
 
-## Schritt 4 – Flutter App einrichten
+## Schritt 4 – Verbindung testen
 
-> Nur nötig wenn du die App lokal bauen willst. Für reine OpenClaw-Nutzung (Browser/Terminal) diesen Schritt überspringen.
+```bat
+:: Server-Status
+curl http://localhost:8789/health
+:: Erwartet: {"status":"ok","version":"1.1","ollama":true}
 
-```bash
-cd app
-
-# Platform-Dateien generieren (einmalig):
-flutter create --project-name teacher_assist .
-
-# Abhängigkeiten auflösen:
-flutter pub get
-
-# Auf Fehler prüfen:
-flutter analyze
-
-# Desktop-App starten (Windows):
-flutter run -d windows
-
-# Desktop-App starten (macOS):
-flutter run -d macos
-
-# Android (Gerät angeschlossen):
-flutter run -d android
+:: Tool direkt aus venv testen:
+tools\.venv\Scripts\python.exe tools\memory_reader.py
 ```
+
+Server-Log liegt unter `logs\tool_server.log` (rotierend, 1 MB × 3).
 
 ---
 
-## Schritt 5 – OpenClaw starten
+## Schritt 5 – Onboarding (beim ersten Start)
 
-```bash
-openclaw start --config ~/.openclaw/config.yaml
-```
-
-OpenClaw läuft dann auf Port **18789** für die Flutter/iOS-App über WebSocket/Tailscale.
-Die Desktop-Web-App nutzt zusätzlich den lokalen Tool-Server `tool_server.py` auf Port **8789**.
-
----
-
-## Schritt 6 – Verbindung testen
-
-```bash
-# Einfacher Test ob OpenClaw erreichbar ist:
-curl http://localhost:18789/health
-
-# Tool direkt testen:
-cd tools
-.venv/Scripts/python memory_reader.py  # Windows
-.venv/bin/python memory_reader.py      # Linux/macOS
-```
-
----
-
-## Schritt 7 – Onboarding (beim ersten Start)
-
-In der App oder über OpenClaw den Onboarding-Skill starten:
+In der Web-UI den Onboarding-Skill starten:
 > "Ich möchte den Agenten einrichten"
 
-Der Agent führt durch die Einrichtung des Lehrerprofils.
+Der Agent führt durch die Einrichtung des Lehrerprofils. Profil wird unter
+`memory\lehrerprofil.md` gespeichert.
 
 ---
 
@@ -176,27 +120,25 @@ Der Agent führt durch die Einrichtung des Lehrerprofils.
 
 ```
 TeacherAssist/
-├── app/                    # Flutter UI
-│   ├── android/            # (generiert durch flutter create)
-│   ├── windows/            # (generiert durch flutter create)
-│   ├── lib/                # Dart-Quellcode
-│   └── pubspec.yaml
-├── skills/                 # Markdown-Skills für OpenClaw
-├── tools/                  # Python-Tools
-│   ├── .venv/              # (gitignored – wird durch setup.bat/sh erstellt)
+├── tool_server.py          # Einziger Server (Port 8789)
+├── start.bat               # Startet tool_server.py (HTTP /health-Probe)
+├── install.bat             # Erstinstallation Python + Tesseract + venv
+├── settings.json           # Provider-/Modell-/API-Key-Settings (auto)
+├── index.html, app.jsx, components.jsx, tweaks-panel.jsx
+├── skills/                 # Markdown-Skills (LLM-Instruktionen)
+├── tools/
+│   ├── .venv/              # Python-venv (gitignored, von install.bat angelegt)
+│   ├── chroma_db/          # ChromaDB-Vektorspeicher (gitignored)
 │   ├── requirements.txt
-│   └── *.py
-├── memory/                 # Repo-lokaler Desktop-Memory
-├── openclaw_config_template.yaml
+│   └── *.py                # Python-Tools (pdf_reader, ocr_reader, memory_*, …)
+├── memory/                 # Markdown-Memory (lehrerprofil, lehrplan_index, …)
+├── logs/tool_server.log    # Rotierendes Server-Log (auto)
+├── uploads/                # Temp PDF-Uploads
 ├── SETUP.md                # Diese Datei
 └── CLAUDE.md               # Bauplan für Claude Code
-
-~/.openclaw/               # OpenClaw-/Tailscale-Laufzeit-Daten für mobile Integration
-├── config.yaml            # Deine persönliche Konfiguration
-├── memory/                # Vom Agenten befüllte Memory-Dateien
-├── skills/                # Kopie der Skills aus dem Repo
-└── logs/
 ```
+
+> Es gibt **kein** `~/.openclaw/`-Verzeichnis mehr. Alle Pfade sind projektrelativ.
 
 ---
 
@@ -204,9 +146,10 @@ TeacherAssist/
 
 | Fehler | Lösung |
 |---|---|
+| `Python-venv nicht gefunden` (beim Start) | `install.bat` ausführen — legt `tools\.venv` an |
+| Browser zeigt „Tool-Server offline" | `logs\tool_server.log` prüfen, `start.bat` neu starten |
+| Port 8789 belegt, `/health` timeoutet | Stale Prozess — `start.bat` ab v4 räumt selbst auf |
 | `tesseract is not installed` | Tesseract installieren + PATH setzen |
 | `Unable to get page count. Is poppler installed` | Poppler installieren + PATH setzen |
-| `chromadb` ImportError | `pip install chromadb` in `.venv` |
-| Flutter: `No supported devices found` | Zielplattform installieren (Android Studio / VS Build Tools) |
-| OpenClaw: `Connection refused` | OpenClaw starten + Port 18789 prüfen |
-| `ANTHROPIC_API_KEY not set` | Umgebungsvariable setzen (siehe Schritt 3) |
+| `chromadb` ImportError | `tools\.venv\Scripts\pip install -r tools\requirements.txt` |
+| DSGVO-Skill schlägt mit „Ollama nicht verfügbar" fehl | Ollama installieren + `ollama serve` läuft? |

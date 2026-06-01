@@ -28,7 +28,7 @@ if not exist "%~dp0index.html" (
     exit /b 1
 )
 
-:: HTTP /health pruefen (nicht nur TCP) – TCP allein erkennt Zombie-Prozesse nicht.
+:: HTTP /health pruefen (nicht nur TCP) - TCP allein erkennt Zombie-Prozesse nicht.
 echo  Pruefe Tool-Server...
 powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
@@ -42,7 +42,7 @@ powershell -NoProfile -Command "$c = Get-NetTCPConnection -LocalPort 8789 -State
 echo  Starte Tool-Server...
 start "TeacherAssist Tool" /min "%PYTHON%" "%~dp0tool_server.py"
 
-:: Auf /health warten – HTTP, nicht TCP. ChromaDB/Torch-Import dauert beim ersten Start.
+:: Auf /health warten - HTTP, nicht TCP. ChromaDB/Torch-Import dauert beim ersten Start.
 echo  Warte auf Tool-Server...
 set "TOOL_OK="
 for /l %%I in (1,1,30) do (
@@ -65,8 +65,12 @@ if not defined TOOL_OK (
 )
 
 :open_browser
-echo  Oeffne Browser...
-start "" "http://localhost:8789/"
+if defined NOBROWSER (
+    echo  Tool-Server bereit ^(Browser nicht geoeffnet wegen NOBROWSER=%NOBROWSER%^).
+) else (
+    echo  Oeffne Browser...
+    start "" "http://localhost:8789/"
+)
 
 echo.
 echo  TeacherAssist laeuft!

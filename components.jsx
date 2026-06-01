@@ -250,7 +250,14 @@ function mdToHtml(md) {
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Markdown-Links: nur http(s)/mailto erlauben, sonst Link entfernen (Text bleibt).
+  // Blockiert javascript:, data:, vbscript:, file: – wichtig weil mdToHtml-Output
+  // direkt per dangerouslySetInnerHTML gerendert wird (siehe MessageBubble).
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+    const trimmed = url.trim();
+    if (!/^(https?:|mailto:)/i.test(trimmed)) return text;
+    return `<a href="${trimmed}" target="_blank" rel="noopener">${text}</a>`;
+  });
 
   // Blockquotes
   html = html.replace(/(^> .+\n?)+/gm, block => {

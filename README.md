@@ -8,8 +8,8 @@ KI-Assistent für Lehrkräfte. Hilft bei Unterrichtsplanung, Bewertungserstellun
 
 ### Was du vorher brauchst
 
-- Einen **Anthropic API-Schlüssel** (kostenlos unter [console.anthropic.com](https://console.anthropic.com/))
-- **OpenClaw** installiert auf deinem Computer *(Installationsanleitung: → an dieser Stelle einfügen)*
+- Einen **Anthropic API-Schlüssel** (kostenlos unter [console.anthropic.com](https://console.anthropic.com/)) – wird später in den Einstellungen im Browser eingegeben.
+- *Empfohlen für datenschutzkritische Aufgaben:* **Ollama** lokal installiert, siehe [ollama.com/download](https://ollama.com/download). Skills wie *Schülerarbeit bewerten* oder *Zeugnis formulieren* werden automatisch über Ollama verarbeitet und verlassen den Rechner nicht.
 
 ### Schritt 1 – Dateien herunterladen
 
@@ -20,18 +20,19 @@ Klicke oben rechts auf dieser Seite auf **Code → Download ZIP**, dann entpacke
 Öffne den entpackten Ordner und mache einen **Doppelklick auf `install.bat`**.
 
 Das Programm erledigt automatisch:
-- Installation aller benötigten Komponenten
-- Einrichtung der Konfiguration
-- Abfrage deines API-Schlüssels (du wirst danach gefragt)
+- Installation von Python und Tesseract (für OCR), falls noch nicht vorhanden
+- Anlegen der Python-Umgebung unter `tools\.venv\`
 - Erstellung einer Verknüpfung auf deinem Desktop
 
 *Der Vorgang dauert ca. 5–10 Minuten. Das Fenster darf nicht geschlossen werden.*
 
 ### Schritt 3 – Täglich nutzen
 
-Mache einen **Doppelklick auf "LehrerAgent starten"** auf deinem Desktop.
+Mache einen **Doppelklick auf "LehrerAgent starten"** auf deinem Desktop (oder direkt auf `start.bat`).
 
-Der Browser öffnet sich automatisch mit dem Assistenten.
+Der Browser öffnet sich automatisch unter `http://localhost:8789/` mit dem Assistenten.
+
+**Beim ersten Start:** API-Schlüssel und Modell in der Web-UI unter *Einstellungen* eintragen. Die Werte werden lokal in `settings.json` gespeichert.
 
 ---
 
@@ -58,11 +59,14 @@ Der LehrerAgent läuft vollständig auf **deinem eigenen Computer**. Es werden k
 **Installation schlägt fehl:**
 Stelle sicher, dass du mit dem Internet verbunden bist und führe `install.bat` nochmal aus.
 
-**"OpenClaw nicht gefunden":**
-OpenClaw muss zuerst installiert werden *(Link → einfügen)*.
+**Browser zeigt „Tool-Server offline":**
+Schliesse das gestartete schwarze Fenster und starte `start.bat` neu. Wenn das nicht hilft: Log unter `logs\tool_server.log` prüfen.
 
 **Kein API-Schlüssel:**
-Registrierung unter [console.anthropic.com](https://console.anthropic.com/), dort unter „API Keys" einen neuen Schlüssel erstellen.
+Registrierung unter [console.anthropic.com](https://console.anthropic.com/), dort unter „API Keys" einen neuen Schlüssel erstellen und in der Web-UI unter *Einstellungen → Provider → Anthropic* eintragen.
+
+**Lokales Modell für DSGVO-Aufgaben:**
+Für Schülerarbeiten, Zeugnisse und Förderpläne wird ein lokales Modell erzwungen. [Ollama installieren](https://ollama.com/download) und z. B. `ollama pull gemma3:e4b` ausführen.
 
 ---
 

@@ -216,10 +216,17 @@ def detect_personal_data(text):
     if re.search(r'(geb\b\.?|geboren|geburtstag|geburtsdatum)', text, re.I) and \
        re.search(r'\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b', text):
         findings.append({"type": "Geburtsdatum", "auto": True})
+    # Explizite Lehrer-Kontext-Patterns + Eigenname → automatisch lokal routen.
+    # "Bewerte die Arbeit von Anna Müller" matcht hier NICHT (kein Trigger-Wort).
+    # Dafür sorgt die zusätzliche Schüler-Verdachts-Heuristik weiter unten.
     if re.search(r'(schüler[in]?|lernende[r]?|kind|elternteil?|sohn|tochter|sus)\s+(von\s+)?[A-ZÄÖÜ][a-zäöüß]{2,}(\s+[A-ZÄÖÜ][a-zäöüß]{2,})?', text, re.I):
-        findings.append({"type": "Möglicher Personenname", "auto": False})
+        findings.append({"type": "Schüler-Bezeichnung mit Eigenname", "auto": True})
     if re.search(r'\b(heißt|namens|vorname|nachname|familienname|name:)\s+[A-ZÄÖÜ][a-zäöüß]{2,}', text, re.I):
-        findings.append({"type": "Möglicher Personenname", "auto": False})
+        findings.append({"type": "Expliziter Personenname", "auto": True})
+    # Lehrer-Aktionsverb + Eigenname (z.B. "Bewerte/Korrigiere die Arbeit von Anna Müller")
+    if re.search(r'\b(bewert|korrigier|beurteil|benot|note\s+f[üu]r)\w*', text, re.I) and \
+       re.search(r'\bvon\s+[A-ZÄÖÜ][a-zäöüß]{2,}(\s+[A-ZÄÖÜ][a-zäöüß]{2,})?', text):
+        findings.append({"type": "Schülerarbeit mit Eigenname (Lehrer-Kontext)", "auto": True})
     return findings
 
 def anonymize_text(text):
@@ -792,14 +799,28 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         profile  = data.get("profile", {})
         settings = apply_request_overrides(load_settings(), data)
 
-        # Skill-Router: passenden Skill finden
+        # Skill-Router: explizite Skill-Wahl der UI hat Vorrang vor Trigger-Fuzzy-Match.
+        # Verhindert DSGVO-Lecks bei ungewoehnlich formulierten Anfragen.
         last_user = ""
         for m in reversed(messages):
             if m.get("role") == "user":
                 last_user = m.get("text", m.get("content", ""))
                 break
 
-        skill = find_matching_skill(last_user)
+        skill = None
+        forced_skill_id = data.get("force_skill") or data.get("forceSkill")
+        if isinstance(forced_skill_id, str):
+            forced_skill_id = forced_skill_id.strip()
+            # Whitelist: nur tatsaechlich existierende skills/<folder>/skill.md akzeptieren.
+            # Schliesst Path-Traversal aus.
+            if forced_skill_id and re.match(r'^[a-z_][a-z0-9_]*$', forced_skill_id):
+                folder = SKILLS_DIR / forced_skill_id
+                if (folder / "skill.md").exists():
+                    skill = {"name": forced_skill_id, "folder": forced_skill_id, "forced": True}
+
+        if skill is None:
+            skill = find_matching_skill(last_user)
+
         skill_content = ""
         if skill:
             skill_content = load_skill_content(skill["folder"])
@@ -1436,6 +1457,17 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         logger.info("%s - %s", self.address_string(), format % args)
 
+class _QuietThreadingHTTPServer(http.server.ThreadingHTTPServer):
+    """Unterdrueckt das laute stderr-Traceback bei harmlosen Client-Disconnects
+    (WinError 10053 / 10054 / Broken Pipe). Browser, der das Tab schliesst
+    waehrend Server gerade /health beantwortet, ist kein Server-Fehler."""
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            logger.debug("Client disconnected mid-response: %s %s", client_address, exc)
+            return
+        logger.exception("Unhandled server error from %s", client_address)
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     expected_venv = (BASE_DIR / "tools" / ".venv" / "Scripts" / "python.exe").resolve()
@@ -1447,7 +1479,7 @@ if __name__ == "__main__":
     port = 8789
     logger.info("Starting Tool-Server port=%d python=%s", port, sys.executable)
     try:
-        server = http.server.ThreadingHTTPServer(("", port), ToolHandler)
+        server = _QuietThreadingHTTPServer(("", port), ToolHandler)
     except OSError as e:
         msg = f"Bind fehlgeschlagen auf Port {port}: {e}"
         print(msg, flush=True)

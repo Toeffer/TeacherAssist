@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul 2>&1
-title TeacherAssist – Installation
+title TeacherAssist - Installation
 setlocal EnableDelayedExpansion
 
 :: Arbeitsverzeichnis = Speicherort dieser Datei
@@ -19,7 +19,7 @@ echo  Bitte das Fenster NICHT schliessen.
 echo.
 pause
 
-:: ── 1. Python prüfen / installieren ─────────────────────────────────────────
+:: -- 1. Python pruefen / installieren -----------------------------------------
 echo.
 echo  [1/4]  Pruefe Python...
 
@@ -30,7 +30,7 @@ echo         Nicht gefunden - installiere Python automatisch...
 winget install --id Python.Python.3.11 --source winget --scope user ^
     --silent --accept-package-agreements --accept-source-agreements
 
-:: PATH für diese Sitzung ergänzen
+:: PATH fuer diese Sitzung ergaenzen
 for %%P in (
     "%LOCALAPPDATA%\Programs\Python\Python311"
     "%LOCALAPPDATA%\Programs\Python\Python311\Scripts"
@@ -56,7 +56,7 @@ if %errorlevel% neq 0 (
 for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo         OK: %%v
 
 
-:: ── 2. Tesseract OCR installieren ────────────────────────────────────────────
+:: -- 2. Tesseract OCR installieren --------------------------------------------
 echo.
 echo  [2/4]  Pruefe Tesseract OCR (fuer Fotos und gescannte Dokumente)...
 
@@ -70,7 +70,7 @@ echo         Nicht gefunden - installiere Tesseract automatisch...
 winget install --id UB-Mannheim.TesseractOCR --source winget ^
     --silent --accept-package-agreements --accept-source-agreements
 
-:: Installationspfad suchen und zu PATH hinzufügen
+:: Installationspfad suchen und zu PATH hinzufuegen
 for %%P in (
     "C:\Program Files\Tesseract-OCR"
     "C:\Program Files (x86)\Tesseract-OCR"
@@ -96,7 +96,7 @@ echo         OK: Tesseract installiert.
 :tesseract_ok
 
 
-:: ── 3. Python-venv + Abhaengigkeiten ─────────────────────────────────────────
+:: -- 3. Python-venv + Abhaengigkeiten -----------------------------------------
 :: tool_server.py erwartet zwingend tools\.venv\Scripts\python.exe.
 :: start.bat verweigert den Start ohne dieses venv.
 echo.
@@ -120,9 +120,9 @@ echo         OK: Alle Komponenten installiert.
 cd ..
 
 
-:: ── 4. Desktop-Verknuepfung ──────────────────────────────────────────────────
+:: -- 4. Desktop-Verknuepfung --------------------------------------------------
 :: tool_server.py legt memory/, logs/, uploads/, exports/, tools/chroma_db/ beim
-:: ersten Start selbst an – wir erzwingen keine Spiegelung nach %USERPROFILE%.
+:: ersten Start selbst an - wir erzwingen keine Spiegelung nach %USERPROFILE%.
 :: Settings (Provider, Modell, API-Key) werden zur Laufzeit ueber die Web-UI in
 :: settings.json gespeichert. Keine separate Config-Datei mehr noetig.
 echo.
@@ -133,7 +133,7 @@ powershell -NoProfile -ExecutionPolicy Bypass ^
     -InstallDir "%INSTALL_DIR%"
 
 
-:: ── Fertig ────────────────────────────────────────────────────────────────────
+:: -- Fertig --------------------------------------------------------------------
 echo.
 echo  ====================================================
 echo   Installation abgeschlossen!

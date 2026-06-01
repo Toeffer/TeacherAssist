@@ -300,7 +300,7 @@ function extractKlassenStufen(text) {
 }
 
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '', providerOverride = '', modelOverride = '', ollamaModelOverride = '') {
+async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined) {
   const response = await fetch('http://localhost:8789/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -314,7 +314,9 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
       providerOverride,
       modelOverride,
       ollamaModelOverride,
+      force_skill: forceSkill || undefined,
     }),
+    signal,
   });
 
   if (!response.ok) {
@@ -408,6 +410,7 @@ function App() {
   const [batchQueue,  setBatchQueue]  = useState([]);   // [{file, status:'pending'|'active'|'done'|'error'}]
   const batchRunning = useRef(false);
   const chatContainerRef = useRef(null);
+  const chatAbortRef = useRef(null);
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
 
@@ -758,7 +761,15 @@ function App() {
     setIsStreaming(true);
     setStreamingText('');
 
+    // Vorherigen Stream abbrechen, falls noch einer laeuft.
+    if (chatAbortRef.current) {
+      try { chatAbortRef.current.abort(); } catch {}
+    }
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+
     let fullText = '';
+    let aborted = false;
     try {
       await callChatViaServer(currentMessages, profile, (chunk) => {
         fullText += chunk;
@@ -773,14 +784,22 @@ function App() {
             addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
           }
         }
-      }, customEndpoint, customApiKey, customModel, apiKey, effectiveProvider, model, ollamaModel);
+      }, customEndpoint, customApiKey, customModel, apiKey, effectiveProvider, model, ollamaModel, '', controller.signal);
     } catch (err) {
-      fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
+      if (err && err.name === 'AbortError') {
+        aborted = true;
+      } else {
+        fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
+      }
+    } finally {
+      if (chatAbortRef.current === controller) chatAbortRef.current = null;
     }
 
     setIsStreaming(false);
     setStreamingText('');
-    addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
+    if (!aborted) {
+      addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
+    }
   }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
 
   const handleFileUpload = useCallback(async (file, track) => {
