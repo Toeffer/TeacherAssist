@@ -61,7 +61,7 @@ def extract_text_from_image(image_path: Path, language: str = "deu") -> Tuple[st
         # Zusätzliche Daten für Konfidenz (falls verfügbar)
         try:
             data = pytesseract.image_to_data(img, lang=language, config=custom_config, output_type=pytesseract.Output.DICT)
-            confidences = [float(c) for c in data['conf'] if c != '-1']
+            confidences = [float(c) for c in data['conf'] if int(c) != -1]
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
         except:
             avg_confidence = 0.0

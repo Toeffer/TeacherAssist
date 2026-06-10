@@ -300,7 +300,7 @@ function extractKlassenStufen(text) {
 }
 
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', apiKey = '', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined) {
+async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined) {
   const response = await fetch('http://localhost:8789/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -310,7 +310,6 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
       customEndpoint,
       customApiKey,
       customModel,
-      apiKey,
       providerOverride,
       modelOverride,
       ollamaModelOverride,
@@ -353,6 +352,54 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
       }
     }
   }
+}
+
+/* ---------- Assistant Style Popover ---------- */
+function AssistantStylePopover({ profile, onUpdate, onClose }) {
+  const ref = React.useRef(null);
+
+  React.useEffect(() => {
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [onClose]);
+
+  function set(key, val) {
+    const updated = { ...profile, [key]: val };
+    onUpdate(updated);
+  }
+
+  const btnStyle = (active) => ({
+    padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)',
+    background: active ? 'var(--accent)' : 'var(--surface-2)',
+    color: active ? '#fff' : 'var(--text-primary)',
+    cursor: 'pointer', fontSize: 12, fontWeight: active ? 600 : 400,
+  });
+
+  return (
+    <div ref={ref} onClick={e => e.stopPropagation()} style={{
+      position: 'absolute', top: 36, left: 0, zIndex: 100,
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      borderRadius: 10, padding: '12px 14px', minWidth: 220,
+      boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+    }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Antwortstil anpassen</div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Ton</div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <button style={btnStyle(!profile.style_formality || profile.style_formality === 'auto')} onClick={() => set('style_formality', '')}>Auto</button>
+        <button style={btnStyle(profile.style_formality === 'locker')} onClick={() => set('style_formality', 'locker')}>Locker</button>
+        <button style={btnStyle(profile.style_formality === 'formal')} onClick={() => set('style_formality', 'formal')}>Formal</button>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Detail</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button style={btnStyle(!profile.style_detail || profile.style_detail === 'auto')} onClick={() => set('style_detail', '')}>Auto</button>
+        <button style={btnStyle(profile.style_detail === 'knapp')} onClick={() => set('style_detail', 'knapp')}>Knapp</button>
+        <button style={btnStyle(profile.style_detail === 'ausführlich')} onClick={() => set('style_detail', 'ausführlich')}>Ausführlich</button>
+      </div>
+    </div>
+  );
 }
 
 /* ---------- Main App ---------- */
@@ -568,7 +615,7 @@ function App() {
               [{ role: 'user', text }], {},
               chunk => { answer += chunk; },
               undefined,
-              customEndpoint, customApiKey, customModel, apiKey,
+              customEndpoint, customApiKey, customModel,
               effectiveProvider, model, ollamaModel
             );
           } catch { answer = 'Das beantworte ich gerne – lass uns aber erst das Profil abschließen!'; }
@@ -784,7 +831,7 @@ function App() {
             addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
           }
         }
-      }, customEndpoint, customApiKey, customModel, apiKey, effectiveProvider, model, ollamaModel, '', controller.signal);
+      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, '', controller.signal);
     } catch (err) {
       if (err && err.name === 'AbortError') {
         aborted = true;
@@ -1090,7 +1137,6 @@ function App() {
       customEndpoint,
       customApiKey,
       customModel,
-      apiKey,
       provider,
       model,
       ollamaModel
@@ -1141,7 +1187,7 @@ function App() {
   const showQuickReplies = currentOnboardingStep?.quickReplies && !isBusy &&
     activeChat.messages.length > 0 && activeChat.messages[activeChat.messages.length - 1]?.role === 'bot';
 
-  const onboardingTotal = 7;
+  const onboardingTotal = 8;
   const onboardingCurrent = Math.min(Math.max(onboardingStep, 1), onboardingTotal);
 
   return (

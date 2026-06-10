@@ -35,7 +35,7 @@ for %%P in (
     "%LOCALAPPDATA%\Programs\Python\Python311"
     "%LOCALAPPDATA%\Programs\Python\Python311\Scripts"
     "%APPDATA%\Python\Python311\Scripts"
-) do set "PATH=%PATH%;%%~P"
+) do set "PATH=!PATH!;%%~P"
 
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -90,7 +90,7 @@ goto tesseract_ok
 :tess_found
 set "PATH=%PATH%;%TESS_PATH%"
 powershell -NoProfile -Command ^
-    "[Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';%TESS_PATH%', 'User')" >nul 2>&1
+    "$existing = [Environment]::GetEnvironmentVariable('PATH', 'User'); $tess = '%TESS_PATH%'; if ($existing -notlike ('*' + $tess + '*')) { [Environment]::SetEnvironmentVariable('PATH', ($existing + ';' + $tess).TrimStart(';'), 'User') }" >nul 2>&1
 echo         OK: Tesseract installiert.
 
 :tesseract_ok

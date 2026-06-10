@@ -222,13 +222,14 @@ class UsageTracker:
         """Speichert die Nutzungsdaten in die JSON-Datei."""
         self.data["last_updated"] = datetime.now().isoformat()
         
-        # Sicherung der alten Datei
+        # Rotate backup (max 3 slots)
+        bak3 = self.data_dir / "usage_data.bak3.json"
+        bak2 = self.data_dir / "usage_data.bak2.json"
+        bak1 = self.data_dir / "usage_data.bak1.json"
+        if bak2.exists(): bak2.replace(bak3)
+        if bak1.exists(): bak1.replace(bak2)
         if self.usage_file.exists():
-            backup_file = self.data_dir / f"usage_backup_{int(time.time())}.json"
-            try:
-                shutil.copy2(self.usage_file, backup_file)
-            except Exception:
-                pass
+            shutil.copy2(self.usage_file, bak1)
         
         # Speichere neue Datei
         try:
@@ -633,9 +634,25 @@ class UsageTracker:
                 "error": f"Backup fehlgeschlagen: {e}",
             }
         
-        # Setze Daten zurück
+        # Setze Daten zurück (fresh default, nicht von Datei laden)
         old_data = self.data.copy()
-        self.data = self._load_data()  # Neue, leere Datenstruktur
+        self.data = {
+            "version": "1.0",
+            "created": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat(),
+            "total_usage": {
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_cost_usd": 0.0,
+                "total_requests": 0,
+                "total_skills_executed": 0,
+            },
+            "daily_usage": {},
+            "model_usage": {},
+            "skill_usage": {},
+            "sessions": [],
+        }
         self.data["created"] = datetime.now().isoformat()
         self.data["reset_from_backup"] = backup_file.name
         
@@ -822,7 +839,7 @@ def main():
                 result = main_json(json_args)
                 print(json.dumps(result, ensure_ascii=False))
                 return
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError:
             pass  # Kein JSON – normaler CLI-Modus via argparse
 
     # OpenClaw stdin-Modus: kein sys.argv, JSON auf stdin

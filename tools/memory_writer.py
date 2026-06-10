@@ -18,7 +18,13 @@ def get_memory_path(relative_path: str) -> Path:
     memory_dir = Path(__file__).resolve().parents[1] / "memory"
     # Verzeichnisstruktur sicherstellen
     memory_dir.mkdir(parents=True, exist_ok=True)
-    return memory_dir / relative_path
+    path = memory_dir / relative_path
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(memory_dir.resolve())
+    except ValueError:
+        raise ValueError(f"Zugriff außerhalb von memory/ verweigert: {relative_path}")
+    return resolved
 
 
 def write_overwrite(filepath: Path, content: str) -> None:

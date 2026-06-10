@@ -17,6 +17,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape as xml_escape
 
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
@@ -232,8 +233,8 @@ def _pdf_via_reportlab(student, narrative, out_path, schuljahr, datum) -> Path:
     story = [
         Paragraph("Hinweis: Erstellt ohne MS Word – Layout vereinfacht.", banner),
         Spacer(1, 4),
-        Paragraph(f"Wortgutachten – {vorname} {nachname}".strip(" –"), h1),
-        Paragraph(f"Klasse {klasse} &nbsp;·&nbsp; Schuljahr {schuljahr} &nbsp;·&nbsp; {datum_str}", meta),
+        Paragraph(xml_escape(f"Wortgutachten – {vorname} {nachname}".strip(" –")), h1),
+        Paragraph(f"Klasse {xml_escape(klasse)} &nbsp;·&nbsp; Schuljahr {xml_escape(schuljahr)} &nbsp;·&nbsp; {xml_escape(datum_str)}", meta),
     ]
 
     rows = _competency_rows(student)
@@ -258,11 +259,11 @@ def _pdf_via_reportlab(student, narrative, out_path, schuljahr, datum) -> Path:
         absatz = absatz.strip()
         if not absatz:
             continue
-        story.append(Paragraph(absatz.replace("\n", "<br/>"), body))
+        story.append(Paragraph(xml_escape(absatz).replace("\n", "<br/>"), body))
 
     story.append(Spacer(1, 24))
     story.append(Paragraph(
-        f"{datum_str} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
+        f"{xml_escape(datum_str)} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
         "<i>Unterschrift Lehrkraft</i>",
         body,
     ))

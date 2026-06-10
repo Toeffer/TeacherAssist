@@ -144,7 +144,10 @@ def cleanup_old_images(max_age_minutes: int = 30) -> dict:
     deleted = 0
     errors = []
 
-    for f in TEMP_DIR.glob("openclaw_*.jpg"):
+    IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.gif'}
+    for f in TEMP_DIR.glob("openclaw_*"):
+        if f.suffix.lower() not in IMAGE_EXTS:
+            continue
         try:
             age_minutes = (now - f.stat().st_mtime) / 60
             if age_minutes > max_age_minutes:

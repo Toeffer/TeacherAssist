@@ -62,6 +62,7 @@ SKILLS_DIR    = BASE_DIR / "skills"
 MEMORY_DIR    = BASE_DIR / "memory"
 SKILLS_INDEX  = BASE_DIR / "skills_index.json"
 VALID_PROVIDERS = {"openrouter", "ollama", "custom"}
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,8 +93,6 @@ def apply_request_overrides(settings, data):
         if isinstance(value, str) and value.strip():
             settings[settings_key] = value.strip()
 
-    if data.get("apiKey"):
-        settings["apiKey"] = data["apiKey"]
     return settings
 
 def memory_zip_destination(name):
@@ -406,7 +405,9 @@ def chunk_text(text, max_chars=900, overlap=150):
         chunk = text[start:end].strip()
         if len(chunk) > 60:
             chunks.append(chunk)
-        start = end - overlap
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
     return chunks
 
 def parse_multipart(body, boundary):
@@ -460,23 +461,25 @@ def search_rag(query, limit=4):
 # ---------------------------------------------------------------------------
 # Ollama-Status-Cache
 # ---------------------------------------------------------------------------
+_ollama_lock = threading.Lock()
 _ollama_online = False
 _ollama_last_check = 0
 
 def check_ollama():
     global _ollama_online, _ollama_last_check
-    now = time.time()
-    if now - _ollama_last_check < 10:
+    with _ollama_lock:
+        now = time.time()
+        if now - _ollama_last_check < 10:
+            return _ollama_online
+        try:
+            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read())
+                _ollama_online = bool(data.get("models"))
+        except Exception:
+            _ollama_online = False
+        _ollama_last_check = now
         return _ollama_online
-    try:
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read())
-            _ollama_online = bool(data.get("models"))
-    except Exception:
-        _ollama_online = False
-    _ollama_last_check = now
-    return _ollama_online
 
 # ---------------------------------------------------------------------------
 # DSGVO-Modell-Routing – Skill-basierte Erzwingung lokaler Modelle
@@ -545,10 +548,12 @@ def stream_llm(messages, profile, settings, skill_content="", rag_context="", wf
             force_local = True
             if not check_ollama():
                 # Kein Ollama verfügbar → Daten schwärzen, dann Cloud
-                anon_text = anonymize_text(last_user_msg)
                 for m in messages:
-                    if m.get("role") == "user" and m.get("text"):
-                        m["text"] = anon_text
+                    if m.get("role") == "user":
+                        if "text" in m:
+                            m["text"] = anonymize_text(m["text"])
+                        elif "content" in m:
+                            m["content"] = anonymize_text(m["content"])
                 force_local = False
                 _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt und automatisch geschwärzt. Bitte überprüfen.", "findings": findings})
             else:
@@ -789,6 +794,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     # ---- NEU: /chat (LLM-Proxy mit DSGVO-Filter + Skill-Router) ------------
     def _chat(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length > 10 * 1024 * 1024:  # 10 MB
+            self._json({"error": "Anfrage zu groß"}, 413)
+            return
         try:
             data = json.loads(self._body().decode("utf-8"))
         except Exception:
@@ -858,6 +867,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         if "multipart/form-data" not in ct:
             self._json({"error": "multipart/form-data erwartet"}, 400)
             return
+        length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_UPLOAD_BYTES:
+            self._json({"error": "Datei zu groß (max. 100 MB)"}, 413)
+            return
         boundary = ""
         for seg in ct.split(";"):
             seg = seg.strip()
@@ -867,20 +880,34 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         files = parse_multipart(body, boundary)
         saved = []
         for name, content in files:
+            if not name.lower().endswith(".pdf"):
+                continue
             dest = UPLOAD_DIR / name
             dest.write_bytes(content)
             saved.append(str(dest))
+        if not saved:
+            self._json({"error": "Keine gültige PDF-Datei (nur .pdf erlaubt)"}, 400)
+            return
         self._json({"saved": saved})
 
     def _ingest(self):
         data   = json.loads(self._body().decode("utf-8"))
         path   = data.get("path", "")
         source = data.get("source", Path(path).name if path else "unbekannt")
-        if not path or not os.path.isfile(path):
+        if not path:
+            self._json({"error": "Kein Pfad angegeben"}, 400)
+            return
+        try:
+            path_obj = Path(path).resolve()
+            path_obj.relative_to(UPLOAD_DIR.resolve())
+        except ValueError:
+            self._json({"error": "Zugriff verweigert"}, 403)
+            return
+        if not path_obj.is_file():
             self._json({"error": f"Datei nicht gefunden: {path}"}, 400)
             return
         try:
-            text = extract_pdf_text(Path(path))
+            text = extract_pdf_text(path_obj)
             if not text.strip():
                 self._json({"error": "Kein Text aus PDF extrahierbar"}, 400)
                 return
@@ -1122,7 +1149,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _read_memory_file(self, file_path):
         try:
             target = (MEMORY_DIR / file_path).resolve()
-            if not str(target).startswith(str(MEMORY_DIR.resolve())):
+            try:
+                target.relative_to(MEMORY_DIR.resolve())
+            except ValueError:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             if not target.exists():
@@ -1141,7 +1170,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
                 return
             target = (MEMORY_DIR / file_path).resolve()
-            if not str(target).startswith(str(MEMORY_DIR.resolve())):
+            try:
+                target.relative_to(MEMORY_DIR.resolve())
+            except ValueError:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1166,7 +1197,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         import datetime
         try:
             target = (MEMORY_DIR / file_path).resolve()
-            if not str(target).startswith(str(MEMORY_DIR.resolve())):
+            try:
+                target.relative_to(MEMORY_DIR.resolve())
+            except ValueError:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             versions = []
@@ -1193,7 +1226,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"error": "Ungültige Anfrage"}, 400)
                 return
             target = (MEMORY_DIR / file_path).resolve()
-            if not str(target).startswith(str(MEMORY_DIR.resolve())):
+            try:
+                target.relative_to(MEMORY_DIR.resolve())
+            except ValueError:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             bak = Path(str(target) + f'.bak{version}')
@@ -1315,6 +1350,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         if not model:
             self._json({"error": "Kein Modellname angegeben"}, 400)
             return
+        if not re.match(r'^[a-zA-Z0-9_./:@-]{1,100}$', model):
+            self._json({"error": "Ungültiger Modellname"}, 400)
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1327,7 +1365,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             proc = subprocess.Popen(
                 ["ollama", "pull", model],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
             )
             for line in proc.stdout:
                 line = line.strip()

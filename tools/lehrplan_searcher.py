@@ -212,11 +212,18 @@ def main():
                     if value is not None and key in ['bundesland', 'schulform', 'fach', 'klasse']:
                         where_filter[key] = str(value)
                 
+                if len(where_filter) == 1:
+                    effective_where = where_filter
+                elif len(where_filter) > 1:
+                    effective_where = {"$and": [{k: v} for k, v in where_filter.items()]}
+                else:
+                    effective_where = None
+
                 results = search_in_collection(
-                    collection, 
-                    query_embedding, 
+                    collection,
+                    query_embedding,
                     n_results,
-                    where_filter if where_filter else None
+                    effective_where,
                 )
                 
                 # Collection-Name zu Metadaten hinzufügen

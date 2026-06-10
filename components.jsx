@@ -233,9 +233,9 @@ function mdToHtml(md) {
 
   // Code-Blöcke (vor Inline-Ersetzungen)
   html = html.replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) =>
-    `<pre><code>${code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+    `<pre><code>${code}</code></pre>`
   );
-  html = html.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>`);
+  html = html.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`);
 
   // Überschriften
   html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
@@ -2131,7 +2131,46 @@ function RasterEditorView({ toolStatus }) {
 
   async function loadRasterContent(filename) {
     try {
-      // Read by requesting from server (we only have stem/label, re-derive form fields)
+      const res = await fetch(`${TOOL}/memory-read?file=bewertungsraster/${encodeURIComponent(filename)}`);
+      if (!res.ok) throw new Error('Fehler beim Laden');
+      const data = await res.json();
+      const md = data.content || '';
+
+      // Parse fach/klasse/thema from frontmatter or filename fallback
+      const stem = filename.replace(/\.md$/, '');
+      const parts = stem.split('_');
+      const fach   = parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : '';
+      const klasse = parts[1] || '';
+      const thema  = parts.slice(2).join(' ') || stem;
+
+      // Parse Kriterien from existing markdown (## Kriterien table)
+      const kriterien = [];
+      const tableMatch = md.match(/\|(.+)\|[\s\S]*?\n((?:\|.+\|\n?)+)/);
+      if (tableMatch) {
+        const rows = tableMatch[2].trim().split('\n');
+        for (const row of rows) {
+          const cells = row.split('|').map(c => c.trim()).filter(Boolean);
+          if (cells.length >= 2) {
+            kriterien.push({
+              name: cells[0] || '',
+              punkte: parseInt(cells[1]) || 10,
+              afb: cells[2] || 'II',
+              beschreibung: cells[3] || '',
+            });
+          }
+        }
+      }
+
+      setForm(f => ({
+        ...f,
+        fach,
+        klasse,
+        thema,
+        kriterien: kriterien.length > 0 ? kriterien : emptyForm.kriterien,
+      }));
+      setMode('edit');
+    } catch {
+      // Fallback to filename parsing
       const stem = filename.replace(/\.md$/, '');
       const parts = stem.split('_');
       setForm({ ...emptyForm,
@@ -2140,7 +2179,7 @@ function RasterEditorView({ toolStatus }) {
         thema:  parts.slice(2).join(' ') || stem,
       });
       setMode('edit');
-    } catch {}
+    }
   }
 
   function updateKriterium(i, field, val) {

@@ -147,9 +147,10 @@ def main():
         # Collection erstellen oder laden
         try:
             collection = client.get_collection(collection_name)
-            # Collection existiert bereits - löschen und neu erstellen
-            client.delete_collection(collection_name)
-            collection = client.create_collection(collection_name)
+            # Collection existiert bereits - alte Einträge per ID löschen
+            old = collection.get()
+            if old["ids"]:
+                collection.delete(ids=old["ids"])
         except Exception:
             # Collection existiert nicht - neu erstellen
             collection = client.create_collection(collection_name)

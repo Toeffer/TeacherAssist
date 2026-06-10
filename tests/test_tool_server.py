@@ -10,7 +10,7 @@ def test_apply_request_overrides_uses_resolved_provider_and_models():
         "providerOverride": "ollama",
         "modelOverride": "cloud-2",
         "ollamaModelOverride": "local-2",
-        "apiKey": "sk-test",
+        "apiKey": "sk-test",  # apiKey is intentionally NOT forwarded (security fix)
     }
 
     result = tool_server.apply_request_overrides(settings, data)
@@ -18,7 +18,7 @@ def test_apply_request_overrides_uses_resolved_provider_and_models():
     assert result["provider"] == "ollama"
     assert result["model"] == "cloud-2"
     assert result["ollamaModel"] == "local-2"
-    assert result["apiKey"] == "sk-test"
+    assert "apiKey" not in result  # apiKey must never be accepted per-request
 
 
 def test_apply_request_overrides_rejects_unknown_provider():

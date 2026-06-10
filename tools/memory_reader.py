@@ -16,7 +16,13 @@ from pathlib import Path
 def get_memory_path(relative_path: str) -> Path:
     """Konvertiert relativen Pfad zu absolutem Pfad im repo-lokalen Memory-Verzeichnis."""
     memory_dir = Path(__file__).resolve().parents[1] / "memory"
-    return memory_dir / relative_path
+    path = memory_dir / relative_path
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(memory_dir.resolve())
+    except ValueError:
+        raise ValueError(f"Zugriff außerhalb von memory/ verweigert: {relative_path}")
+    return resolved
 
 
 def read_file_content(filepath: Path) -> str:
