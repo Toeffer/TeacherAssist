@@ -34,6 +34,7 @@ Sicherheit:
 """
 
 import http.server
+import hashlib
 import html
 import io
 import json
@@ -47,27 +48,66 @@ import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 import zipfile
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
-BASE_DIR      = Path(__file__).parent
-UPLOAD_DIR    = BASE_DIR / "uploads"
-CHROMA_DIR    = BASE_DIR / "tools" / "chroma_db"
-EXPORT_DIR    = BASE_DIR / "exports"
-LOG_DIR       = BASE_DIR / "logs"
-SETTINGS_FILE = BASE_DIR / "settings.json"
+from teacherassist_core.documents import download_pdf as secure_download_pdf
+from teacherassist_core.documents import extract_pdf_text as secure_extract_pdf_text
+from teacherassist_core.privacy import (
+    SENSITIVE_SKILLS,
+    anonymize_text,
+    decide_privacy,
+    findings_for,
+    is_trusted_loopback_endpoint,
+    minimize_cloud_profile,
+)
+from teacherassist_core.runtime import (
+    CredentialStore,
+    RuntimePaths,
+    SettingsStore,
+    capability_status,
+)
+from teacherassist_core.security import (
+    PUBLIC_PATHS,
+    SessionManager,
+    valid_browser_source,
+    valid_host,
+    validate_remote_url,
+)
+from teacherassist_core.skills import SkillRegistry
+from teacherassist_core.storage import EncryptedStateStore, PersistenceUnavailable
+
+# Hardened runtime services are kept separate from the HTTP adapter.
+
+BASE_DIR      = Path(__file__).parent.resolve()
+RUNTIME_PATHS = RuntimePaths.from_environment(BASE_DIR)
+RUNTIME_PATHS.ensure(BASE_DIR / "memory")
+UPLOAD_DIR    = RUNTIME_PATHS.uploads
+CHROMA_DIR    = RUNTIME_PATHS.chroma
+EXPORT_DIR    = RUNTIME_PATHS.exports
+LOG_DIR       = RUNTIME_PATHS.logs
+SETTINGS_FILE = RUNTIME_PATHS.settings
+LEGACY_SETTINGS_FILE = BASE_DIR / "settings.json"
 SKILLS_DIR    = BASE_DIR / "skills"
-MEMORY_DIR    = BASE_DIR / "memory"
+MEMORY_DIR    = RUNTIME_PATHS.memory
 SKILLS_INDEX  = BASE_DIR / "skills_index.json"
 VALID_PROVIDERS = {"openrouter", "ollama", "custom"}
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_JSON_BYTES = 2 * 1024 * 1024
+MAX_CHAT_BYTES = 5 * 1024 * 1024
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_RESTORE_BYTES = 100 * 1024 * 1024
+MAX_RESTORE_EXPANDED_BYTES = 250 * 1024 * 1024
+MAX_RESTORE_FILES = 1000
 
-UPLOAD_DIR.mkdir(exist_ok=True)
-CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-EXPORT_DIR.mkdir(exist_ok=True)
-LOG_DIR.mkdir(exist_ok=True)
+CREDENTIALS = CredentialStore()
+SETTINGS_STORE = SettingsStore(SETTINGS_FILE, CREDENTIALS)
+SESSIONS = SessionManager()
+SKILL_REGISTRY = SkillRegistry(SKILLS_DIR, SKILLS_INDEX)
+STATE_STORE = EncryptedStateStore(RUNTIME_PATHS.encrypted_state, CREDENTIALS.get_or_create_data_key())
 
 logger = logging.getLogger("tool_server")
 if not logger.handlers:
@@ -86,7 +126,6 @@ def apply_request_overrides(settings, data):
         ("modelOverride", "model"),
         ("ollamaModelOverride", "ollamaModel"),
         ("customEndpoint", "customEndpoint"),
-        ("customApiKey", "customApiKey"),
         ("customModel", "customModel"),
     ):
         value = data.get(request_key)
@@ -160,11 +199,11 @@ p{{margin:.75em 0}}
 </body>
 </html>"""
 
-ALLOWED_ORIGINS = {"http://localhost:8788", "http://localhost:8789"}
 STATIC_FILES = {
     "/": "index.html",
     "/index.html": "index.html",
     "/app.jsx": "app.jsx",
+    "/api-client.js": "api-client.js",
     "/components.jsx": "components.jsx",
     "/tweaks-panel.jsx": "tweaks-panel.jsx",
     "/manifest.json": "manifest.json",
@@ -186,55 +225,28 @@ STATIC_TYPES = {
 # Konfiguration laden
 # ---------------------------------------------------------------------------
 def load_settings():
-    try:
-        if SETTINGS_FILE.exists():
-            return json.loads(SETTINGS_FILE.read_text("utf-8"))
-    except Exception:
-        pass
-    return {"provider": "openrouter", "ollamaModel": "gemma4:e4b", "model": "deepseek/deepseek-chat"}
+    settings = SETTINGS_STORE.load()
+    settings["apiKey"] = CREDENTIALS.get(CredentialStore.OPENROUTER)
+    settings["customApiKey"] = CREDENTIALS.get(CredentialStore.CUSTOM)
+    return settings
 
 def get_api_key():
-    """API-Key aus settings.json oder Umgebungsvariable."""
-    try:
-        s = load_settings()
-        if s.get("apiKey"):
-            return s["apiKey"]
-    except Exception:
-        pass
-    return os.environ.get("OPENROUTER_API_KEY", "")
+    """Read the OpenRouter key without exposing it through the HTTP API."""
+    return CREDENTIALS.get(CredentialStore.OPENROUTER)
 
 # ---------------------------------------------------------------------------
 # DSGVO-Filter (serverseitig – nicht umgehbar)
 # ---------------------------------------------------------------------------
 def detect_personal_data(text):
-    findings = []
-    if re.search(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', text):
-        findings.append({"type": "E-Mail-Adresse", "auto": True})
-    if re.search(r'(\+49[\s\-]?|0049[\s\-]?|0\d{2,5}[\s\-\/])\d[\d\s\-\/]{4,}', text):
-        findings.append({"type": "Telefonnummer", "auto": True})
-    if re.search(r'(geb\b\.?|geboren|geburtstag|geburtsdatum)', text, re.I) and \
-       re.search(r'\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b', text):
-        findings.append({"type": "Geburtsdatum", "auto": True})
-    # Explizite Lehrer-Kontext-Patterns + Eigenname → automatisch lokal routen.
-    # "Bewerte die Arbeit von Anna Müller" matcht hier NICHT (kein Trigger-Wort).
-    # Dafür sorgt die zusätzliche Schüler-Verdachts-Heuristik weiter unten.
-    if re.search(r'(schüler[in]?|lernende[r]?|kind|elternteil?|sohn|tochter|sus)\s+(von\s+)?[A-ZÄÖÜ][a-zäöüß]{2,}(\s+[A-ZÄÖÜ][a-zäöüß]{2,})?', text, re.I):
-        findings.append({"type": "Schüler-Bezeichnung mit Eigenname", "auto": True})
-    if re.search(r'\b(heißt|namens|vorname|nachname|familienname|name:)\s+[A-ZÄÖÜ][a-zäöüß]{2,}', text, re.I):
-        findings.append({"type": "Expliziter Personenname", "auto": True})
-    # Lehrer-Aktionsverb + Eigenname (z.B. "Bewerte/Korrigiere die Arbeit von Anna Müller")
-    if re.search(r'\b(bewert|korrigier|beurteil|benot|note\s+f[üu]r)\w*', text, re.I) and \
-       re.search(r'\bvon\s+[A-ZÄÖÜ][a-zäöüß]{2,}(\s+[A-ZÄÖÜ][a-zäöüß]{2,})?', text):
-        findings.append({"type": "Schülerarbeit mit Eigenname (Lehrer-Kontext)", "auto": True})
-    return findings
-
-def anonymize_text(text):
-    r = text
-    r = re.sub(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', '[E-Mail]', r)
-    r = re.sub(r'(\+49[\s\-]?|0049[\s\-]?|0\d{2,5}[\s\-\/])\d[\d\s\-\/]{4,}', '[Telefon]', r)
-    if re.search(r'(geb\b\.?|geboren|geburtstag|geburtsdatum)', r, re.I):
-        r = re.sub(r'\b\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}\b', '[Datum]', r)
-    return r
+    labels = {
+        "email": "E-Mail-Adresse",
+        "phone": "Telefonnummer",
+        "birth_date": "Geburtsdatum",
+        "student_context": "Schülerbezogener Kontext",
+        "person_name": "Personenname",
+        "student_identifier": "Schülerkennung",
+    }
+    return [{"type": labels.get(name, name), "auto": True} for name in sorted(findings_for(text))]
 
 # ---------------------------------------------------------------------------
 # Skill-Router (lädt passende skill.md ohne OpenClaw)
@@ -255,25 +267,13 @@ def load_skill_index():
     return _skill_index_cache
 
 def find_matching_skill(user_text):
-    """Findet den ersten Skill, dessen Trigger im Usertext vorkommt."""
-    skills = load_skill_index()
-    text_lower = user_text.lower()
-    best = None
-    best_len = 0
-    for skill in skills:
-        for trigger in skill.get("triggers", []):
-            if trigger.lower() in text_lower:
-                if len(trigger) > best_len:
-                    best = skill
-                    best_len = len(trigger)
-    return best
+    """Return a legacy-shaped record from the validated registry."""
+    skill = SKILL_REGISTRY.match(user_text)
+    return {"name": skill.skill_id, "folder": skill.folder} if skill else None
 
 def load_skill_content(folder_name):
-    """Liest eine skill.md aus skills/<folder>/."""
-    skill_path = SKILLS_DIR / folder_name / "skill.md"
-    if skill_path.exists():
-        return skill_path.read_text("utf-8")
-    return ""
+    skill = SKILL_REGISTRY.get(folder_name)
+    return skill.content if skill else ""
 
 def load_memory_context():
     """Lädt lehrerprofil.md + begleiter_gedaechtnis.md als Kontext."""
@@ -377,20 +377,7 @@ def get_collection():
 # PDF-Hilfsfunktionen
 # ---------------------------------------------------------------------------
 def extract_pdf_text(path):
-    try:
-        from pdfminer.high_level import extract_text
-        text = extract_text(str(path))
-        if text and text.strip():
-            return text
-    except Exception:
-        pass
-    try:
-        from pdf2image import convert_from_path
-        import pytesseract
-        images = convert_from_path(str(path))
-        return "\n".join(pytesseract.image_to_string(img, lang="deu") for img in images)
-    except Exception:
-        return ""
+    return secure_extract_pdf_text(Path(path))
 
 def chunk_text(text, max_chars=900, overlap=150):
     chunks, start = [], 0
@@ -441,22 +428,29 @@ def search_rag(query, limit=4):
         col, _ = get_collection()
         n = col.count()
         if n == 0:
-            return ""
+            return ("", [])
         res = col.query(query_texts=[query], n_results=min(limit, n))
         docs = res.get("documents", [[]])[0]
         metas = res.get("metadatas", [[]])[0]
         dists = res.get("distances", [[]])[0]
         hits = [
-            {"text": d, "source": m.get("source", ""), "distance": round(dist, 3)}
+            {
+                "text": d,
+                "source": m.get("source", ""),
+                "distance": round(dist, 3),
+                "classification": m.get("classification", "unknown"),
+            }
             for d, m, dist in zip(docs, metas, dists)
             if dist < 1.3
         ]
         if not hits:
-            return ""
+            return ("", [])
         blocks = [f"[Quelle: {h['source']}]\n{h['text']}" for h in hits]
-        return "\n\n## Relevante Lehrplaninhalte (automatisch eingeblendet)\n" + "\n\n---\n\n".join(blocks)
+        context = "\n\n## Relevante Lehrplaninhalte (automatisch eingeblendet)\n" + "\n\n---\n\n".join(blocks)
+        classifications = [h["classification"] for h in hits]
+        return (context, classifications)
     except Exception:
-        return ""
+        return ("", [])
 
 # ---------------------------------------------------------------------------
 # Ollama-Status-Cache
@@ -467,17 +461,20 @@ _ollama_last_check = 0
 
 def check_ollama():
     global _ollama_online, _ollama_last_check
+    now = time.time()
     with _ollama_lock:
-        now = time.time()
         if now - _ollama_last_check < 10:
             return _ollama_online
-        try:
-            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read())
-                _ollama_online = bool(data.get("models"))
-        except Exception:
-            _ollama_online = False
+    online = False
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+            online = bool(data.get("models"))
+    except Exception:
+        online = False
+    with _ollama_lock:
+        _ollama_online = online
         _ollama_last_check = now
         return _ollama_online
 
@@ -505,122 +502,137 @@ def route_model(skill_name: str, user_preferred_model: str) -> str:
 # ---------------------------------------------------------------------------
 # LLM-Call (Streaming) – serverseitiger Proxy
 # ---------------------------------------------------------------------------
-def stream_llm(messages, profile, settings, skill_content="", rag_context="", wfile=None, skill_name=None):
-    """
-    Ruft LLM an und streamt Antwort per SSE an wfile.
-    Entscheidet Provider (openrouter/ollama) basierend auf DSGVO-Prüfung.
-    """
-    is_ollama = settings.get("provider") == "ollama"
-    ollama_model = settings.get("ollamaModel") or "gemma4:e4b"
-    model = settings.get("model") or "deepseek/deepseek-chat"
-    api_key = settings.get("apiKey") or get_api_key()
+def stream_llm(
+    messages,
+    profile,
+    settings,
+    skill_content="",
+    rag_context="",
+    wfile=None,
+    skill_name=None,
+    privacy_decision=None,
+):
+    """Stream one request while enforcing the complete-payload privacy decision."""
+    decision = privacy_decision or decide_privacy(
+        messages=messages,
+        profile=profile,
+        skill_id=skill_name,
+        rag_context=rag_context,
+    )
+    provider = settings.get("provider") or "openrouter"
+    custom_endpoint = (settings.get("customEndpoint") or "").strip()
 
-    # DSGVO-Skill-basiertes Routing (VOR content-basierter Prüfung)
-    routed_provider = route_model(skill_name, "ollama" if is_ollama else "openrouter")
-    dsgvo_routing_active = False
-    if routed_provider == "ollama" and not is_ollama:
-        # DSGVO-Skill: lokales Modell erzwungen
-        dsgvo_routing_active = True
-        if check_ollama():
-            is_ollama = True
-            _send_sse(wfile, {"type": "dsgvo_warning", "message": "🔒 Lokales Modell (DSGVO): Dieser Skill erfordert lokale Verarbeitung – verwende Ollama.", "routing": "dsgvo_local"})
+    if decision.local_required:
+        if provider == "custom" and is_trusted_loopback_endpoint(custom_endpoint):
+            effective_provider = "custom"
+        elif check_ollama():
+            effective_provider = "ollama"
         else:
-            # Ollama offline + DSGVO-Skill → KEIN Cloud-Fallback
-            _send_sse(wfile, {"type": "error", "message": "🔒 DSGVO-Pflicht: Dieser Skill (Klasse: " + skill_name + ") muss lokal verarbeitet werden. Ollama ist nicht verfügbar. Bitte starte Ollama und versuche es erneut."})
+            _send_sse(wfile, {
+                "type": "privacy",
+                "mode": decision.mode,
+                "reasons": list(decision.reasons),
+            })
+            _send_sse(wfile, {
+                "type": "error",
+                "code": "LOCAL_MODEL_REQUIRED",
+                "message": "Diese Unterhaltung muss lokal verarbeitet werden. Bitte starte Ollama.",
+            })
             _send_sse(wfile, {"type": "done"})
-            return
+            return ""
+    else:
+        effective_provider = provider
 
-    # DSGVO-Prüfung: Letzte User-Nachricht prüfen (nur wenn nicht bereits durch Skill geroutet)
-    if not dsgvo_routing_active:
-        last_user_msg = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user_msg = m.get("text", m.get("content", ""))
-                break
+    _send_sse(wfile, {
+        "type": "privacy",
+        "mode": decision.mode,
+        "reasons": list(decision.reasons),
+    })
 
-        findings = detect_personal_data(last_user_msg)
-        has_auto_detectable = any(f["auto"] for f in findings)
-        has_any_findings = len(findings) > 0
-
-        # DSGVO-Modus: erzwinge lokal wenn personenbezogene Daten erkannt wurden
-        force_local = False
-        if has_auto_detectable:
-            force_local = True
-            if not check_ollama():
-                # Kein Ollama verfügbar → Daten schwärzen, dann Cloud
-                for m in messages:
-                    if m.get("role") == "user":
-                        if "text" in m:
-                            m["text"] = anonymize_text(m["text"])
-                        elif "content" in m:
-                            m["content"] = anonymize_text(m["content"])
-                force_local = False
-                _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt und automatisch geschwärzt. Bitte überprüfen.", "findings": findings})
-            else:
-                _send_sse(wfile, {"type": "dsgvo_warning", "message": "Personenbezogene Daten erkannt – verwende lokales Modell (DSGVO-konform).", "findings": findings})
-        elif has_any_findings:
-            _send_sse(wfile, {"type": "dsgvo_warning", "message": "Mögliche personenbezogene Daten erkannt. Bitte prüfen und ggf. durch SuS-01 etc. ersetzen.", "findings": findings})
-
-        # Provider erzwingen falls nötig
-        if force_local:
-            is_ollama = True
-
-    # System-Prompt bauen
-    system_content = build_system_prompt(profile)
+    prompt_profile = profile if decision.local_required else minimize_cloud_profile(profile)
+    system_content = build_system_prompt(prompt_profile)
+    if decision.local_required:
+        companion = SKILL_REGISTRY.companion_prompt()
+        if companion:
+            system_content += "\n\n## Persönliche Begleitung\n" + companion
+        private_memory = load_memory_context()
+        if private_memory:
+            system_content += "\n\n## Lokaler Memory-Kontext\n" + private_memory
     if skill_content:
         system_content += "\n\n## Aktiver Skill\n" + skill_content
     if rag_context:
         system_content += rag_context
 
     api_messages = [{"role": "system", "content": system_content}]
-    for m in messages:
-        role = "assistant" if m.get("role") == "bot" else "user"
-        content = m.get("text", m.get("content", ""))
-        if content and content.strip():
+    for message in messages:
+        role = "assistant" if message.get("role") in {"bot", "assistant"} else "user"
+        content = message.get("text", message.get("content", ""))
+        if isinstance(content, str) and content.strip():
             api_messages.append({"role": role, "content": content})
 
-    # Provider-Endpunkt
-    if is_ollama:
-        endpoint = "http://localhost:11434/v1/chat/completions"
+    if effective_provider == "ollama":
+        endpoint = "http://127.0.0.1:11434/v1/chat/completions"
         headers = {"Content-Type": "application/json"}
-        body = {"model": ollama_model, "messages": api_messages, "stream": True}
-        _send_sse(wfile, {"type": "provider", "provider": "ollama"})
-    elif settings.get("provider") == "custom":
-        custom_endpoint = settings.get("customEndpoint", "").strip()
-        custom_apikey = settings.get("customApiKey", "").strip()
-        custom_model = settings.get("customModel", "gpt-3.5-turbo").strip()
+        body = {
+            "model": settings.get("ollamaModel") or "gemma3:4b",
+            "messages": api_messages,
+            "stream": True,
+        }
+    elif effective_provider == "custom":
         if not custom_endpoint:
-            _send_sse(wfile, {"type": "error", "message": "Custom-Endpoint nicht konfiguriert. Bitte in den Einstellungen eintragen."})
+            _send_sse(wfile, {"type": "error", "code": "CUSTOM_ENDPOINT_MISSING", "message": "Custom-Endpoint fehlt."})
             _send_sse(wfile, {"type": "done"})
-            return
-        endpoint = custom_endpoint
+            return ""
+        if not is_trusted_loopback_endpoint(custom_endpoint):
+            try:
+                validate_remote_url(custom_endpoint)
+            except ValueError:
+                _send_sse(wfile, {"type": "error", "code": "CUSTOM_ENDPOINT_BLOCKED", "message": "Der Custom-Endpoint ist nicht zulässig."})
+                _send_sse(wfile, {"type": "done"})
+                return ""
         headers = {"Content-Type": "application/json"}
-        if custom_apikey:
-            headers["Authorization"] = f"Bearer {custom_apikey}"
-        body = {"model": custom_model, "messages": api_messages, "stream": True}
-        _send_sse(wfile, {"type": "provider", "provider": "custom"})
+        custom_key = CREDENTIALS.get(CredentialStore.CUSTOM)
+        if custom_key:
+            headers["Authorization"] = f"Bearer {custom_key}"
+        endpoint = custom_endpoint
+        body = {
+            "model": settings.get("customModel") or "gpt-3.5-turbo",
+            "messages": api_messages,
+            "stream": True,
+        }
     else:
+        api_key = CREDENTIALS.get(CredentialStore.OPENROUTER)
+        if not api_key:
+            _send_sse(wfile, {"type": "error", "code": "API_KEY_MISSING", "message": "OpenRouter-API-Key fehlt."})
+            _send_sse(wfile, {"type": "done"})
+            return ""
         endpoint = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "http://localhost:8788",
+            "HTTP-Referer": "http://localhost:8789",
             "X-Title": "TeacherAssist",
         }
-        body = {"model": model, "messages": api_messages, "stream": True}
-        _send_sse(wfile, {"type": "provider", "provider": "openrouter"})
+        body = {
+            "model": settings.get("model") or "deepseek/deepseek-chat",
+            "messages": api_messages,
+            "stream": True,
+        }
 
+    _send_sse(wfile, {"type": "provider", "provider": effective_provider})
+    full_text = []
+    done_sent = False
     try:
-        req = urllib.request.Request(
+        request = urllib.request.Request(
             endpoint,
             data=json.dumps(body).encode("utf-8"),
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(request, timeout=120) as response:
             buffer = b""
             while True:
-                chunk = resp.read(4096)
+                chunk = response.read(4096)
                 if not chunk:
                     break
                 buffer += chunk
@@ -629,23 +641,29 @@ def stream_llm(messages, profile, settings, skill_content="", rag_context="", wf
                     line = line.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data: "):
                         continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
+                    raw = line[6:].strip()
+                    if raw == "[DONE]":
                         _send_sse(wfile, {"type": "done"})
-                        return
+                        done_sent = True
+                        return "".join(full_text)
                     try:
-                        parsed = json.loads(data)
-                        content = parsed.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                        if content:
-                            _send_sse(wfile, {"type": "chunk", "text": content})
-                        if parsed.get("usage"):
-                            _send_sse(wfile, {"type": "usage", "usage": parsed["usage"]})
-                    except Exception:
-                        pass
-    except Exception as e:
-        _send_sse(wfile, {"type": "error", "message": str(e)})
+                        parsed = json.loads(raw)
+                    except ValueError:
+                        continue
+                    content = parsed.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if content:
+                        full_text.append(content)
+                        _send_sse(wfile, {"type": "chunk", "text": content})
+                    if parsed.get("usage"):
+                        _send_sse(wfile, {"type": "usage", "usage": parsed["usage"]})
+    except Exception:
+        logger.exception("Provider request failed provider=%s", effective_provider)
+        _send_sse(wfile, {"type": "error", "code": "PROVIDER_ERROR", "message": "Der Modellaufruf ist fehlgeschlagen."})
     finally:
-        _send_sse(wfile, {"type": "done"})
+        if not done_sent:
+            _send_sse(wfile, {"type": "done"})
+    return "".join(full_text)
+
 
 def _send_sse(wfile, data):
     """Sendet ein SSE-Event an den Client."""
@@ -661,318 +679,529 @@ def _send_sse(wfile, data):
 # ---------------------------------------------------------------------------
 # HTTP-Handler
 # ---------------------------------------------------------------------------
-class ToolHandler(http.server.BaseHTTPRequestHandler):
+class RequestTooLarge(ValueError):
+    pass
 
-    def _cors(self):
-        origin = self.headers.get("Origin", "")
-        self.send_header("Access-Control-Allow-Origin", origin if origin in ALLOWED_ORIGINS else "http://localhost:8789")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+class ToolHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "TeacherAssist/2.0"
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        super().end_headers()
+
+    def _authorize(self, path):
+        if not valid_host(self.headers.get("Host", "")):
+            self._error("INVALID_HOST", "Ungültiger Host.", 421)
+            return False
+        if not valid_browser_source(self.headers.get("Origin", ""), self.headers.get("Sec-Fetch-Site", "")):
+            self._error("CROSS_SITE_BLOCKED", "Cross-Site-Anfrage blockiert.", 403)
+            return False
+        if path.startswith("/api/v1/") and path not in PUBLIC_PATHS:
+            if not SESSIONS.validate(self.headers.get("Cookie", ""), self.headers.get("X-CSRF-Token", "")):
+                self._error("AUTH_REQUIRED", "Ungültige oder abgelaufene Sitzung.", 403)
+                return False
+        return True
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self._cors()
-        self.end_headers()
+        self._error("CORS_DISABLED", "Cross-Origin-Anfragen werden nicht unterstützt.", 405)
 
-    def _json(self, data, status=200):
+    def _json(self, data, status=200, extra_headers=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self._cors()
+        self.send_header("Cache-Control", "no-store")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self):
-        length = int(self.headers.get("Content-Length", 0))
+    def _error(self, code, message, status=400):
+        self._json({"error": {"code": code, "message": message}}, status)
+
+    def _body(self, max_bytes=MAX_JSON_BYTES):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("Invalid Content-Length") from exc
+        if length < 0:
+            raise ValueError("Invalid Content-Length")
+        if length > max_bytes:
+            raise RequestTooLarge(f"Request exceeds {max_bytes} bytes")
         return self.rfile.read(length)
 
-    def _static(self, filename):
-        path = (BASE_DIR / filename).resolve()
+    def _read_json(self, max_bytes=MAX_JSON_BYTES):
         try:
-            path.relative_to(BASE_DIR.resolve())
+            data = json.loads(self._body(max_bytes).decode("utf-8"))
+        except RequestTooLarge:
+            raise
+        except Exception as exc:
+            raise ValueError("Invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return data
+
+    def _static(self, filename):
+        dist_root = (BASE_DIR / "web_dist").resolve()
+        source_root = BASE_DIR
+        if dist_root.is_dir():
+            candidate = dist_root / filename
+            if candidate.is_file():
+                source_root = dist_root
+        path = (source_root / filename).resolve()
+        try:
+            path.relative_to(source_root)
         except ValueError:
             self.send_error(404)
             return
         if not path.is_file():
             self.send_error(404)
             return
-
         body = path.read_bytes()
         content_type = STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream")
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
-        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
-    # ---- GET ----------------------------------------------------------------
     def do_GET(self):
         parsed = urlparse(self.path)
-        path   = parsed.path
-
-        if path.startswith("/exports/"):
-            self._download_export(unquote(path[len("/exports/"):]))
-
-        elif path in STATIC_FILES:
-            self._static(STATIC_FILES[path])
-
-        elif path == "/health":
-            self._json({"status": "ok", "version": "1.1", "ollama": check_ollama()})
-
-        elif path == "/settings":
-            self._json(load_settings())
-
-        elif path == "/collections":
+        route = parsed.path
+        if not self._authorize(route):
+            return
+        if route in STATIC_FILES:
+            self._static(STATIC_FILES[route])
+        elif route.startswith("/assets/"):
+            self._static(route.lstrip("/"))
+        elif route == "/api/v1/health":
+            self._json({"status": "ok", "version": "2.0"})
+        elif route == "/api/v1/bootstrap":
+            session_id, csrf = SESSIONS.create()
             try:
-                col, _ = get_collection()
-                self._json({"chunks": col.count()})
-            except Exception as e:
-                self._json({"chunks": 0, "error": str(e)})
-
-        elif path == "/backup":        self._backup()
-        elif path == "/list-raster":   self._list_raster()
-        elif path == "/memory-list":   self._list_memory()
-        elif path == "/memory-read":
-            file_param = parse_qs(parsed.query).get("file", [""])[0]
-            self._read_memory_file(file_param)
-        elif path == "/memory-versions":
-            file_param = parse_qs(parsed.query).get("file", [""])[0]
-            self._list_versions(file_param)
-
-        elif path == "/search":
-            params = parse_qs(parsed.query)
-            query  = params.get("q", [""])[0].strip()
-            limit  = min(int(params.get("limit", ["4"])[0]), 8)
-            if not query:
-                self._json({"results": []})
-                return
+                encrypted_state = STATE_STORE.get_state()
+            except (PersistenceUnavailable, RuntimeError):
+                encrypted_state = {"profile": {}, "chats": []}
+            self._json({
+                "csrfToken": csrf,
+                "settings": SETTINGS_STORE.public(),
+                "capabilities": {**capability_status(), "ollama": check_ollama()},
+                "skills": SKILL_REGISTRY.public_index(),
+                "state": encrypted_state,
+                "dataSchemaVersion": 2,
+            }, extra_headers={
+                "Set-Cookie": f"{SESSIONS.COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSIONS.MAX_AGE_SECONDS}",
+            })
+        elif route == "/api/v1/settings":
+            self._json(SETTINGS_STORE.public())
+        elif route == "/api/v1/collections":
             try:
-                col, _ = get_collection()
-                n = col.count()
-                if n == 0:
-                    self._json({"results": []})
-                    return
-                res = col.query(query_texts=[query], n_results=min(limit, n))
-                docs  = res["documents"][0]  if res["documents"]  else []
-                metas = res["metadatas"][0]  if res["metadatas"]  else []
-                dists = res["distances"][0]  if res["distances"]  else []
-                hits  = [
-                    {"text": d, "source": m.get("source", ""), "distance": round(dist, 3)}
-                    for d, m, dist in zip(docs, metas, dists)
-                    if dist < 1.3
-                ]
-                self._json({"results": hits})
-            except Exception as e:
-                self._json({"results": [], "error": str(e)})
+                collection, _ = get_collection()
+                self._json({"chunks": collection.count()})
+            except Exception:
+                self._json({"chunks": 0, "available": False})
+        elif route == "/api/v1/backup":
+            self._backup()
+        elif route == "/api/v1/rasters":
+            self._list_raster()
+        elif route == "/api/v1/memory-list":
+            self._list_memory()
+        elif route == "/api/v1/memory-read":
+            self._read_memory_file(parse_qs(parsed.query).get("file", [""])[0])
+        elif route == "/api/v1/memory-versions":
+            self._list_versions(parse_qs(parsed.query).get("file", [""])[0])
+        elif route == "/api/v1/search":
+            self._search(parsed)
+        elif route == "/api/v1/chats":
+            self._list_chats()
+        elif route == "/api/v1/profile":
+            self._get_profile()
+        elif route.startswith("/api/v1/chats/"):
+            self._get_chat(route.rsplit("/", 1)[-1])
+        elif route.startswith("/api/v1/exports/"):
+            self._download_export(unquote(route[len("/api/v1/exports/"):]))
         else:
             self.send_error(404)
 
-    # ---- POST ---------------------------------------------------------------
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        path   = parsed.path
-
-        if   path == "/chat":            self._chat()
-        elif path == "/upload":          self._upload()
-        elif path == "/ingest":          self._ingest()
-        elif path == "/clear":           self._clear()
-        elif path == "/download-url":    self._download_url()
-        elif path == "/settings":        self._save_settings()
-        elif path == "/export-file":     self._export_file()
-        elif path == "/save-raster":     self._save_raster()
-        elif path == "/restore":         self._restore()
-        elif path == "/memory-write":    self._write_memory_file()
-        elif path == "/memory-restore-version": self._restore_version()
-        elif path == "/ollama-pull":     self._ollama_pull()
-        elif path == "/shutdown":       self._shutdown()
-        elif path == "/ocr-image":       self._ocr_image()
-        elif path == "/session-summary": self._session_summary()
-        else: self.send_error(404)
-
-    # ---- NEU: /chat (LLM-Proxy mit DSGVO-Filter + Skill-Router) ------------
-    def _chat(self):
-        length = int(self.headers.get("Content-Length", 0))
-        if length > 10 * 1024 * 1024:  # 10 MB
-            self._json({"error": "Anfrage zu groß"}, 413)
+    def _search(self, parsed):
+        params = parse_qs(parsed.query)
+        query = params.get("q", [""])[0].strip()
+        try:
+            limit = min(max(int(params.get("limit", ["4"])[0]), 1), 8)
+        except ValueError:
+            limit = 4
+        if not query:
+            self._json({"results": []})
             return
         try:
-            data = json.loads(self._body().decode("utf-8"))
+            collection, _ = get_collection()
+            count = collection.count()
+            if count == 0:
+                self._json({"results": []})
+                return
+            result = collection.query(query_texts=[query], n_results=min(limit, count))
+            documents = result.get("documents", [[]])[0]
+            metadata = result.get("metadatas", [[]])[0]
+            distances = result.get("distances", [[]])[0]
+            hits = [
+                {"text": text, "source": meta.get("source", ""), "distance": round(distance, 3)}
+                for text, meta, distance in zip(documents, metadata, distances)
+                if distance < 1.3
+            ]
+            self._json({"results": hits})
         except Exception:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            self._json({"results": [], "available": False})
+
+    def do_POST(self):
+        route = urlparse(self.path).path
+        if not self._authorize(route):
             return
+        routes = {
+            "/api/v1/chat": self._chat,
+            "/api/v1/upload": self._upload,
+            "/api/v1/ingest": self._ingest,
+            "/api/v1/clear": self._clear,
+            "/api/v1/download-url": self._download_url,
+            "/api/v1/settings": self._save_settings,
+            "/api/v1/export-file": self._export_file,
+            "/api/v1/save-raster": self._save_raster,
+            "/api/v1/restore": self._restore,
+            "/api/v1/memory-write": self._write_memory_file,
+            "/api/v1/memory-restore-version": self._restore_version,
+            "/api/v1/ollama-pull": self._ollama_pull,
+            "/api/v1/shutdown": self._shutdown,
+            "/api/v1/ocr-image": self._ocr_image,
+            "/api/v1/session-summary": self._session_summary,
+            "/api/v1/chats": self._create_chat,
+            "/api/v1/profile": self._set_profile,
+            "/api/v1/migration/browser-state": self._import_browser_state,
+        }
+        handler = routes.get(route)
+        if handler:
+            handler()
+            return
+        if route.startswith("/api/v1/chats/") and route.endswith("/messages"):
+            self._chat_message(route.split("/")[-2])
+            return
+        if route.startswith("/api/v1/chats/") and route.endswith("/summary"):
+            self._chat_summary(route.split("/")[-2])
+            return
+        self.send_error(404)
 
+    def do_PATCH(self):
+        route = urlparse(self.path).path
+        if not self._authorize(route):
+            return
+        if route == "/api/v1/settings":
+            self._save_settings()
+        elif route == "/api/v1/profile":
+            self._set_profile()
+        elif route == "/api/v1/state":
+            self._replace_state()
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self):
+        route = urlparse(self.path).path
+        if not self._authorize(route):
+            return
+        if route.startswith("/api/v1/chats/"):
+            self._delete_chat(route.rsplit("/", 1)[-1])
+        else:
+            self.send_error(404)
+
+    def _chat(self):
+        try:
+            data = self._read_json(MAX_CHAT_BYTES)
+        except RequestTooLarge:
+            self._error("REQUEST_TOO_LARGE", "Chat-Anfrage ist zu groß.", 413)
+            return
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
+            return
+        self._stream_chat_payload(data)
+
+    def _stream_chat_payload(self, data, persisted_chat=None):
         messages = data.get("messages", [])
-        profile  = data.get("profile", {})
+        if not isinstance(messages, list):
+            self._error("INVALID_MESSAGES", "messages muss eine Liste sein.", 400)
+            return ""
+        profile = data.get("profile", {})
         settings = apply_request_overrides(load_settings(), data)
+        last_user = next((message.get("text", message.get("content", "")) for message in reversed(messages) if message.get("role") == "user"), "")
+        requested_skill = data.get("skill_id") or data.get("force_skill") or data.get("forceSkill")
+        skill_record = SKILL_REGISTRY.get(requested_skill) if isinstance(requested_skill, str) else None
+        if skill_record is None:
+            skill_record = SKILL_REGISTRY.match(last_user)
+        skill_id = skill_record.skill_id if skill_record else None
+        skill_content = skill_record.content if skill_record else ""
+        rag_context, rag_classifications = search_rag(last_user)
+        decision = decide_privacy(
+            messages=messages,
+            profile=profile,
+            skill_id=skill_id,
+            requested_mode=data.get("privacy_mode", data.get("privacyMode", "auto")),
+            sticky_mode=(persisted_chat or {}).get("privacyMode", data.get("stickyPrivacyMode", "auto")),
+            document_classifications=rag_classifications,
+            rag_context=rag_context,
+        )
 
-        # Skill-Router: explizite Skill-Wahl der UI hat Vorrang vor Trigger-Fuzzy-Match.
-        # Verhindert DSGVO-Lecks bei ungewoehnlich formulierten Anfragen.
-        last_user = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user = m.get("text", m.get("content", ""))
-                break
-
-        skill = None
-        forced_skill_id = data.get("force_skill") or data.get("forceSkill")
-        if isinstance(forced_skill_id, str):
-            forced_skill_id = forced_skill_id.strip()
-            # Whitelist: nur tatsaechlich existierende skills/<folder>/skill.md akzeptieren.
-            # Schliesst Path-Traversal aus.
-            if forced_skill_id and re.match(r'^[a-z_][a-z0-9_]*$', forced_skill_id):
-                folder = SKILLS_DIR / forced_skill_id
-                if (folder / "skill.md").exists():
-                    skill = {"name": forced_skill_id, "folder": forced_skill_id, "forced": True}
-
-        if skill is None:
-            skill = find_matching_skill(last_user)
-
-        skill_content = ""
-        if skill:
-            skill_content = load_skill_content(skill["folder"])
-            if not skill_content:
-                # Fallback: alle Memory-Dateien
-                skill_content = load_memory_context()
-
-        # RAG-Kontext
-        rag_context = search_rag(last_user)
-
-        # SSE-Streaming-Antwort
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self._cors()
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
         self.end_headers()
-
-        if skill:
-            _send_sse(self.wfile, {"type": "skill", "name": skill["name"]})
-
-        stream_llm(
+        if skill_id:
+            _send_sse(self.wfile, {"type": "skill", "name": skill_id})
+        return stream_llm(
             messages=messages,
             profile=profile,
             settings=settings,
             skill_content=skill_content,
             rag_context=rag_context,
             wfile=self.wfile,
-            skill_name=skill["name"] if skill else None,
+            skill_name=skill_id,
+            privacy_decision=decision,
         )
+
+    def _storage_error(self, action):
+        try:
+            return action()
+        except PersistenceUnavailable:
+            self._error("PERSISTENCE_UNAVAILABLE", "Verschlüsselte Speicherung ist auf diesem System nicht verfügbar.", 503)
+        except RuntimeError:
+            logger.exception("Encrypted state operation failed")
+            self._error("PERSISTENCE_ERROR", "Verschlüsselte Speicherung ist fehlgeschlagen.", 500)
+        return None
+
+    def _replace_state(self):
+        try:
+            data = self._read_json(MAX_CHAT_BYTES)
+        except (ValueError, RequestTooLarge):
+            self._error("INVALID_STATE", "Ungültiger Speicherstand.", 400)
+            return
+        result = self._storage_error(lambda: STATE_STORE.replace_state(data.get("profile", {}), data.get("chats", [])))
+        if result is not None:
+            self._json({"state": result})
+
+    def _import_browser_state(self):
+        try:
+            data = self._read_json(MAX_CHAT_BYTES)
+        except (ValueError, RequestTooLarge):
+            self._error("INVALID_MIGRATION", "Ungültige Migrationsdaten.", 400)
+            return
+        result = self._storage_error(lambda: STATE_STORE.import_browser_state(data.get("profile", {}), data.get("chats", [])))
+        if result is not None:
+            self._json(result)
+
+    def _list_chats(self):
+        result = self._storage_error(STATE_STORE.list_chats)
+        if result is not None:
+            self._json({"chats": result})
+
+    def _create_chat(self):
+        try:
+            data = self._read_json()
+        except ValueError:
+            data = {}
+        result = self._storage_error(lambda: STATE_STORE.create_chat(data.get("title", "Neuer Chat"), data.get("messages")))
+        if result is not None:
+            self._json(result, 201)
+
+    def _get_chat(self, chat_id):
+        result = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
+        if result is None:
+            return
+        self._json(result) if result else self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+
+    def _delete_chat(self, chat_id):
+        result = self._storage_error(lambda: STATE_STORE.delete_chat(chat_id))
+        if result is not None:
+            self._json({"success": bool(result)})
+
+    def _chat_message(self, chat_id):
+        try:
+            data = self._read_json(MAX_CHAT_BYTES)
+        except (ValueError, RequestTooLarge):
+            self._error("INVALID_REQUEST", "Ungültige Chat-Anfrage.", 400)
+            return
+        chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
+        if not chat:
+            if chat is not None:
+                self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+            return
+        content = data.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            self._error("EMPTY_MESSAGE", "Nachricht fehlt.", 400)
+            return
+        chat.setdefault("messages", []).append({"role": "user", "text": content.strip(), "ts": int(time.time() * 1000)})
+        payload = {**data, "messages": chat["messages"], "stickyPrivacyMode": chat.get("privacyMode", "auto")}
+        decision = decide_privacy(
+            messages=chat["messages"],
+            profile=STATE_STORE.get_profile(),
+            skill_id=data.get("skill_id"),
+            requested_mode=data.get("privacy_mode", "auto"),
+            sticky_mode=chat.get("privacyMode", "auto"),
+        )
+        if decision.local_required:
+            chat["privacyMode"] = "local_required"
+        self._storage_error(lambda: STATE_STORE.save_chat(chat))
+        answer = self._stream_chat_payload({**payload, "profile": STATE_STORE.get_profile()}, chat)
+        if answer:
+            chat["messages"].append({"role": "bot", "text": answer, "ts": int(time.time() * 1000)})
+            self._storage_error(lambda: STATE_STORE.save_chat(chat))
+
+    def _get_profile(self):
+        result = self._storage_error(STATE_STORE.get_profile)
+        if result is not None:
+            self._json({"profile": result})
+
+    def _set_profile(self):
+        try:
+            data = self._read_json()
+            profile = data.get("profile", data)
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges Profil.", 400)
+            return
+        result = self._storage_error(lambda: STATE_STORE.set_profile(profile))
+        if result is not None:
+            self._json({"profile": result})
+
+    def _chat_summary(self, chat_id):
+        chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
+        if chat:
+            self._summarize_messages(chat.get("messages", []), chat.get("privacyMode", "auto"))
 
     # ---- Bestehende Endpunkte (unverändert) ---------------------------------
     def _upload(self):
-        ct = self.headers.get("Content-Type", "")
-        if "multipart/form-data" not in ct:
-            self._json({"error": "multipart/form-data erwartet"}, 400)
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            self._error("INVALID_CONTENT_TYPE", "multipart/form-data erwartet.", 400)
             return
-        length = int(self.headers.get("Content-Length", 0))
-        if length > MAX_UPLOAD_BYTES:
-            self._json({"error": "Datei zu groß (max. 100 MB)"}, 413)
+        try:
+            body = self._body(MAX_UPLOAD_BYTES + 1024 * 1024)
+        except RequestTooLarge:
+            self._error("PDF_TOO_LARGE", "PDF ist größer als 50 MB.", 413)
             return
-        boundary = ""
-        for seg in ct.split(";"):
-            seg = seg.strip()
-            if seg.startswith("boundary="):
-                boundary = seg[9:].strip('"')
-        body  = self._body()
+        boundary = next((segment.strip()[9:].strip('"') for segment in content_type.split(";") if segment.strip().startswith("boundary=")), "")
+        if not boundary:
+            self._error("INVALID_MULTIPART", "Multipart-Grenze fehlt.", 400)
+            return
         files = parse_multipart(body, boundary)
         saved = []
-        for name, content in files:
-            if not name.lower().endswith(".pdf"):
+        for original_name, content in files:
+            if not original_name.lower().endswith(".pdf") or not content.startswith(b"%PDF"):
                 continue
-            dest = UPLOAD_DIR / name
-            dest.write_bytes(content)
-            saved.append(str(dest))
+            destination = UPLOAD_DIR / f"upload-{uuid.uuid4().hex}.pdf"
+            destination.write_bytes(content)
+            saved.append(str(destination))
         if not saved:
-            self._json({"error": "Keine gültige PDF-Datei (nur .pdf erlaubt)"}, 400)
+            self._error("INVALID_PDF", "Keine gültige PDF-Datei gefunden.", 400)
             return
         self._json({"saved": saved})
 
     def _ingest(self):
-        data   = json.loads(self._body().decode("utf-8"))
-        path   = data.get("path", "")
-        source = data.get("source", Path(path).name if path else "unbekannt")
-        if not path:
-            self._json({"error": "Kein Pfad angegeben"}, 400)
+        try:
+            data = self._read_json()
+        except (ValueError, RequestTooLarge):
+            self._error("INVALID_JSON", "Ungültige Anfrage.", 400)
+            return
+        raw_path = data.get("path", "")
+        source = str(data.get("source") or "Lehrplan")[:200]
+        classification = data.get("classification", "unknown")
+        if classification not in {"public_curriculum", "personal", "unknown"}:
+            self._error("INVALID_CLASSIFICATION", "Ungültige Dokumentklassifikation.", 400)
             return
         try:
-            path_obj = Path(path).resolve()
+            path_obj = Path(raw_path).resolve()
             path_obj.relative_to(UPLOAD_DIR.resolve())
-        except ValueError:
-            self._json({"error": "Zugriff verweigert"}, 403)
+        except (ValueError, TypeError):
+            self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
             return
         if not path_obj.is_file():
-            self._json({"error": f"Datei nicht gefunden: {path}"}, 400)
+            self._error("NOT_FOUND", "Upload wurde nicht gefunden.", 404)
             return
         try:
             text = extract_pdf_text(path_obj)
             if not text.strip():
-                self._json({"error": "Kein Text aus PDF extrahierbar"}, 400)
+                self._error("PDF_TEXT_EMPTY", "Aus der PDF konnte kein Text extrahiert werden.", 422)
                 return
             chunks = chunk_text(text)
             if not chunks:
-                self._json({"error": "Text zu kurz zum Indexieren"}, 400)
+                self._error("PDF_TEXT_TOO_SHORT", "Der extrahierte Text ist zu kurz.", 422)
                 return
-            col, _ = get_collection()
-            old = col.get(where={"source": source})
-            if old["ids"]:
-                col.delete(ids=old["ids"])
-            ids       = [f"{source}::{i}" for i in range(len(chunks))]
-            metadatas = [{"source": source, "chunk": i} for i in range(len(chunks))]
-            col.add(documents=chunks, ids=ids, metadatas=metadatas)
+            collection, _ = get_collection()
+            document_id = uuid.uuid4().hex
+            ids = [f"{document_id}:{index}" for index in range(len(chunks))]
+            metadata = [
+                {"source": source, "chunk": index, "classification": classification, "document_id": document_id}
+                for index in range(len(chunks))
+            ]
+            collection.add(documents=chunks, ids=ids, metadatas=metadata)
             self._json({
                 "success": True,
-                "source":  source,
-                "chunks":  len(chunks),
-                "words":   len(text.split()),
+                "documentId": document_id,
+                "source": source,
+                "classification": classification,
+                "chunks": len(chunks),
+                "words": len(text.split()),
             })
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Document ingestion failed")
+            self._error("INGEST_FAILED", "PDF-Verarbeitung ist fehlgeschlagen.", 500)
+        finally:
+            try:
+                path_obj.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Temporary upload cleanup failed")
 
     def _download_url(self):
-        data   = json.loads(self._body().decode("utf-8"))
-        url    = data.get("url", "").strip()
-        source = data.get("source", "").strip()
-        if not url:
-            self._json({"error": "Keine URL angegeben"}, 400)
+        try:
+            data = self._read_json()
+        except (ValueError, RequestTooLarge):
+            self._error("INVALID_JSON", "Ungültige Anfrage.", 400)
             return
-        if not (url.startswith("http://") or url.startswith("https://")):
-            self._json({"error": "Nur HTTP/HTTPS-URLs erlaubt"}, 400)
+        url = str(data.get("url") or "").strip()
+        display_name = str(data.get("source") or "Lehrplan.pdf")[:200]
+        if not url:
+            self._error("URL_REQUIRED", "URL fehlt.", 400)
             return
         try:
-            filename = source or url.split("/")[-1].split("?")[0] or "lehrplan.pdf"
-            if not filename.lower().endswith(".pdf"):
-                filename += ".pdf"
-            dest = UPLOAD_DIR / filename
-            req  = urllib.request.Request(url, headers={"User-Agent": "TeacherAssist/1.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                dest.write_bytes(resp.read())
-            self._json({"saved": [str(dest)], "filename": filename})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+            destination = secure_download_pdf(url, UPLOAD_DIR)
+            self._json({"saved": [str(destination)], "filename": display_name})
+        except ValueError as exc:
+            self._error("DOWNLOAD_BLOCKED", str(exc), 400)
+        except Exception:
+            logger.exception("Remote PDF download failed")
+            self._error("DOWNLOAD_FAILED", "PDF-Download ist fehlgeschlagen.", 502)
 
     def _save_settings(self):
         try:
-            data = json.loads(self._body().decode("utf-8"))
-            # Erlaube apiKey im Server zu speichern (kommt vom Frontend-Settings)
-            allowed = {}
-            for k in ("provider", "ollamaModel", "model", "apiKey", "customEndpoint", "customApiKey", "customModel"):
-                if k in data:
-                    allowed[k] = data[k]
-            if allowed.get("provider") not in VALID_PROVIDERS:
-                allowed.pop("provider", None)
-            SETTINGS_FILE.write_text(json.dumps(allowed, ensure_ascii=False), "utf-8")
-            self._json({"success": True})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+            data = self._read_json()
+            settings = SETTINGS_STORE.update(data)
+            self._json({"success": True, "settings": settings})
+        except RequestTooLarge:
+            self._error("REQUEST_TOO_LARGE", "Einstellungen sind zu groß.", 413)
+        except ValueError as exc:
+            self._error("INVALID_SETTINGS", str(exc), 400)
+        except Exception:
+            logger.exception("Settings update failed")
+            self._error("SETTINGS_FAILED", "Einstellungen konnten nicht gespeichert werden.", 500)
 
     def _export_file(self):
         try:
-            data = json.loads(self._body().decode("utf-8"))
-        except Exception:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            data = self._read_json()
+        except RequestTooLarge:
+            self._error("REQUEST_TOO_LARGE", "Anfrage ist zu groß.", 413)
+            return
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
 
         fmt = (data.get("format") or "").strip().lower()
@@ -1000,7 +1229,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
             return
 
-        self._json({"success": True, "filename": filename, "url": f"/exports/{filename}"})
+        self._json({"success": True, "filename": filename, "url": f"/api/v1/exports/{filename}"})
 
     def _download_export(self, filename):
         if not filename or "/" in filename or "\\" in filename:
@@ -1022,7 +1251,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
-        self._cors()
         self.end_headers()
         self.wfile.write(data)
 
@@ -1037,7 +1265,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _list_raster(self):
-        raster_dir = BASE_DIR / "memory" / "bewertungsraster"
+        raster_dir = MEMORY_DIR / "bewertungsraster"
         rasters = []
         if raster_dir.exists():
             for f in sorted(raster_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -1055,7 +1283,14 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self._json({"rasters": rasters})
 
     def _save_raster(self):
-        data   = json.loads(self._body().decode("utf-8"))
+        try:
+            data = self._read_json()
+        except RequestTooLarge:
+            self._error("REQUEST_TOO_LARGE", "Anfrage ist zu groß.", 413)
+            return
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
+            return
         content = data.get("content", "").strip()
         fach    = data.get("fach", "").strip()
         klasse  = data.get("klasse", "").strip()
@@ -1066,7 +1301,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         slug = f"{fach}_{klasse}_{thema}".lower()
         slug = re.sub(r"[^\w]", "_", slug)
         slug = re.sub(r"_+", "_", slug).strip("_")
-        raster_dir = BASE_DIR / "memory" / "bewertungsraster"
+        if not slug:
+            self._error("INVALID_NAME", "Fach/Klasse/Thema ergeben keinen gültigen Dateinamen.", 400)
+            return
+        raster_dir = MEMORY_DIR / "bewertungsraster"
         raster_dir.mkdir(parents=True, exist_ok=True)
         filepath = raster_dir / f"{slug}.md"
         self._rotate_backups(filepath)
@@ -1074,64 +1312,103 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self._json({"success": True, "filename": f"{slug}.md"})
 
     def _backup(self):
-        if not MEMORY_DIR.exists():
-            self._json({"error": "memory/-Verzeichnis nicht gefunden"}, 404)
-            return
         try:
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in sorted(MEMORY_DIR.rglob("*")):
-                    if f.is_file():
-                        zf.write(f, f.relative_to(BASE_DIR))
-            data = buf.getvalue()
+            files = []
+            for item in sorted(MEMORY_DIR.rglob("*")):
+                if not item.is_file() or "students" in item.relative_to(MEMORY_DIR).parts:
+                    continue
+                relative = item.relative_to(MEMORY_DIR)
+                if item.suffix.lower() != ".md" and not any(item.name.endswith(suffix) for suffix in (".bak1", ".bak2", ".bak3")):
+                    continue
+                payload = item.read_bytes()
+                files.append({
+                    "path": "memory/" + relative.as_posix(),
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "payload": payload,
+                })
+            manifest = {
+                "format": "teacherassist-memory-backup",
+                "version": 2,
+                "createdAt": int(time.time()),
+                "files": [{key: row[key] for key in ("path", "size", "sha256")} for row in files],
+            }
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                for row in files:
+                    archive.writestr(row["path"], row["payload"])
+            payload = buffer.getvalue()
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", 'attachment; filename="teacherAssist_memory_backup.zip"')
-            self.send_header("Content-Length", str(len(data)))
-            self._cors()
+            self.send_header("Content-Disposition", 'attachment; filename="teacherassist-memory-v2.zip"')
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(data)
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+            self.wfile.write(payload)
+        except Exception:
+            logger.exception("Backup creation failed")
+            self._error("BACKUP_FAILED", "Backup konnte nicht erstellt werden.", 500)
 
     def _restore(self):
-        ct = self.headers.get("Content-Type", "")
-        body = self._body()
+        content_type = self.headers.get("Content-Type", "")
         try:
-            if "multipart/form-data" in ct:
-                boundary = ""
-                for seg in ct.split(";"):
-                    seg = seg.strip()
-                    if seg.startswith("boundary="):
-                        boundary = seg[9:].strip('"')
+            body = self._body(MAX_RESTORE_BYTES)
+        except RequestTooLarge:
+            self._error("BACKUP_TOO_LARGE", "Backup ist größer als 100 MB.", 413)
+            return
+        try:
+            if "multipart/form-data" in content_type:
+                boundary = next((segment.strip()[9:].strip('"') for segment in content_type.split(";") if segment.strip().startswith("boundary=")), "")
                 files = parse_multipart(body, boundary)
                 if not files:
-                    self._json({"error": "Keine Datei übermittelt"}, 400)
-                    return
-                _, zip_data = files[0]
+                    raise ValueError("Keine Backup-Datei übermittelt")
+                zip_data = files[0][1]
             else:
                 zip_data = body
-
-            buf = io.BytesIO(zip_data)
-            if not zipfile.is_zipfile(buf):
-                self._json({"error": "Datei ist kein gültiges ZIP-Archiv"}, 400)
-                return
-
+            buffer = io.BytesIO(zip_data)
+            if not zipfile.is_zipfile(buffer):
+                raise ValueError("Datei ist kein ZIP-Archiv")
+            with zipfile.ZipFile(buffer, "r") as archive:
+                entries = [entry for entry in archive.infolist() if not entry.is_dir()]
+                if len(entries) > MAX_RESTORE_FILES:
+                    raise ValueError("Backup enthält zu viele Dateien")
+                if sum(entry.file_size for entry in entries) > MAX_RESTORE_EXPANDED_BYTES:
+                    raise ValueError("Entpacktes Backup ist zu groß")
+                for entry in entries:
+                    if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                        raise ValueError("Symlinks sind nicht erlaubt")
+                try:
+                    manifest = json.loads(archive.read("manifest.json"))
+                except Exception as exc:
+                    raise ValueError("Backup-Manifest fehlt oder ist ungültig") from exc
+                if manifest.get("format") != "teacherassist-memory-backup" or manifest.get("version") != 2:
+                    raise ValueError("Backup-Version wird nicht unterstützt")
+                declared = {row.get("path"): row for row in manifest.get("files", []) if isinstance(row, dict)}
+                prepared = []
+                for name, row in declared.items():
+                    safe = memory_zip_destination(name or "")
+                    if safe is None or name not in archive.namelist():
+                        raise ValueError("Unsicherer oder fehlender Backup-Pfad")
+                    destination, normalized = safe
+                    payload = archive.read(name)
+                    if len(payload) != row.get("size") or hashlib.sha256(payload).hexdigest() != row.get("sha256"):
+                        raise ValueError("Backup-Prüfsumme stimmt nicht")
+                    prepared.append((destination, normalized, payload))
             restored = []
-            with zipfile.ZipFile(buf, "r") as zf:
-                for name in zf.namelist():
-                    safe = memory_zip_destination(name)
-                    if safe is None:
-                        continue
-                    dest, norm = safe
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(zf.read(name))
-                    restored.append(norm)
+            for destination, normalized, payload in prepared:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                self._rotate_backups(destination)
+                temporary = destination.with_name(destination.name + ".restore.tmp")
+                temporary.write_bytes(payload)
+                os.replace(temporary, destination)
+                restored.append(normalized)
             self._json({"success": True, "restored": len(restored), "files": restored})
-        except ValueError as e:
-            self._json({"error": str(e)}, 400)
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except ValueError as exc:
+            self._error("INVALID_BACKUP", str(exc), 400)
+        except Exception:
+            logger.exception("Backup restore failed")
+            self._error("RESTORE_FAILED", "Backup konnte nicht wiederhergestellt werden.", 500)
 
     def _list_memory(self):
         files = []
@@ -1243,7 +1520,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _ocr_image(self):
         ct  = self.headers.get("Content-Type", "")
-        body = self._body()
+        try:
+            body = self._body(MAX_IMAGE_BYTES + 1024 * 1024)
+        except RequestTooLarge:
+            self._error("IMAGE_TOO_LARGE", "Bild ist größer als 10 MB.", 413)
+            return
         try:
             if "multipart/form-data" in ct:
                 boundary = ""
@@ -1283,7 +1564,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                                 vision_model = next(m for m in models if m.startswith(vm))
                                 break
                     if not vision_model:
-                        vision_model = settings.get("ollamaModel", "gemma4:e4b")
+                        vision_model = settings.get("ollamaModel", "gemma3:4b")
 
                     vlm_body = {
                         "model": vision_model,
@@ -1358,7 +1639,6 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        self._cors()
         self.end_headers()
 
         try:
@@ -1392,105 +1672,105 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             _send_sse(self.wfile, {"type": "error", "message": str(e)})
 
     def _shutdown(self):
-        """Beendet den Tool-Server und den Web-Server."""
         self._json({"success": True, "message": "TeacherAssist wird beendet."})
-        # Web-Server auf Port 8788 beenden
-        try:
-            subprocess.run(["taskkill", "/F", "/FI", "WINDOWTITLE eq TeacherAssist Web*"], capture_output=True)
-        except Exception:
-            pass
-        # Browser-Fenster, die diesen Server referenzieren, bleiben offen – nur Server sterben
-        import threading
-        def _exit():
+        def exit_later():
             time.sleep(0.5)
             os._exit(0)
-        threading.Thread(target=_exit, daemon=True).start()
+        threading.Thread(target=exit_later, daemon=True).start()
 
     def _session_summary(self):
-        """Fasst den Chat-Verlauf zusammen und speichert ihn in vergangene_stunden.md."""
         try:
-            data = json.loads(self._body().decode("utf-8"))
-        except Exception:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            data = self._read_json(MAX_CHAT_BYTES)
+        except RequestTooLarge:
+            self._error("REQUEST_TOO_LARGE", "Chat-Verlauf ist zu groß.", 413)
             return
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiger Chat-Verlauf.", 400)
+            return
+        self._summarize_messages(data.get("messages", []), data.get("stickyPrivacyMode", "auto"), data)
 
-        messages = data.get("messages", [])
-        profile  = data.get("profile", {})
-        settings = apply_request_overrides(load_settings(), data)
-
-        # Nur User-Nachrichten extrahieren (ohne System/Bot)
-        user_texts = []
-        for m in messages:
-            if m.get("role") == "user":
-                text = m.get("text", m.get("content", "")).strip()
-                if text:
-                    user_texts.append(text)
-
+    def _summarize_messages(self, messages, sticky_mode="auto", request_data=None):
+        request_data = request_data or {}
+        user_texts = [
+            message.get("text", message.get("content", "")).strip()
+            for message in messages if message.get("role") == "user"
+            and isinstance(message.get("text", message.get("content", "")), str)
+            and message.get("text", message.get("content", "")).strip()
+        ]
         if not user_texts:
-            self._json({"error": "Keine User-Nachrichten zum Zusammenfassen"}, 400)
+            self._error("NO_MESSAGES", "Keine User-Nachrichten vorhanden.", 400)
             return
-
-        # Zusammenfassung per LLM generieren
-        summary_prompt = (
-            "Fasse den folgenden Chat-Verlauf einer Lehrkraft mit ihrem KI-Assistenten "
-            "in 3-5 Sätzen zusammen. Was war das Thema? Welche Fächer/Klassen wurden besprochen? "
-            "Welche Ergebnisse/Pläne wurden erarbeitet? "
-            "Schreibe im Stil eines Verlaufsprotokolls für die Lehrkraft.\n\n"
-            + "\n".join(f"- {t}" for t in user_texts[-20:])  # max 20 Nachrichten
+        decision = decide_privacy(
+            messages=messages,
+            profile=request_data.get("profile", {}),
+            requested_mode=request_data.get("privacy_mode", "auto"),
+            sticky_mode=sticky_mode,
         )
-
-        summary = ""
-        try:
-            is_ollama = settings.get("provider") == "ollama"
-            ollama_model = settings.get("ollamaModel") or "gemma4:e4b"
-            model = settings.get("model") or "deepseek/deepseek-chat"
-            api_key = settings.get("apiKey") or get_api_key()
-
-            if is_ollama:
-                endpoint = "http://localhost:11434/v1/chat/completions"
-                headers = {"Content-Type": "application/json"}
-                body = {"model": ollama_model, "messages": [{"role": "user", "content": summary_prompt}], "stream": False}
-            else:
-                endpoint = "https://openrouter.ai/api/v1/chat/completions"
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                    "HTTP-Referer": "http://localhost:8788",
-                    "X-Title": "TeacherAssist",
-                }
-                body = {"model": model, "messages": [{"role": "user", "content": summary_prompt}], "stream": False}
-
-            req = urllib.request.Request(
-                endpoint,
-                data=json.dumps(body).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read())
-                summary = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        except Exception as e:
-            summary = f"Chat-Sitzung: {user_texts[0][:100]}…"
-
-        if not summary.strip():
-            summary = f"Chat-Sitzung: {user_texts[0][:100]}…"
-
-        # In vergangene_stunden.md speichern
-        now = time.strftime("%d.%m.%Y %H:%M")
-        entry = f"\n\n## {now}\n{summary.strip()}\n"
-
-        vergangene = MEMORY_DIR / "vergangene_stunden.md"
-        if vergangene.exists():
-            existing = vergangene.read_text("utf-8").strip()
-            lines = existing.split("\n")
-            if len(lines) > 300:
-                existing = "\n".join(lines[-300:])
-            vergangene.write_text(existing + entry, encoding="utf-8")
+        settings = apply_request_overrides(load_settings(), request_data)
+        if decision.local_required:
+            if not check_ollama():
+                self._error("LOCAL_MODEL_REQUIRED", "Diese Zusammenfassung muss lokal erstellt werden. Bitte starte Ollama.", 409)
+                return
+            endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            model = settings.get("ollamaModel") or "gemma3:4b"
+        elif settings.get("provider") == "custom":
+            endpoint = (settings.get("customEndpoint") or "").strip()
+            if not endpoint:
+                self._error("CUSTOM_ENDPOINT_MISSING", "Custom-Endpoint fehlt.", 400)
+                return
+            if not is_trusted_loopback_endpoint(endpoint):
+                try:
+                    validate_remote_url(endpoint)
+                except ValueError:
+                    self._error("CUSTOM_ENDPOINT_BLOCKED", "Custom-Endpoint ist nicht zulässig.", 400)
+                    return
+            headers = {"Content-Type": "application/json"}
+            custom_key = CREDENTIALS.get(CredentialStore.CUSTOM)
+            if custom_key:
+                headers["Authorization"] = f"Bearer {custom_key}"
+            model = settings.get("customModel") or "gpt-3.5-turbo"
+        elif settings.get("provider") == "ollama":
+            if not check_ollama():
+                self._error("OLLAMA_OFFLINE", "Ollama ist nicht verfügbar.", 409)
+                return
+            endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            model = settings.get("ollamaModel") or "gemma3:4b"
         else:
-            vergangene.parent.mkdir(parents=True, exist_ok=True)
-            vergangene.write_text(f"# Vergangene Stunden – Verlaufsprotokoll\n\nErstellt am {now}\n{entry}", encoding="utf-8")
-
-        self._json({"success": True, "summary": summary.strip()})
+            api_key = CREDENTIALS.get(CredentialStore.OPENROUTER)
+            if not api_key:
+                self._error("API_KEY_MISSING", "OpenRouter-API-Key fehlt.", 400)
+                return
+            endpoint = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", "X-Title": "TeacherAssist"}
+            model = settings.get("model") or "deepseek/deepseek-chat"
+        prompt = (
+            "Fasse den folgenden Chat einer Lehrkraft in 3-5 Sätzen als Verlaufsprotokoll zusammen. "
+            "Nenne Thema und erarbeitete Ergebnisse, aber keine erfundenen Angaben.\n\n"
+            + "\n".join(f"- {text}" for text in user_texts[-20:])
+        )
+        body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
+        try:
+            request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(request, timeout=60) as response:
+                result = json.loads(response.read())
+            summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            if not summary:
+                raise ValueError("empty summary")
+        except Exception:
+            logger.exception("Session summary provider request failed")
+            self._error("SUMMARY_FAILED", "Zusammenfassung konnte nicht erstellt werden.", 502)
+            return
+        timestamp = time.strftime("%d.%m.%Y %H:%M")
+        target = MEMORY_DIR / "vergangene_stunden.md"
+        existing = target.read_text("utf-8").strip() if target.exists() else "# Vergangene Stunden – Verlaufsprotokoll"
+        lines = existing.splitlines()
+        if len(lines) > 300:
+            existing = "\n".join(lines[-300:])
+        self._rotate_backups(target)
+        target.write_text(existing + f"\n\n## {timestamp}\n{summary}\n", encoding="utf-8")
+        self._json({"success": True, "summary": summary, "privacyMode": decision.mode})
 
     def log_message(self, format, *args):
         logger.info("%s - %s", self.address_string(), format % args)
@@ -1515,9 +1795,10 @@ if __name__ == "__main__":
         logger.warning(msg)
 
     port = 8789
-    logger.info("Starting Tool-Server port=%d python=%s", port, sys.executable)
+    migration = SETTINGS_STORE.migrate_legacy(LEGACY_SETTINGS_FILE)
+    logger.info("Starting Tool-Server port=%d python=%s settings_migrated=%s", port, sys.executable, migration.get("migrated", False))
     try:
-        server = _QuietThreadingHTTPServer(("", port), ToolHandler)
+        server = _QuietThreadingHTTPServer(("127.0.0.1", port), ToolHandler)
     except OSError as e:
         msg = f"Bind fehlgeschlagen auf Port {port}: {e}"
         print(msg, flush=True)

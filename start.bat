@@ -30,7 +30,7 @@ if not exist "%~dp0index.html" (
 
 :: HTTP /health pruefen (nicht nur TCP) - TCP allein erkennt Zombie-Prozesse nicht.
 echo  Pruefe Tool-Server...
-powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
     echo  Tool-Server laeuft bereits.
     goto open_browser
@@ -47,7 +47,7 @@ echo  Warte auf Tool-Server...
 set "TOOL_OK="
 for /l %%I in (1,1,30) do (
     timeout /t 1 /nobreak >nul
-    powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+    powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
     if not errorlevel 1 (
         set "TOOL_OK=1"
         goto tool_ready
@@ -57,7 +57,7 @@ for /l %%I in (1,1,30) do (
 :tool_ready
 if not defined TOOL_OK (
     echo.
-    echo  PROBLEM: Tool-Server antwortet nicht auf http://localhost:8789/health
+    echo  PROBLEM: Tool-Server antwortet nicht auf http://localhost:8789/api/v1/health
     echo  Log pruefen: %~dp0logs\tool_server.log
     echo.
     pause
