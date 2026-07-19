@@ -1,7 +1,14 @@
 import pytest
 
 import tool_server
-from tools import lehrplan_indexer, lehrplan_searcher, memory_reader, memory_writer
+from teacherassist_core.privacy import decide_privacy
+
+try:
+    import chromadb  # noqa: F401
+
+    HAS_CHROMADB = True
+except ImportError:
+    HAS_CHROMADB = False
 
 
 def test_apply_request_overrides_uses_resolved_provider_and_models():
@@ -57,10 +64,66 @@ def test_memory_zip_destination_rejects_traversal():
         tool_server.memory_zip_destination("memory/../app.jsx")
 
 
-def test_repo_local_memory_and_chroma_paths():
-    repo_root = tool_server.BASE_DIR.resolve()
+# ---------------------------------------------------------------------------
+# search_rag() <-> decide_privacy(): the classification must round-trip through
+# ChromaDB metadata, not silently fall back to a hardcoded value that would
+# force every RAG-hit chat into local-only mode regardless of the real
+# document classification.
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(
+    not HAS_CHROMADB,
+    reason="chromadb is not installed in tools/.venv; skipping the search_rag() classification round-trip",
+)
+def test_search_rag_round_trips_document_classification(tmp_path, monkeypatch):
+    monkeypatch.setattr(tool_server, "_col", None)
+    monkeypatch.setattr(tool_server, "_ef", None)
+    monkeypatch.setattr(tool_server, "CHROMA_DIR", tmp_path / "chroma")
 
-    assert memory_reader.get_memory_path("lehrerprofil.md").resolve() == repo_root / "memory" / "lehrerprofil.md"
-    assert memory_writer.get_memory_path("vergangene_stunden.md").resolve() == repo_root / "memory" / "vergangene_stunden.md"
-    assert lehrplan_indexer.get_chromadb_path().resolve() == repo_root / "tools" / "chroma_db"
-    assert lehrplan_searcher.get_chromadb_path().resolve() == repo_root / "tools" / "chroma_db"
+    collection, _ = tool_server.get_collection()
+    collection.add(
+        documents=["Im Lehrplan Klasse 6 wird die Bruchrechnung eingefuehrt."],
+        ids=["test-doc-public:0"],
+        metadatas=[{
+            "source": "test",
+            "classification": "public_curriculum",
+            "chunk": 0,
+            "document_id": "test-doc-public",
+        }],
+    )
+    _, public_classifications = tool_server.search_rag("Bruchrechnung Klasse 6")
+    assert "public_curriculum" in public_classifications
+    assert "unknown" not in public_classifications
+
+    collection.add(
+        documents=["Persoenliche Foerdernotiz fuer einen einzelnen Schueler."],
+        ids=["test-doc-personal:0"],
+        metadatas=[{
+            "source": "test",
+            "classification": "personal",
+            "chunk": 0,
+            "document_id": "test-doc-personal",
+        }],
+    )
+    _, personal_classifications = tool_server.search_rag("Persoenliche Foerdernotiz Schueler")
+    assert "personal" in personal_classifications
+
+
+def test_decide_privacy_allows_cloud_for_public_curriculum_documents():
+    decision = decide_privacy(
+        messages=[{"role": "user", "text": "Was steht im Lehrplan zur Bruchrechnung?"}],
+        skill_id=None,
+        document_classifications=["public_curriculum"],
+    )
+
+    assert decision.local_required is False
+
+
+def test_decide_privacy_forces_local_for_non_public_documents():
+    decision = decide_privacy(
+        messages=[{"role": "user", "text": "Was steht im Lehrplan zur Bruchrechnung?"}],
+        skill_id=None,
+        document_classifications=["personal"],
+    )
+
+    assert decision.local_required is True
+    assert "document_not_public" in decision.reasons

@@ -13,11 +13,13 @@ Vollständige manuelle Einrichtung auf einem neuen Rechner. Reihenfolge einhalte
 |---|---|---|
 | Python | 3.11+ | https://www.python.org/downloads/ |
 | Tesseract OCR | 5.x | https://github.com/UB-Mannheim/tesseract/wiki (Windows) |
-| Poppler | aktuell | https://github.com/oschwartz10612/poppler-windows/releases (Windows) |
 | Ollama (optional, Pflicht für DSGVO-Skills) | aktuell | https://ollama.com/download |
 | Git | aktuell | https://git-scm.com/ |
+| Node.js | 20.19+ oder 22.12+ | https://nodejs.org/ — **nur nötig, wenn du den Frontend-Build selbst neu erzeugen willst**; das Repo enthält bereits einen fertigen Build unter `web_dist/` |
 
-> **Legacy:** Flutter und OpenClaw werden in v4 nicht mehr benötigt. iOS-/Flutter-Clients sind dokumentiert, aber nicht angebunden — siehe CLAUDE.md.
+> **Legacy:** Flutter, iOS und OpenClaw werden nicht mehr benötigt. Die früheren
+> mobilen Clients sind vollständig entfernt und auf dem Branch
+> `archive/mobile-clients` erhalten.
 
 ---
 
@@ -30,115 +32,118 @@ cd TeacherAssist
 
 ---
 
-## Schritt 2 – Python-Umgebung für Tools einrichten
+## Schritt 2 – Python-Umgebung einrichten
 
-```bash
+`install.bat` erledigt das automatisch (venv unter `tools\.venv`, `pip install -r
+tools\requirements.txt`, Tesseract-Installation). Für eine manuelle Einrichtung:
+
+```bat
 cd tools
-
-# Windows:
-setup.bat
-
-# Linux/macOS:
-bash setup.sh
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+cd ..
 ```
-
-Das Skript erstellt `.venv/` im `tools/`-Ordner und installiert alle Abhängigkeiten.
 
 ### Tesseract (Windows)
 1. Installer von https://github.com/UB-Mannheim/tesseract/wiki herunterladen
 2. Bei der Installation: **Zusatzpaket "German"** anwählen
-3. Installationspfad notieren (z. B. `C:\Program Files\Tesseract-OCR\`)
-4. Pfad zur PATH-Umgebungsvariable hinzufügen **oder** in `tools/ocr_reader.py` eintragen:
-   ```python
-   pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-   ```
-
-### Poppler (Windows)
-1. Release von https://github.com/oschwartz10612/poppler-windows/releases herunterladen
-2. Entpacken, z. B. nach `C:\poppler\`
-3. `C:\poppler\Library\bin` zur PATH-Umgebungsvariable hinzufügen
+3. Installationspfad zur PATH-Umgebungsvariable hinzufügen (z. B. `C:\Program Files\Tesseract-OCR\`)
 
 ---
 
-## Schritt 3 – Tool-Server starten und konfigurieren
+## Schritt 3 – Frontend bauen (nur bei Quellcode-Änderungen nötig)
 
-In v4 gibt es keinen separaten OpenClaw-Dienst mehr. `tool_server.py` läuft als einziger
-Prozess auf Port **8789** und liefert Frontend und API aus.
+```bash
+npm install
+npm run build
+```
+
+Baut `web_dist/` aus `src/main.jsx` + `app.jsx`/`components.jsx`/`tweaks-panel.jsx`.
+`web_dist/` ist committed — wer nur die App nutzen will, braucht diesen Schritt
+nicht. `install.bat` überspringt ihn automatisch, wenn `web_dist\index.html`
+bereits existiert.
+
+Für Entwicklung mit Hot-Reload:
+```bash
+npm run dev
+```
+Startet den Vite-Dev-Server; API-Requests werden zu `http://127.0.0.1:8789` proxied
+(siehe `vite.config.js`). `tool_server.py` muss dafür separat laufen (Schritt 4).
+
+---
+
+## Schritt 4 – Tool-Server starten und konfigurieren
+
+`tool_server.py` läuft als einziger Prozess auf Port **8789** und liefert Frontend
+und API aus.
 
 ```bat
 :: Aus dem Projektordner:
 start.bat
 ```
 
-`start.bat` prüft das venv unter `tools\.venv`, probiert `GET /health` und beendet einen
-hängenden Vor-Prozess auf Port 8789 falls vorhanden. Browser öffnet sich automatisch.
+`start.bat` prüft das venv unter `tools\.venv`, probiert `GET /api/v1/health` und
+beendet einen hängenden Vor-Prozess auf Port 8789 falls vorhanden. Browser öffnet
+sich automatisch.
 
-API-Key und Provider werden in der Web-UI unter *Einstellungen → Provider* eingetragen
-und in `settings.json` (im Projektroot) gespeichert. Keine Umgebungsvariable nötig.
+API-Key und Provider werden in der Web-UI unter *Einstellungen → Provider*
+eingetragen. Der API-Key wird im Windows-Anmeldeinformationsspeicher gespeichert
+(`keyring`-Paket), nicht als Klartext — nicht-geheime Einstellungen liegen unter
+`%LOCALAPPDATA%\TeacherAssist\settings.json`.
 
 **Ollama (optional, Pflicht für DSGVO-Skills):**
 
 ```bat
 :: nach Installation von https://ollama.com/download
-ollama pull gemma3:e4b
+ollama pull gemma3:4b
 ollama serve   :: läuft normalerweise automatisch als Hintergrunddienst
 ```
 
 DSGVO-Pflicht-Skills (`schuelerarbeit_bewerten`, `zeugnis_formulieren`,
 `foerderplan_erstellen`, `lerntagebuch_feedback`, `klassenstatistik`) werden
-serverseitig zwingend auf Ollama geroutet. Wenn Ollama offline ist und ein solcher
-Skill verlangt wird, gibt die UI eine Fehlermeldung aus — **kein Cloud-Fallback**.
+serverseitig zwingend auf Ollama geroutet — ebenso jeder Chat, in dem
+personenbezogene Daten erkannt werden oder ein eingelesenes Dokument nicht als
+`public_curriculum` klassifiziert wurde. Wenn Ollama offline ist und lokale
+Verarbeitung erforderlich ist, gibt die UI eine Fehlermeldung aus — **kein
+Cloud-Fallback**.
 
 ---
 
-## Schritt 4 – Verbindung testen
+## Schritt 5 – Verbindung testen
 
 ```bat
 :: Server-Status
-curl http://localhost:8789/health
-:: Erwartet: {"status":"ok","version":"1.1","ollama":true}
-
-:: Tool direkt aus venv testen:
-tools\.venv\Scripts\python.exe tools\memory_reader.py
+curl http://localhost:8789/api/v1/health
+:: Erwartet: {"status":"ok","version":"2.0"}
 ```
 
-Server-Log liegt unter `logs\tool_server.log` (rotierend, 1 MB × 3).
+Server-Log liegt unter `%LOCALAPPDATA%\TeacherAssist\logs\tool_server.log`
+(rotierend, 1 MB × 3).
 
 ---
 
-## Schritt 5 – Onboarding (beim ersten Start)
+## Schritt 6 – Onboarding (beim ersten Start)
 
 In der Web-UI den Onboarding-Skill starten:
 > "Ich möchte den Agenten einrichten"
 
-Der Agent führt durch die Einrichtung des Lehrerprofils. Profil wird unter
-`memory\lehrerprofil.md` gespeichert.
+Der Agent führt durch die Einrichtung des Lehrerprofils. Profil wird
+verschlüsselt unter `%LOCALAPPDATA%\TeacherAssist\state.enc` gespeichert.
+
+---
+
+## Tests
+
+```bat
+tools\.venv\Scripts\python.exe -m pytest tests\ -v
+```
 
 ---
 
 ## Verzeichnisstruktur nach Setup
 
-```
-TeacherAssist/
-├── tool_server.py          # Einziger Server (Port 8789)
-├── start.bat               # Startet tool_server.py (HTTP /health-Probe)
-├── install.bat             # Erstinstallation Python + Tesseract + venv
-├── settings.json           # Provider-/Modell-/API-Key-Settings (auto)
-├── index.html, app.jsx, components.jsx, tweaks-panel.jsx
-├── skills/                 # Markdown-Skills (LLM-Instruktionen)
-├── tools/
-│   ├── .venv/              # Python-venv (gitignored, von install.bat angelegt)
-│   ├── chroma_db/          # ChromaDB-Vektorspeicher (gitignored)
-│   ├── requirements.txt
-│   └── *.py                # Python-Tools (pdf_reader, ocr_reader, memory_*, …)
-├── memory/                 # Markdown-Memory (lehrerprofil, lehrplan_index, …)
-├── logs/tool_server.log    # Rotierendes Server-Log (auto)
-├── uploads/                # Temp PDF-Uploads
-├── SETUP.md                # Diese Datei
-└── CLAUDE.md               # Bauplan für Claude Code
-```
-
-> Es gibt **kein** `~/.openclaw/`-Verzeichnis mehr. Alle Pfade sind projektrelativ.
+Siehe `CLAUDE.md` → Abschnitt *Projektstruktur* für die vollständige,
+aktuell gehaltene Übersicht.
 
 ---
 
@@ -147,9 +152,9 @@ TeacherAssist/
 | Fehler | Lösung |
 |---|---|
 | `Python-venv nicht gefunden` (beim Start) | `install.bat` ausführen — legt `tools\.venv` an |
-| Browser zeigt „Tool-Server offline" | `logs\tool_server.log` prüfen, `start.bat` neu starten |
-| Port 8789 belegt, `/health` timeoutet | Stale Prozess — `start.bat` ab v4 räumt selbst auf |
+| Browser zeigt „Tool-Server offline" | `%LOCALAPPDATA%\TeacherAssist\logs\tool_server.log` prüfen, `start.bat` neu starten |
+| Port 8789 belegt, `/api/v1/health` timeoutet | Stale Prozess — `start.bat` räumt selbst auf |
 | `tesseract is not installed` | Tesseract installieren + PATH setzen |
-| `Unable to get page count. Is poppler installed` | Poppler installieren + PATH setzen |
-| `chromadb` ImportError | `tools\.venv\Scripts\pip install -r tools\requirements.txt` |
+| `chromadb`/`sentence_transformers` ImportError | `tools\.venv\Scripts\pip install -r tools\requirements.txt` |
 | DSGVO-Skill schlägt mit „Ollama nicht verfügbar" fehl | Ollama installieren + `ollama serve` läuft? |
+| `npm run build` schlägt fehl / Warnung zu Node-Version | Node.js 20.19+ oder 22.12+ installieren |

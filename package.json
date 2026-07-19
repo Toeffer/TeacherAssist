@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build && node scripts/generate-service-worker.mjs",
-    "test": "vitest run"
+    "build": "vite build && node scripts/generate-service-worker.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
@@ -17,7 +16,6 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "6.0.3",
-    "vite": "8.1.5",
-    "vitest": "4.1.10"
+    "vite": "8.1.5"
   }
 }

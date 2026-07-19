@@ -8,8 +8,8 @@ KI-Assistent für Lehrkräfte. Hilft bei Unterrichtsplanung, Bewertungserstellun
 
 ### Was du vorher brauchst
 
-- Einen **Anthropic API-Schlüssel** (kostenlos unter [console.anthropic.com](https://console.anthropic.com/)) – wird später in den Einstellungen im Browser eingegeben.
-- *Empfohlen für datenschutzkritische Aufgaben:* **Ollama** lokal installiert, siehe [ollama.com/download](https://ollama.com/download). Skills wie *Schülerarbeit bewerten* oder *Zeugnis formulieren* werden automatisch über Ollama verarbeitet und verlassen den Rechner nicht.
+- Einen **OpenRouter API-Schlüssel** (kostenlos unter [openrouter.ai/keys](https://openrouter.ai/keys)) – wird später in den Einstellungen im Browser eingegeben. Alternativ kannst du einen eigenen OpenAI-kompatiblen Endpunkt eintragen.
+- *Empfohlen, und Pflicht für datenschutzkritische Aufgaben:* **Ollama** lokal installiert, siehe [ollama.com/download](https://ollama.com/download). Skills wie *Schülerarbeit bewerten* oder *Zeugnis formulieren* werden automatisch über Ollama verarbeitet und verlassen den Rechner nicht – ohne laufendes Ollama schlagen diese Skills mit einer Fehlermeldung fehl (kein Cloud-Fallback).
 
 ### Schritt 1 – Dateien herunterladen
 
@@ -32,7 +32,7 @@ Mache einen **Doppelklick auf "LehrerAgent starten"** auf deinem Desktop (oder d
 
 Der Browser öffnet sich automatisch unter `http://localhost:8789/` mit dem Assistenten.
 
-**Beim ersten Start:** API-Schlüssel und Modell in der Web-UI unter *Einstellungen* eintragen. Die Werte werden lokal in `settings.json` gespeichert.
+**Beim ersten Start:** API-Schlüssel und Modell in der Web-UI unter *Einstellungen* eintragen. Der Schlüssel wird sicher im Windows-Anmeldeinformationsspeicher hinterlegt, nicht als Klartext auf der Festplatte.
 
 ---
 
@@ -50,7 +50,7 @@ Der Browser öffnet sich automatisch unter `http://localhost:8789/` mit dem Assi
 
 ## Datenschutz
 
-Der LehrerAgent läuft vollständig auf **deinem eigenen Computer**. Es werden keine Schülerdaten an Dritte weitergegeben. Nur deine Anfragen an das KI-Modell (Claude von Anthropic) verlassen das Gerät – ohne personenbezogene Schülerinformationen.
+Der LehrerAgent läuft vollständig auf **deinem eigenen Computer**. Es werden keine Schülerdaten an Dritte weitergegeben. Anfragen an ein Cloud-Modell (über OpenRouter) verlassen das Gerät nur, wenn keine personenbezogenen Schülerinformationen erkannt wurden – erkennt der Server solche Informationen oder nutzt du einen DSGVO-Pflicht-Skill, wird automatisch und ohne Ausweichmöglichkeit auf ein lokales Ollama-Modell umgeschaltet.
 
 ---
 
@@ -60,13 +60,13 @@ Der LehrerAgent läuft vollständig auf **deinem eigenen Computer**. Es werden k
 Stelle sicher, dass du mit dem Internet verbunden bist und führe `install.bat` nochmal aus.
 
 **Browser zeigt „Tool-Server offline":**
-Schliesse das gestartete schwarze Fenster und starte `start.bat` neu. Wenn das nicht hilft: Log unter `logs\tool_server.log` prüfen.
+Schliesse das gestartete schwarze Fenster und starte `start.bat` neu. Wenn das nicht hilft: Log unter `%LOCALAPPDATA%\TeacherAssist\logs\tool_server.log` prüfen.
 
 **Kein API-Schlüssel:**
-Registrierung unter [console.anthropic.com](https://console.anthropic.com/), dort unter „API Keys" einen neuen Schlüssel erstellen und in der Web-UI unter *Einstellungen → Provider → Anthropic* eintragen.
+Registrierung unter [openrouter.ai](https://openrouter.ai/), dort unter „Keys" einen neuen Schlüssel erstellen und in der Web-UI unter *Einstellungen → Provider → OpenRouter* eintragen.
 
 **Lokales Modell für DSGVO-Aufgaben:**
-Für Schülerarbeiten, Zeugnisse und Förderpläne wird ein lokales Modell erzwungen. [Ollama installieren](https://ollama.com/download) und z. B. `ollama pull gemma3:e4b` ausführen.
+Für Schülerarbeiten, Zeugnisse, Förderpläne, Klassenstatistiken und Lerntagebuch-Feedback wird ein lokales Modell erzwungen. [Ollama installieren](https://ollama.com/download) und z. B. `ollama pull gemma3:4b` ausführen.
 
 ---
 
