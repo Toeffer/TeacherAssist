@@ -58,3 +58,11 @@ app/macos/Flutter/GeneratedPluginRegistrant.swift
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local frontend build and migration test data
+node_modules/
+.test-runtime*/
+
+# ─── AI-Tooling Zwischendateien (Patches/Generatoren, bereits angewendet) ─────
+.codex-*
+.codex_generate_*.py

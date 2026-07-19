@@ -407,7 +407,7 @@ function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
           {isTyping && !message ? (
             <TypingDots />
           ) : (
-            <div dangerouslySetInnerHTML={{ __html: mdToHtml(message || '') }} />
+            <SanitizedMarkdown>{message || ''}</SanitizedMarkdown>
           )}
         </div>
         {onExport && message && (
@@ -518,7 +518,7 @@ function ShutdownButton({ onShutdown }) {
       setState('shutting_down');
       const shutdown = onShutdown
         ? Promise.resolve(onShutdown())
-        : fetch('http://localhost:8789/shutdown', { method: 'POST' });
+        : taFetch('http://localhost:8789/shutdown', { method: 'POST' });
       shutdown
         .catch(() => {})
         .finally(() => {
@@ -1301,9 +1301,9 @@ function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) 
   );
 }
 
-function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore, customEndpoint = '', onCustomEndpointChange = () => {}, customApiKey = '', onCustomApiKeyChange = () => {}, customModel = 'gpt-3.5-turbo', onCustomModelChange = () => {}, onTestModel = null }) {
+function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyChange, model, onModelChange, onResetOnboarding, toolStatus, ragDocCount, onFileUpload, onClearKnowledge, onUrlDownload, profile, provider, onProviderChange, ollamaModel, onOllamaModelChange, ollamaStatus, ollamaModels, openrouterStatus, isFallbackActive, effectiveProvider, onBackup, onRestore, customEndpoint = '', onCustomEndpointChange = () => {}, customApiKey = '', hasCustomApiKey = false, onCustomApiKeyChange = () => {}, customModel = 'gpt-3.5-turbo', onCustomModelChange = () => {}, onTestModel = null }) {
   const [showKey, setShowKey] = React.useState(false);
-  const [keyInput, setKeyInput] = React.useState(apiKey || '');
+  const [keyInput, setKeyInput] = React.useState('');
   const [saved, setSaved] = React.useState(false);
   const [testState, setTestState] = React.useState('idle'); // idle | running | success | error
   const [testResult, setTestResult] = React.useState(null);
@@ -1319,7 +1319,7 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
   const modelTestDisabledReason = (() => {
     if (!onTestModel) return 'Modelltest nicht verfügbar';
     if (toolStatus !== 'online') return 'Tool-Server offline';
-    if (provider === 'openrouter' && !apiKey) return 'API-Key fehlt';
+    if (provider === 'openrouter' && !hasApiKey && !apiKey) return 'API-Key fehlt';
     if (provider === 'ollama' && ollamaStatus !== 'online') return 'Ollama offline';
     if (provider === 'custom' && !customEndpoint.trim()) return 'Custom-Endpoint fehlt';
     if (!selectedModelName) return 'Modell fehlt';
@@ -1480,7 +1480,7 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
             type={showKey ? 'text' : 'password'}
             value={customApiKey}
             onChange={e => onCustomApiKeyChange(e.target.value)}
-            placeholder="Optionaler API-Key"
+            placeholder={hasCustomApiKey ? 'Gespeichert – zum Ersetzen neu eingeben' : 'Optionaler API-Key'}
             style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontSize: 13, outline: 'none' }}
           />
         </div>
@@ -1491,20 +1491,20 @@ function SettingsView({ dark, onToggleDark, apiKey, onApiKeyChange, model, onMod
       {provider === 'openrouter' && (
       <div style={{
         background: 'var(--surface-elevated)', borderRadius: 14,
-        border: apiKey ? '1px solid var(--border)' : '2px solid var(--accent)',
+        border: (hasApiKey || apiKey) ? '1px solid var(--border)' : '2px solid var(--accent)',
         overflow: 'hidden', marginBottom: 16,
       }}>
         <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span>OpenRouter API-Key</span>
-            {!apiKey && <span style={{ color: 'var(--accent)', fontWeight: 400, fontSize: 13 }}>– Pflichtfeld</span>}
+            {!hasApiKey && !apiKey && <span style={{ color: 'var(--accent)', fontWeight: 400, fontSize: 13 }}>– Pflichtfeld</span>}
             {openrouterStatus === 'offline' && (
               <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }}></span>
                 nicht erreichbar
               </span>
             )}
-            {openrouterStatus === 'online' && apiKey && (
+            {openrouterStatus === 'online' && (hasApiKey || apiKey) && (
               <span style={{ marginLeft: 'auto', fontSize: 12, color: '#2a9d5c', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#2a9d5c', display: 'inline-block' }}></span>
                 erreichbar
@@ -2114,7 +2114,7 @@ function RasterEditorView({ toolStatus }) {
   async function loadRasters() {
     setLoading(true);
     try {
-      const r = await fetch(`${TOOL}/list-raster`);
+      const r = await taFetch(`${TOOL}/list-raster`);
       if (r.ok) setRasters((await r.json()).rasters || []);
     } catch {}
     setLoading(false);
@@ -2131,7 +2131,7 @@ function RasterEditorView({ toolStatus }) {
 
   async function loadRasterContent(filename) {
     try {
-      const res = await fetch(`${TOOL}/memory-read?file=bewertungsraster/${encodeURIComponent(filename)}`);
+      const res = await taFetch(`${TOOL}/memory-read?file=bewertungsraster/${encodeURIComponent(filename)}`);
       if (!res.ok) throw new Error('Fehler beim Laden');
       const data = await res.json();
       const md = data.content || '';
@@ -2212,7 +2212,7 @@ function RasterEditorView({ toolStatus }) {
     setSaving(true); setError('');
     try {
       const content = genRasterMarkdown(form, nsTyp);
-      const r = await fetch(`${TOOL}/save-raster`, {
+      const r = await taFetch(`${TOOL}/save-raster`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fach: form.fach, klasse: form.klasse, thema: form.thema, content }),
@@ -2497,7 +2497,7 @@ function MemoryEditorView({ toolStatus }) {
   async function loadList() {
     setLoading(true);
     try {
-      const r = await fetch(`${TOOL}/memory-list`);
+      const r = await taFetch(`${TOOL}/memory-list`);
       if (r.ok) setFiles((await r.json()).files || []);
     } catch {}
     setLoading(false);
@@ -2506,7 +2506,7 @@ function MemoryEditorView({ toolStatus }) {
   async function openFile(path) {
     setError(''); setSaved(false);
     try {
-      const r = await fetch(`${TOOL}/memory-read?file=${encodeURIComponent(path)}`);
+      const r = await taFetch(`${TOOL}/memory-read?file=${encodeURIComponent(path)}`);
       const d = await r.json();
       if (d.error) { setError(d.error); return; }
       setSelected(path);
@@ -2518,7 +2518,7 @@ function MemoryEditorView({ toolStatus }) {
     if (!selected) return;
     setSaving(true); setError('');
     try {
-      const r = await fetch(`${TOOL}/memory-write`, {
+      const r = await taFetch(`${TOOL}/memory-write`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: selected, content }),
@@ -2833,7 +2833,7 @@ function CameraModal({ onClose, onCapture }) {
       try {
         const fd = new FormData();
         fd.append('image', blob, 'capture.jpg');
-        const res  = await fetch('http://localhost:8789/ocr-image', { method: 'POST', body: fd });
+        const res  = await taFetch('http://localhost:8789/ocr-image', { method: 'POST', body: fd });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         setOcrText(data.text);

@@ -53,6 +53,15 @@ if %errorlevel% neq 0 (
 )
 
 :python_ok
+for /f "tokens=2 delims=. " %%v in ('python --version 2^>^&1') do set "PY_MAJOR=%%v"
+for /f "tokens=3 delims=. " %%v in ('python --version 2^>^&1') do set "PY_MINOR=%%v"
+if not "%PY_MAJOR%"=="3" goto python_bad_version
+if "%PY_MINOR%"=="11" goto python_version_ok
+if "%PY_MINOR%"=="12" goto python_version_ok
+:python_bad_version
+echo PROBLEM: TeacherAssist requires Python 3.11 or 3.12.
+exit /b 1
+:python_version_ok
 for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo         OK: %%v
 
 
@@ -116,8 +125,35 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo         OK: Alle Komponenten installiert.
+.venv\Scripts\python.exe -m pip check
+if errorlevel 1 (
+    echo PROBLEM: Abhaengigkeitskonflikte wurden gefunden.
+    cd ..
+    exit /b 1
+)
 cd ..
+tools\.venv\Scripts\python.exe scripts\capability_check.py
+if errorlevel 1 exit /b 1
+echo         OK: Alle Komponenten installiert und geprueft.
+
+if exist "web_dist\index.html" (
+    echo         OK: Frontend-Build bereits vorhanden ^(web_dist\^), Node.js nicht benoetigt.
+    goto frontend_ok
+)
+
+where node >nul 2>&1
+if errorlevel 1 (
+    echo PROBLEM: Kein Frontend-Build vorhanden und Node.js wurde nicht gefunden.
+    echo Installiere Node.js 20+ LTS und starte install.bat erneut,
+    echo oder verwende ein Release-ZIP mit bereits enthaltenem web_dist\-Ordner.
+    exit /b 1
+)
+call npm ci
+if errorlevel 1 exit /b 1
+call npm run build
+if errorlevel 1 exit /b 1
+
+:frontend_ok
 
 
 :: -- 4. Desktop-Verknuepfung --------------------------------------------------

@@ -301,14 +301,13 @@ function extractKlassenStufen(text) {
 
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
 async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined) {
-  const response = await fetch('http://localhost:8789/chat', {
+  const response = await taFetch('/api/v1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       messages,
       profile,
       customEndpoint,
-      customApiKey,
       customModel,
       providerOverride,
       modelOverride,
@@ -320,7 +319,7 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || `Server-Fehler ${response.status}`);
+    throw new Error(window.taApi.errorMessage(err) || `Server-Fehler ${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -342,6 +341,7 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
           case 'chunk': onChunk(parsed.text); break;
           case 'usage': if (onMeta) onMeta('usage', parsed.usage); break;
           case 'dsgvo_warning': if (onMeta) onMeta('dsgvo', parsed); break;
+          case 'privacy': if (onMeta) onMeta('privacy', parsed); break;
           case 'skill': if (onMeta) onMeta('skill', parsed); break;
           case 'provider': if (onMeta) onMeta('provider', parsed); break;
           case 'error': throw new Error(parsed.message);
@@ -413,42 +413,31 @@ function App() {
     try { return JSON.parse(localStorage.getItem('ta_onboarded')) || false; } catch { return false; }
   });
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const [profile, setProfile] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('ta_profile')) || {};
-      return { assistant_name: 'Mila', ...saved };
-    } catch { return { assistant_name: 'Mila' }; }
-  });
-  const [chats, setChats] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('ta_chats'));
-      if (saved && saved.length) return saved;
-    } catch {}
-    return [{ id: 'c1', title: 'Onboarding', messages: [] }];
-  });
-  const [activeChatId, setActiveChatId] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('ta_chats'));
-      return saved?.[0]?.id || 'c1';
-    } catch { return 'c1'; }
-  });
+  const initialState = window.taApi.getBootstrap()?.state || {};
+  const [profile, setProfile] = useState(() => ({ assistant_name: 'Mila', ...(initialState.profile || {}) }));
+  const [chats, setChats] = useState(() => initialState.chats?.length
+    ? initialState.chats
+    : [{ id: crypto.randomUUID(), title: 'Onboarding', messages: [] }]);
+  const [activeChatId, setActiveChatId] = useState(() => initialState.chats?.[0]?.id || null);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('ta_api_key') || '');
+  const [apiKey, setApiKey] = useState('');
+  const [hasApiKey, setHasApiKey] = useState(false);
   const [model, setModel] = useState(() => localStorage.getItem('ta_model') || 'deepseek/deepseek-chat');
   const [apiKeyModalDismissed, setApiKeyModalDismissed] = useState(false);
   const [toolStatus, setToolStatus] = useState('unknown');
   const [ragDocCount, setRagDocCount] = useState(0);
   const [provider, setProvider] = useState(() => localStorage.getItem('ta_provider') || 'openrouter');
-  const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ta_ollama_model') || 'gemma4:e4b');
+  const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ta_ollama_model') || 'gemma3:4b');
   const [ollamaStatus, setOllamaStatus] = useState('unknown');
   const [ollamaModels, setOllamaModels] = useState([]);
   const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
   const [sessionTokens, setSessionTokens] = useState(0);
   const [customEndpoint, setCustomEndpoint] = useState(() => localStorage.getItem('ta_custom_endpoint') || '');
-  const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('ta_custom_apikey') || '');
+  const [customApiKey, setCustomApiKey] = useState('');
+  const [hasCustomApiKey, setHasCustomApiKey] = useState(false);
   const [customModel, setCustomModel] = useState(() => localStorage.getItem('ta_custom_model') || 'gpt-3.5-turbo');
   const [tailscaleStatus, setTailscaleStatus] = useState('unknown');
   const [showStylePopover, setShowStylePopover] = useState(false);
@@ -463,75 +452,73 @@ function App() {
 
   const effectiveProvider = useMemo(() => {
     if (provider === 'openrouter' && openrouterStatus === 'offline' && ollamaStatus === 'online') return 'ollama';
-    if (provider === 'ollama' && ollamaStatus === 'offline' && apiKey && openrouterStatus === 'online') return 'openrouter';
+    if (provider === 'ollama' && ollamaStatus === 'offline' && (hasApiKey || apiKey) && openrouterStatus === 'online') return 'openrouter';
     return provider;
-  }, [provider, openrouterStatus, ollamaStatus, apiKey]);
+  }, [provider, openrouterStatus, ollamaStatus, hasApiKey, apiKey]);
   const isFallbackActive = effectiveProvider !== provider;
   const isDsgvoRouting = dsgvoRoutingActive;
 
   useEffect(() => { localStorage.setItem('ta_dark', JSON.stringify(dark)); }, [dark]);
-  useEffect(() => { localStorage.setItem('ta_profile', JSON.stringify(profile)); }, [profile]);
-  useEffect(() => { localStorage.setItem('ta_chats', JSON.stringify(chats)); }, [chats]);
   useEffect(() => { localStorage.setItem('ta_onboarded', JSON.stringify(onboardingDone)); }, [onboardingDone]);
-  useEffect(() => { localStorage.setItem('ta_api_key', apiKey); }, [apiKey]);
   useEffect(() => { localStorage.setItem('ta_model', model); }, [model]);
   useEffect(() => { localStorage.setItem('ta_provider', provider); }, [provider]);
   useEffect(() => { localStorage.setItem('ta_ollama_model', ollamaModel); }, [ollamaModel]);
   useEffect(() => { localStorage.setItem('ta_custom_endpoint', customEndpoint); }, [customEndpoint]);
-  useEffect(() => { localStorage.setItem('ta_custom_apikey', customApiKey); }, [customApiKey]);
   useEffect(() => { localStorage.setItem('ta_custom_model', customModel); }, [customModel]);
 
-  // Provider-Wahl, API-Key und Custom-Felder an Tool-Server senden
   useEffect(() => {
     if (toolStatus !== 'online') return;
-    fetch('http://localhost:8789/settings', {
-      method: 'POST',
+    const timer = setTimeout(() => {
+      taFetch('/api/v1/state', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile, chats }),
+      }).catch(() => {});
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [toolStatus, profile, chats]);
+
+  // Non-secret settings are persisted as JSON; credentials go to Credential Manager.
+  useEffect(() => {
+    if (toolStatus !== 'online') return;
+    const patch = { provider, ollamaModel, model, customEndpoint, customModel };
+    if (apiKey.trim()) patch.apiKey = apiKey.trim();
+    if (customApiKey.trim()) patch.customApiKey = customApiKey.trim();
+    taFetch('/api/v1/settings', {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel }),
+      body: JSON.stringify(patch),
+    }).then(r => r.json()).then(data => {
+      const next = data.settings || data;
+      setHasApiKey(Boolean(next.hasApiKey));
+      setHasCustomApiKey(Boolean(next.hasCustomApiKey));
+      if (apiKey) setApiKey('');
+      if (customApiKey) setCustomApiKey('');
     }).catch(() => {});
   }, [toolStatus, provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel]);
 
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
-      // Tool-Server
+      // Same-origin bootstrap establishes the session and reports local capabilities.
       try {
-        const res = await fetch('http://localhost:8789/health', { signal: AbortSignal.timeout(2000) });
+        const boot = await window.taApi.bootstrap();
         if (cancelled) return;
-        if (res.ok) {
-          setToolStatus('online');
-          const col = await fetch('http://localhost:8789/collections').then(r => r.json()).catch(() => ({}));
-          if (!cancelled) setRagDocCount(col.chunks || 0);
-        } else {
-          if (!cancelled) setToolStatus('offline');
-        }
+        const settings = boot.settings || {};
+        setToolStatus('online');
+        setHasApiKey(Boolean(settings.hasApiKey));
+        setHasCustomApiKey(Boolean(settings.hasCustomApiKey));
+        setProvider(settings.provider || 'openrouter');
+        setModel(settings.model || 'deepseek/deepseek-chat');
+        setOllamaModel(settings.ollamaModel || 'gemma3:4b');
+        setCustomEndpoint(settings.customEndpoint || '');
+        setCustomModel(settings.customModel || 'gpt-3.5-turbo');
+        setOllamaStatus(boot.capabilities?.ollama ? 'online' : 'offline');
+        setOpenrouterStatus(settings.hasApiKey ? 'online' : 'unknown');
+        const col = await taFetch('/api/v1/collections').then(r => r.json()).catch(() => ({}));
+        if (!cancelled) setRagDocCount(col.chunks || 0);
       } catch {
         if (!cancelled) setToolStatus('offline');
-      }
-      // Ollama
-      try {
-        const res = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(2000) });
-        if (cancelled) return;
-        if (res.ok) {
-          const data = await res.json();
-          const models = (data.models || []).map(m => m.name);
-          if (!cancelled) {
-            setOllamaModels(models);
-            setOllamaStatus('online');
-            setOllamaModel(prev => models.includes(prev) ? prev : (models[0] || prev));
-          }
-        } else {
-          if (!cancelled) setOllamaStatus('offline');
-        }
-      } catch {
-        if (!cancelled) setOllamaStatus('offline');
-      }
-      // OpenRouter-Erreichbarkeit (reiner Netzwerk-Check, kein API-Call)
-      try {
-        await fetch('https://openrouter.ai', { method: 'HEAD', mode: 'no-cors', signal: AbortSignal.timeout(4000) });
-        if (!cancelled) setOpenrouterStatus('online');
-      } catch {
-        if (!cancelled) setOpenrouterStatus('offline');
       }
     };
     check();
@@ -570,7 +557,7 @@ function App() {
     }, delay);
   }, [activeChatId, addMessage]);
 
-  const handleSend = useCallback(async (overrideText, skipDsgvo = false) => {
+  const handleSend = useCallback(async (overrideText, skillId = '') => {
     const text = (overrideText || inputValue).trim();
 
     // Leer-Enter im Onboarding: optionale Schritte überspringen
@@ -723,7 +710,7 @@ function App() {
       const model = pullMatch[1].trim();
       addMessage(activeChatId, { role: 'bot', text: `⏳ Lade **${model}** über Ollama herunter… Das kann einige Minuten dauern.`, ts: Date.now() });
       try {
-        const res = await fetch('http://localhost:8789/ollama-pull', {
+        const res = await taFetch('http://localhost:8789/ollama-pull', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model }),
@@ -772,7 +759,7 @@ function App() {
       return;
     }
 
-    if (provider === 'openrouter' && !apiKey && effectiveProvider !== 'ollama') {
+    if (provider === 'openrouter' && !hasApiKey && !apiKey && effectiveProvider !== 'ollama') {
       setTimeout(() => {
         addMessage(activeChatId, {
           role: 'bot',
@@ -823,7 +810,9 @@ function App() {
         setStreamingText(fullText);
       }, (type, data) => {
         if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
-        else if (type === 'dsgvo') {
+        else if (type === 'privacy') {
+          setDsgvoRoutingActive(data.mode === 'local_required');
+        } else if (type === 'dsgvo') {
           if (data.routing === 'dsgvo_local') {
             setDsgvoRoutingActive(true);
           }
@@ -831,7 +820,7 @@ function App() {
             addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
           }
         }
-      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, '', controller.signal);
+      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal);
     } catch (err) {
       if (err && err.name === 'AbortError') {
         aborted = true;
@@ -860,16 +849,16 @@ function App() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const upRes = await fetch('http://localhost:8789/upload', { method: 'POST', body: formData });
+      const upRes = await taFetch('http://localhost:8789/upload', { method: 'POST', body: formData });
       if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
       const { saved } = await upRes.json();
       if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
       setUploadPhase('indexing');
-      const inRes = await fetch('http://localhost:8789/ingest', {
+      const inRes = await taFetch('http://localhost:8789/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: saved[0], source: sourceName }),
+        body: JSON.stringify({ path: saved[0], source: sourceName, classification: 'public_curriculum' }),
       });
       const data = await inRes.json();
       if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
@@ -914,15 +903,15 @@ function App() {
             const sourceName = item.file.name;
             const formData = new FormData();
             formData.append('file', item.file);
-            const upRes = await fetch('http://localhost:8789/upload', { method: 'POST', body: formData });
+            const upRes = await taFetch('http://localhost:8789/upload', { method: 'POST', body: formData });
             if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
             const { saved } = await upRes.json();
             if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
-            const inRes = await fetch('http://localhost:8789/ingest', {
+            const inRes = await taFetch('http://localhost:8789/ingest', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: saved[0], source: sourceName }),
+              body: JSON.stringify({ path: saved[0], source: sourceName, classification: 'public_curriculum' }),
             });
             const data = await inRes.json();
             if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
@@ -945,7 +934,7 @@ function App() {
   const handleClearKnowledge = useCallback(async () => {
     if (!confirm('Gesamte Wissensdatenbank leeren?')) return;
     try {
-      await fetch('http://localhost:8789/clear', { method: 'POST' });
+      await taFetch('http://localhost:8789/clear', { method: 'POST' });
       setRagDocCount(0);
     } catch (err) {
       addMessage(activeChatId, { role: 'bot', text: `⚠️ Löschen fehlgeschlagen: ${err.message}`, ts: Date.now() });
@@ -958,7 +947,7 @@ function App() {
     addMessage(activeChatId, { role: 'user', text: `🔗 PDF herunterladen${track ? ` [${track}-Zweig]` : ''}: ${url}`, ts: Date.now() });
     setIsTyping(true);
     try {
-      const dlRes = await fetch('http://localhost:8789/download-url', {
+      const dlRes = await taFetch('http://localhost:8789/download-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, source: sourceName }),
@@ -966,10 +955,10 @@ function App() {
       const dlData = await dlRes.json();
       if (!dlRes.ok || dlData.error) throw new Error(dlData.error || 'Download fehlgeschlagen');
 
-      const inRes = await fetch('http://localhost:8789/ingest', {
+      const inRes = await taFetch('http://localhost:8789/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: dlData.saved[0], source: dlData.filename }),
+        body: JSON.stringify({ path: dlData.saved[0], source: dlData.filename, classification: 'public_curriculum' }),
       });
       const data = await inRes.json();
       if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
@@ -1020,7 +1009,7 @@ function App() {
     }
 
     try {
-      const res = await fetch('/export-file', {
+      const res = await taFetch('/export-file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, content: text, format }),
@@ -1049,7 +1038,7 @@ function App() {
 
   const handleBackup = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:8789/backup');
+      const res = await taFetch('http://localhost:8789/backup');
       if (!res.ok) throw new Error('Backup fehlgeschlagen');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -1072,7 +1061,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch('http://localhost:8789/restore', { method: 'POST', body: formData });
+      const res = await taFetch('http://localhost:8789/restore', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || 'Restore fehlgeschlagen');
       alert(`✅ ${data.restored} Datei(en) wiederhergestellt.\n\nBitte lade die Seite neu (F5), damit alle Änderungen aktiv werden.`);
@@ -1095,7 +1084,7 @@ function App() {
     addMessage(activeChatId, { role: 'user', text: '📝 Sitzung zusammenfassen und speichern', ts: Date.now() });
     setIsTyping(true);
     try {
-      const res = await fetch('http://localhost:8789/session-summary', {
+      const res = await taFetch('http://localhost:8789/session-summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1106,8 +1095,7 @@ function App() {
           modelOverride: model,
           ollamaModelOverride: ollamaModel,
           customEndpoint,
-          customApiKey,
-          customModel,
+              customModel,
         }),
       });
       const data = await res.json();
@@ -1135,7 +1123,6 @@ function App() {
         if (type === 'provider' && data?.provider) usedProvider = data.provider;
       },
       customEndpoint,
-      customApiKey,
       customModel,
       provider,
       model,
@@ -1162,7 +1149,7 @@ function App() {
   }, [handleNewChat, handleSessionSummary]);
 
   const handleShutdown = useCallback(() => {
-    return fetch('http://localhost:8789/shutdown', { method: 'POST' }).catch(() => {});
+    return taFetch('http://localhost:8789/shutdown', { method: 'POST' }).catch(() => {});
   }, []);
 
   const handleResetOnboarding = useCallback(() => {
@@ -1180,7 +1167,7 @@ function App() {
     setSidebarOpen(false);
   }, []);
 
-  const showApiKeyModal = onboardingDone && provider === 'openrouter' && !apiKey && !apiKeyModalDismissed;
+  const showApiKeyModal = onboardingDone && provider === 'openrouter' && !hasApiKey && !apiKey && !apiKeyModalDismissed;
 
   const currentOnboardingStep = !onboardingDone ? ONBOARDING_STEPS[onboardingStep] : null;
   const isBusy = isTyping || isStreaming;
@@ -1360,7 +1347,7 @@ function App() {
             showDsgvoHint={onboardingDone && effectiveProvider === 'openrouter'}
             showLocalHint={onboardingDone && effectiveProvider === 'ollama'}
             quickActions={onboardingDone && !isBusy && !uploadPhase ? [
-              { label: '📋 Was war letzte Stunde?', onSelect: () => handleSend('Was war in meiner letzten geplanten Unterrichtsstunde? Bitte zeige mir eine kurze Zusammenfassung aus dem Verlaufsprotokoll (vergangene_stunden.md).') },
+              { label: '📋 Was war letzte Stunde?', skill_id: 'unterricht-planen', onSelect: () => handleSend('Was war in meiner letzten geplanten Unterrichtsstunde? Bitte zeige mir eine kurze Zusammenfassung aus dem Verlaufsprotokoll (vergangene_stunden.md).', 'unterricht-planen') },
               { label: '⚡ Vorlagen', onSelect: () => handleNavigate('templates') },
             ] : []}
           />
@@ -1385,7 +1372,7 @@ function App() {
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <SettingsView
             dark={dark} onToggleDark={() => setDark(d => !d)}
-            apiKey={apiKey} onApiKeyChange={setApiKey}
+            apiKey={apiKey} hasApiKey={hasApiKey} onApiKeyChange={setApiKey}
             model={model} onModelChange={setModel}
             onResetOnboarding={handleResetOnboarding}
             toolStatus={toolStatus}
@@ -1400,7 +1387,7 @@ function App() {
             openrouterStatus={openrouterStatus}
             isFallbackActive={isFallbackActive} effectiveProvider={effectiveProvider}
             customEndpoint={customEndpoint} onCustomEndpointChange={setCustomEndpoint}
-            customApiKey={customApiKey} onCustomApiKeyChange={setCustomApiKey}
+            customApiKey={customApiKey} hasCustomApiKey={hasCustomApiKey} onCustomApiKeyChange={setCustomApiKey}
             customModel={customModel} onCustomModelChange={setCustomModel}
             tailscaleStatus={tailscaleStatus}
             onBackup={handleBackup} onRestore={handleRestore}
