@@ -1,6 +1,6 @@
 // Generated production service worker. API traffic is always network-only.
-const CACHE = 'teacherassist-ffd0822f74c4';
-const PRE_CACHE = ["/","/assets/app-Mi8y3exq.js","/assets/components-BEy_cp15.js","/assets/index-CVBNAJMp.js","/assets/jsx-runtime-CdvZGgm7.js","/assets/manifest-DJFCjNqP.json","/assets/teacherassist-BuGrGrqB.ico","/assets/tweaks-panel-C5jvxMYF.js","/index.html"];
+const CACHE = 'teacherassist-287e4cd43e94';
+const PRE_CACHE = ["/","/assets/app-C7WUNHl0.js","/assets/components-CGlARzrP.js","/assets/index-B8GOZRCi.js","/assets/jsx-runtime-CdvZGgm7.js","/assets/manifest-DJFCjNqP.json","/assets/teacherassist-BuGrGrqB.ico","/assets/tweaks-panel-C5jvxMYF.js","/index.html"];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(PRE_CACHE)));

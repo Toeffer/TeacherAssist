@@ -369,8 +369,9 @@ function TypingDots() {
 }
 
 /* ---------- Chat Bubble ---------- */
-function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
+function ChatBubble({ message, isBot, isTyping, onExport, assistantName, memory, onMemoryUndo }) {
   const [exportOpen, setExportOpen] = React.useState(false);
+  const [memoryUndone, setMemoryUndone] = React.useState(false);
 
   if (!isBot) {
     return (
@@ -449,6 +450,28 @@ function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
               ))}
             </div>
           )}
+          </div>
+        )}
+        {memory && memory.items && memory.items.length > 0 && (
+          <div style={{
+            marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)',
+            display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+          }}>
+            <span>🧠 {memoryUndone ? 'Verworfen' : `Gemerkt: ${memory.items.join(', ')}`}</span>
+            {!memoryUndone && onMemoryUndo && (
+              <button
+                onClick={async () => { const ok = await onMemoryUndo(memory); if (ok) setMemoryUndone(true); }}
+                title="Diesen Gedächtniseintrag zurücknehmen"
+                style={{
+                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                  color: 'var(--text-tertiary)', fontSize: 12, textDecoration: 'underline',
+                }}
+                onMouseEnter={e => e.target.style.color = 'var(--accent)'}
+                onMouseLeave={e => e.target.style.color = 'var(--text-tertiary)'}
+              >
+                Rückgängig
+              </button>
+            )}
           </div>
         )}
       </div>

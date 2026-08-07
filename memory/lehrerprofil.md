@@ -1,6 +1,6 @@
 # Lehrerprofil
-> Wird vom Onboarding-Skill automatisch befüllt. Jederzeit manuell anpassbar.
-> Zuletzt aktualisiert: (wird vom Agenten eingetragen)
+> Optionaler lokaler Memory-Kontext; das Web-UI-Profil wird separat verschlüsselt gespeichert.
+> Zuletzt aktualisiert: (noch nicht eingerichtet)
 
 ## Persönliche Angaben
 - **Name:** (noch nicht eingerichtet)
@@ -9,16 +9,17 @@
 - **Schulform:** (noch nicht eingerichtet)
 
 ## Unterrichtsfächer
-
-| Fach | Klassen | Besonderheiten |
-|------|---------|----------------|
-| (noch nicht eingerichtet) | | |
+- (noch nicht eingerichtet – ein Eintrag pro Zeile, z. B. "Mathematik 7a")
 
 ## Klassenbesonderheiten
-(noch nicht eingerichtet)
+- (noch nicht eingerichtet)
 
 ## Methoden-Präferenzen
-(noch nicht eingerichtet)
+- (noch nicht eingerichtet)
+
+## Antwortstil
+- **Ansprache:** (noch nicht eingerichtet – locker | formal)
+- **Ausführlichkeit:** (noch nicht eingerichtet – knapp | ausführlich)
 
 ## Notizen für den Agenten
 (Hier kannst du jederzeit Hinweise ergänzen, die ich immer beachten soll.)

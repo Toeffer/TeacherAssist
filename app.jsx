@@ -344,6 +344,7 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
           case 'privacy': if (onMeta) onMeta('privacy', parsed); break;
           case 'skill': if (onMeta) onMeta('skill', parsed); break;
           case 'provider': if (onMeta) onMeta('provider', parsed); break;
+          case 'memory_saved': if (onMeta) onMeta('memory', parsed); break;
           case 'error': throw new Error(parsed.message);
           case 'done': return;
         }
@@ -447,6 +448,7 @@ function App() {
   const batchRunning = useRef(false);
   const chatContainerRef = useRef(null);
   const chatAbortRef = useRef(null);
+  const letzteAktivitaetRef = useRef(Date.now());
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
 
@@ -546,6 +548,7 @@ function App() {
   }, [activeChatId]);
 
   const addMessage = useCallback((chatId, msg) => {
+    letzteAktivitaetRef.current = Date.now();
     setChats(prev => prev.map(c => c.id === chatId ? { ...c, messages: [...c.messages, msg] } : c));
   }, []);
 
@@ -803,6 +806,7 @@ function App() {
     chatAbortRef.current = controller;
 
     let fullText = '';
+    let memoryInfo = null;
     let aborted = false;
     try {
       await callChatViaServer(currentMessages, profile, (chunk) => {
@@ -810,6 +814,7 @@ function App() {
         setStreamingText(fullText);
       }, (type, data) => {
         if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
+        else if (type === 'memory') memoryInfo = { items: data.items || [], file: data.file };
         else if (type === 'privacy') {
           setDsgvoRoutingActive(data.mode === 'local_required');
         } else if (type === 'dsgvo') {
@@ -834,7 +839,7 @@ function App() {
     setIsStreaming(false);
     setStreamingText('');
     if (!aborted) {
-      addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
+      addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', memory: memoryInfo, ts: Date.now() });
     }
   }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
 
@@ -1075,42 +1080,121 @@ function App() {
     setSidebarOpen(false);
   }, []);
 
-  const handleSessionSummary = useCallback(async () => {
-    const msgs = chats.find(c => c.id === activeChatId)?.messages || [];
-    if (msgs.filter(m => m.role === 'user').length < 2) {
-      addMessage(activeChatId, { role: 'bot', text: 'Es gibt noch nicht genug Nachrichten zum Zusammenfassen. Stelle erst ein paar Fragen.', ts: Date.now() });
+  // Merkt sich je Chat, nach wie vielen Nachrichten zuletzt zusammengefasst wurde.
+  // Das verhindert doppelte Zusammenfassungen bei Tab- und Chatwechseln.
+  const summarizedRef = useRef((() => {
+    try { return JSON.parse(localStorage.getItem('ta_summarized')) || {}; } catch { return {}; }
+  })());
+
+  const runSessionSummary = useCallback(async (chatId, { silent = false } = {}) => {
+    const chat = chats.find(c => c.id === chatId);
+    const msgs = chat?.messages || [];
+    const userCount = msgs.filter(m => m.role === 'user').length;
+    if (userCount < 2) {
+      if (!silent) {
+        addMessage(chatId, { role: 'bot', text: 'Es gibt noch nicht genug Nachrichten zum Zusammenfassen. Stelle erst ein paar Fragen.', ts: Date.now() });
+      }
       return;
     }
-    addMessage(activeChatId, { role: 'user', text: '📝 Sitzung zusammenfassen und speichern', ts: Date.now() });
-    setIsTyping(true);
+
+    const bereits = summarizedRef.current[chatId] || 0;
+    if (silent && userCount - bereits < 2) return;
+    summarizedRef.current[chatId] = userCount;
+    try { localStorage.setItem('ta_summarized', JSON.stringify(summarizedRef.current)); } catch {}
+
+    if (!silent) {
+      addMessage(chatId, { role: 'user', text: '📝 Sitzung zusammenfassen und speichern', ts: Date.now() });
+      setIsTyping(true);
+    }
+
     try {
-      const res = await taFetch('http://localhost:8789/session-summary', {
+      const res = await taFetch('/api/v1/session-summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: msgs,
           profile,
-          apiKey,
           providerOverride: effectiveProvider,
           modelOverride: model,
           ollamaModelOverride: ollamaModel,
           customEndpoint,
-              customModel,
+          customModel,
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        throw new Error(window.taApi.errorMessage(data) || `Server-Fehler ${res.status}`);
+      }
+      if (silent) return;
       setIsTyping(false);
-      if (data.error) throw new Error(data.error);
-      addMessage(activeChatId, {
+      addMessage(chatId, {
         role: 'bot',
         text: `✅ Sitzung gespeichert!\n\n📝 **Zusammenfassung:**\n${data.summary}\n\n*(Im Memory-Editor unter "vergangene_stunden.md" einsehbar)*`,
         ts: Date.now(),
       });
     } catch (err) {
+      if (silent) {
+        summarizedRef.current[chatId] = bereits;
+        try { localStorage.setItem('ta_summarized', JSON.stringify(summarizedRef.current)); } catch {}
+        return;
+      }
       setIsTyping(false);
-      addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler beim Zusammenfassen: ${err.message}`, ts: Date.now() });
+      addMessage(chatId, { role: 'bot', text: `⚠️ Fehler beim Zusammenfassen: ${err.message}`, ts: Date.now() });
     }
-  }, [activeChatId, chats, profile, apiKey, effectiveProvider, model, ollamaModel, customEndpoint, customApiKey, customModel, addMessage]);
+  }, [chats, profile, effectiveProvider, model, ollamaModel, customEndpoint, customModel, addMessage]);
+
+  const handleSessionSummary = useCallback(
+    () => runSessionSummary(activeChatId),
+    [runSessionSummary, activeChatId],
+  );
+
+  // Gedächtniseintrag zurücknehmen – nutzt die vorhandene Versionierung.
+  const handleMemoryUndo = useCallback(async (memory) => {
+    try {
+      const res = await taFetch('/api/v1/memory-restore-version', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: memory?.file || 'begleiter_gedaechtnis.md', version: 1 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      return res.ok && !data.error;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Sitzung bei Chatwechsel, längerer Inaktivität und beim Verlassen des Tabs abschließen.
+  const summaryDepsRef = useRef({ runSessionSummary, activeChatId, toolStatus });
+  summaryDepsRef.current = { runSessionSummary, activeChatId, toolStatus };
+
+  const vorherigerChatRef = useRef(activeChatId);
+  useEffect(() => {
+    const vorher = vorherigerChatRef.current;
+    vorherigerChatRef.current = activeChatId;
+    if (vorher && vorher !== activeChatId && toolStatus === 'online') {
+      runSessionSummary(vorher, { silent: true });
+    }
+  }, [activeChatId, toolStatus, runSessionSummary]);
+
+  useEffect(() => {
+    const LEERLAUF_MS = 20 * 60 * 1000;
+    const tick = setInterval(() => {
+      const { runSessionSummary: run, activeChatId: id, toolStatus: status } = summaryDepsRef.current;
+      if (status !== 'online' || Date.now() - letzteAktivitaetRef.current < LEERLAUF_MS) return;
+      run(id, { silent: true });
+    }, 60 * 1000);
+
+    const onHidden = () => {
+      if (document.visibilityState !== 'hidden') return;
+      const { runSessionSummary: run, activeChatId: id, toolStatus: status } = summaryDepsRef.current;
+      if (status === 'online') run(id, { silent: true });
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    return () => {
+      clearInterval(tick);
+      document.removeEventListener('visibilitychange', onHidden);
+    };
+  }, []);
 
   const handleTestModel = useCallback(async () => {
     let text = '';
@@ -1301,7 +1385,15 @@ function App() {
             display: 'flex', flexDirection: 'column', gap: 14,
           }}>
             {activeChat.messages.map((msg, i) => (
-              <ChatBubble key={i} message={msg.text} isBot={msg.role === 'bot'} onExport={msg.role === 'bot' ? handleExport : undefined} assistantName={profile.assistant_name || 'Mila'} />
+              <ChatBubble
+                key={i}
+                message={msg.text}
+                isBot={msg.role === 'bot'}
+                onExport={msg.role === 'bot' ? handleExport : undefined}
+                assistantName={profile.assistant_name || 'Mila'}
+                memory={msg.memory}
+                onMemoryUndo={handleMemoryUndo}
+              />
             ))}
             {isStreaming && (
               <ChatBubble message={streamingText} isBot isTyping={!streamingText} assistantName={profile.assistant_name || 'Mila'} />

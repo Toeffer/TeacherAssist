@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import tool_server
@@ -62,6 +64,71 @@ def test_memory_zip_destination_accepts_only_memory_paths():
 def test_memory_zip_destination_rejects_traversal():
     with pytest.raises(ValueError):
         tool_server.memory_zip_destination("memory/../app.jsx")
+
+
+def test_memory_update_creates_an_undo_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr(tool_server, "MEMORY_DIR", tmp_path)
+    target = tmp_path / "begleiter_gedaechtnis.md"
+    original = "# Gedächtnis\n> Zuletzt aktualisiert: alt\n\n## Laufende Themen\n(Automatisch aktualisiert)\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = tool_server.apply_memory_updates(
+        "begleiter_gedaechtnis.md",
+        [("Laufende Themen", "- 07.08.2026 · Bruchrechnung · Mathematik · Klasse 7a", 15)],
+    )
+
+    assert result["Laufende Themen"]
+    assert "Bruchrechnung" in target.read_text(encoding="utf-8")
+    assert Path(str(target) + ".bak1").read_text(encoding="utf-8") == original
+
+
+def test_memory_fact_extraction_rejects_personal_context():
+    safe = tool_server.extract_memory_fact(
+        "Plane zum Thema Bruchrechnung für Mathematik in Klasse 7a.",
+        "unterricht_planen",
+        {"faecher": ["Mathematik 7a"]},
+    )
+    personal = tool_server.extract_memory_fact(
+        "Plane zum Thema Bruchrechnung für Schüler Max in Klasse 7a.",
+        "unterricht_planen",
+        {"faecher": ["Mathematik 7a"]},
+    )
+
+    assert safe == "Bruchrechnung · Mathematik · Klasse 7a"
+    assert personal is None
+
+
+def test_stream_emits_memory_event_before_done(monkeypatch):
+    class FakeResponse:
+        def __init__(self):
+            self._chunks = [
+                b'data: {"choices":[{"delta":{"content":"Hallo"}}]}\n\ndata: [DONE]\n\n',
+                b"",
+            ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _size):
+            return self._chunks.pop(0)
+
+    events = []
+    monkeypatch.setattr(tool_server.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    monkeypatch.setattr(tool_server, "_send_sse", lambda _wfile, event: events.append(event))
+
+    answer = tool_server.stream_llm(
+        messages=[{"role": "user", "text": "Hallo"}],
+        profile={},
+        settings={"provider": "ollama", "ollamaModel": "test"},
+        wfile=object(),
+        on_success=lambda: {"type": "memory_saved", "items": ["Test"]},
+    )
+
+    assert answer == "Hallo"
+    assert [event["type"] for event in events][-3:] == ["chunk", "memory_saved", "done"]
 
 
 # ---------------------------------------------------------------------------

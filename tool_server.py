@@ -286,6 +286,225 @@ def load_memory_context():
         parts.append(begleiter.read_text("utf-8"))
     return "\n\n".join(parts)
 
+
+# ---------------------------------------------------------------------------
+# Lokales Begleiter-Gedächtnis
+# ---------------------------------------------------------------------------
+_PLACEHOLDER_RE = re.compile(r"^[\(\[].*[\)\]]$")
+_memory_update_lock = threading.Lock()
+
+
+def _memory_path(filename):
+    target = (MEMORY_DIR / filename).resolve()
+    try:
+        target.relative_to(MEMORY_DIR.resolve())
+    except ValueError as exc:
+        raise ValueError("Zugriff verweigert") from exc
+    return target
+
+
+def _split_memory_sections(text):
+    sections, heading, body = [], "", []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            sections.append((heading, body))
+            heading, body = line.strip(), []
+        else:
+            body.append(line)
+    sections.append((heading, body))
+    return sections
+
+
+def _join_memory_sections(sections):
+    output = []
+    for heading, body in sections:
+        if heading:
+            output.append(heading)
+        output.extend(body)
+    return "\n".join(output)
+
+
+def _clean_memory_lines(lines):
+    """Remove template placeholders while retaining actual memory entries."""
+    lines = list(lines)
+    table_noise = set()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") and set(stripped) <= {"-", "|", " ", ":"}:
+            table_noise.add(index)
+            if index:
+                table_noise.add(index - 1)
+
+    output = []
+    for index, line in enumerate(lines):
+        if index in table_noise:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ">")):
+            continue
+        core = stripped.lstrip("*- ").strip().replace("**", "")
+        value = core.split(":", 1)[1].strip() if ":" in core else core
+        if not value or _PLACEHOLDER_RE.match(value):
+            continue
+        output.append(stripped)
+    return output
+
+
+def _normalize_memory_entry(line):
+    normalized = line.strip().lstrip("-* ").strip().lower()
+    normalized = re.sub(r"^\d{1,2}\.\d{1,2}\.\d{2,4}\s*[·\-–—:]?\s*", "", normalized)
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _apply_memory_section(text, section, lines, cap=15):
+    lines = [line.strip() for line in ([lines] if isinstance(lines, str) else lines) if line and line.strip()]
+    if not lines:
+        return text, []
+    sections = _split_memory_sections(text)
+    wanted = f"## {section}".lower()
+    for index, (heading, body) in enumerate(sections):
+        if heading.lower() != wanted:
+            continue
+        kept = _clean_memory_lines(body)
+        known = {_normalize_memory_entry(line) for line in kept}
+        added = []
+        for line in lines:
+            normalized = _normalize_memory_entry(line)
+            if normalized in known:
+                continue
+            kept.append(line)
+            known.add(normalized)
+            added.append(line)
+        if cap and len(kept) > cap:
+            kept = kept[-cap:]
+        sections[index] = (heading, [""] + kept + [""])
+        return _join_memory_sections(sections), added
+    sections.append((f"## {section}", [""] + lines + [""]))
+    return _join_memory_sections(sections), list(lines)
+
+
+MEMORY_MILESTONE_LABELS = {
+    "unterricht_planen": "Gemeinsam geplante Stunden",
+    "reihenplanung": "Gemeinsam geplante Stunden",
+    "vertretungsstunde": "Gemeinsam geplante Stunden",
+    "bewertung_erstellen": "Erstellte Bewertungsraster",
+    "pruefung_erstellen": "Erstellte Bewertungsraster",
+    "schuelerarbeit_bewerten": "Korrigierte Schülerarbeiten",
+}
+
+
+def _apply_memory_milestone(text, skill_name):
+    label = MEMORY_MILESTONE_LABELS.get(skill_name or "")
+    if not label:
+        return text
+    today = time.strftime("%d.%m.%Y")
+    sections = _split_memory_sections(text)
+    for index, (heading, body) in enumerate(sections):
+        if heading.lower() != "## meilensteine":
+            continue
+        updated, found = [], False
+        for line in body:
+            match = re.match(r"^(\s*-\s*" + re.escape(label) + r":\s*)(\d+)\s*$", line, re.I)
+            if match:
+                updated.append(f"{match.group(1)}{int(match.group(2)) + 1}")
+                found = True
+            elif re.match(r"^\s*-\s*Zusammen seit:", line, re.I) and not _clean_memory_lines([line]):
+                updated.append(f"- Zusammen seit: {today}")
+            else:
+                updated.append(line)
+        if not found:
+            updated.append(f"- {label}: 1")
+        sections[index] = (heading, updated)
+        return _join_memory_sections(sections)
+    sections.append(("## Meilensteine", ["", f"- {label}: 1", f"- Zusammen seit: {today}", ""]))
+    return _join_memory_sections(sections)
+
+
+def _rotate_memory_backups(filepath):
+    if not filepath.exists():
+        return
+    backups = [Path(str(filepath) + f".bak{number}") for number in range(1, 4)]
+    if backups[1].exists():
+        shutil.copy2(backups[1], backups[2])
+    if backups[0].exists():
+        shutil.copy2(backups[0], backups[1])
+    shutil.copy2(filepath, backups[0])
+
+
+def apply_memory_updates(filename, updates, milestone_skill=None):
+    """Apply one atomic, undoable update to a Markdown memory file."""
+    target = _memory_path(filename)
+    today = time.strftime("%d.%m.%Y")
+    with _memory_update_lock:
+        if target.exists():
+            text = target.read_text("utf-8")
+        else:
+            title = filename.replace(".md", "").replace("_", " ").capitalize()
+            text = f"# {title}\n> Zuletzt aktualisiert: {today}\n"
+        original = text
+        result = {}
+        for section, lines, cap in updates:
+            text, added = _apply_memory_section(text, section, lines, cap)
+            if added:
+                result[section] = added
+        text = _apply_memory_milestone(text, milestone_skill)
+        if text == original:
+            return {}
+        if "Zuletzt aktualisiert:" in text:
+            text = re.sub(r"^(>\s*Zuletzt aktualisiert:).*$", rf"\1 {today}", text, count=1, flags=re.M)
+        else:
+            text = f"> Zuletzt aktualisiert: {today}\n{text}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_memory_backups(target)
+        target.write_text(text.rstrip() + "\n", encoding="utf-8")
+        return result
+
+
+STANDARD_SUBJECTS = (
+    "Mathematik", "Deutsch", "Englisch", "Französisch", "Latein", "Spanisch",
+    "Biologie", "Chemie", "Physik", "Informatik", "Geschichte", "Erdkunde",
+    "Geografie", "Geographie", "Politik", "Sozialkunde", "Wirtschaft", "Religion",
+    "Ethik", "Philosophie", "Kunst", "Musik", "Sport", "Werken", "Technik",
+    "Sachunterricht", "Naturwissenschaften",
+)
+_CLASS_RE = re.compile(r"\b(?:klasse|kl\.|jahrgang|jgst\.?|stufe)\s*(1[0-3]|[1-9])\s*([a-eA-E])?\b", re.I)
+_SHORT_CLASS_RE = re.compile(r"\b(1[0-3]|[1-9])([a-eA-E])\b")
+_TOPIC_RE = re.compile(r"(?:zum\s+thema|zum\s+themenbereich|über\s+das\s+thema|thema)\s+[\"„»]?([^,.;:!?\n\"“«]{3,60})", re.I)
+_TOPIC_FALLBACK_RE = re.compile(r"\b(?:zur|zum|über|behandeln|einführung\s+in)\s+(?:die|der|das|den|dem)?\s*([A-ZÄÖÜ][\wäöüß\-]{3,40}(?:\s+[A-ZÄÖÜ][\wäöüß\-]{2,30})?)")
+_TOPIC_STOP_RE = re.compile(r"\s+(?:für|in|mit|bei|von|als|und|klasse|kl\.|jahrgang|stufe)\b.*$", re.I)
+
+
+def extract_memory_fact(user_text, skill_name, profile):
+    """Extract a conservative, non-personal lesson fact without another model call."""
+    text = (user_text or "").strip()
+    if not text or skill_name in SENSITIVE_SKILLS:
+        return None
+    candidates = list(STANDARD_SUBJECTS)
+    for item in (profile or {}).get("faecher", []) or []:
+        first = re.split(r"[\s,;/]+", str(item).strip())
+        if first and first[0]:
+            candidates.insert(0, first[0])
+    privacy_text = text
+    for candidate in candidates:
+        privacy_text = re.sub(r"\b" + re.escape(candidate) + r"\w*", "", privacy_text, flags=re.I)
+    if findings_for(privacy_text):
+        return None
+    match = _CLASS_RE.search(text) or _SHORT_CLASS_RE.search(text)
+    school_class = match.group(1) + (match.group(2) or "").lower() if match else ""
+    subject = next((candidate for candidate in candidates if re.search(r"\b" + re.escape(candidate) + r"\w*", text, re.I)), "")
+    match = _TOPIC_RE.search(text) or _TOPIC_FALLBACK_RE.search(text)
+    topic = _TOPIC_STOP_RE.sub("", match.group(1).strip()).strip(" -–—·:,") if match else ""
+    if subject and topic.lower() == subject.lower():
+        topic = ""
+    if len(topic) < 3:
+        topic = ""
+    if not topic and not (subject and school_class):
+        return None
+    if not skill_name and not (school_class and topic):
+        return None
+    entry = " · ".join(part for part in (topic, subject, f"Klasse {school_class}" if school_class else "") if part)
+    return None if findings_for(entry) else entry
+
 # ---------------------------------------------------------------------------
 # System-Prompt
 # ---------------------------------------------------------------------------
@@ -511,6 +730,7 @@ def stream_llm(
     wfile=None,
     skill_name=None,
     privacy_decision=None,
+    on_success=None,
 ):
     """Stream one request while enforcing the complete-payload privacy decision."""
     decision = privacy_decision or decide_privacy(
@@ -621,7 +841,7 @@ def stream_llm(
 
     _send_sse(wfile, {"type": "provider", "provider": effective_provider})
     full_text = []
-    done_sent = False
+    completed = False
     try:
         request = urllib.request.Request(
             endpoint,
@@ -643,8 +863,7 @@ def stream_llm(
                         continue
                     raw = line[6:].strip()
                     if raw == "[DONE]":
-                        _send_sse(wfile, {"type": "done"})
-                        done_sent = True
+                        completed = True
                         return "".join(full_text)
                     try:
                         parsed = json.loads(raw)
@@ -656,12 +875,19 @@ def stream_llm(
                         _send_sse(wfile, {"type": "chunk", "text": content})
                     if parsed.get("usage"):
                         _send_sse(wfile, {"type": "usage", "usage": parsed["usage"]})
+        completed = True
     except Exception:
         logger.exception("Provider request failed provider=%s", effective_provider)
         _send_sse(wfile, {"type": "error", "code": "PROVIDER_ERROR", "message": "Der Modellaufruf ist fehlgeschlagen."})
     finally:
-        if not done_sent:
-            _send_sse(wfile, {"type": "done"})
+        if completed and on_success:
+            try:
+                event = on_success()
+                if event:
+                    _send_sse(wfile, event)
+            except Exception:
+                logger.exception("Post-stream memory update failed")
+        _send_sse(wfile, {"type": "done"})
     return "".join(full_text)
 
 
@@ -952,6 +1178,32 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             rag_context=rag_context,
         )
 
+        memory_fact = extract_memory_fact(last_user, skill_id, profile)
+
+        def remember_successful_request():
+            updates = []
+            if memory_fact:
+                updates.append((
+                    "Laufende Themen",
+                    f"- {time.strftime('%d.%m.%Y')} · {memory_fact}",
+                    15,
+                ))
+            if not updates and not skill_id:
+                return None
+            result = apply_memory_updates(
+                "begleiter_gedaechtnis.md",
+                updates,
+                milestone_skill=skill_id,
+            )
+            added = result.get("Laufende Themen", [])
+            if not added:
+                return None
+            return {
+                "type": "memory_saved",
+                "items": [memory_fact],
+                "file": "begleiter_gedaechtnis.md",
+            }
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -968,6 +1220,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             wfile=self.wfile,
             skill_name=skill_id,
             privacy_decision=decision,
+            on_success=remember_successful_request,
         )
 
     def _storage_error(self, action):
