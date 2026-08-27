@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import tesseract_setup
+
 
 SETTINGS_KEYS = {
     "schemaVersion",
@@ -23,6 +25,25 @@ SETTINGS_KEYS = {
     "customEndpoint",
     "customModel",
     "chatPersistence",
+    "ocrEngines",
+    "ocrVisionModel",
+    "ocrHtrModel",
+    "ocrPaddleModel",
+    "ocrPaddleBackend",
+    "ocrTargetDpi",
+    "ocrMinAgreement",
+    "ocrMinConfidence",
+    "ocrSubject",
+    "ocrLanguage",
+    "ocrRetentionDays",
+    "ocrDeleteAfterApproval",
+    "ocrAutoApproveNonStudent",
+    "ocrDevice",
+    "ocrRequireEngines",
+    "ocrMaxPages",
+    "ocrVerifyEngines",
+    "ocrMaxVerifyRegions",
+    "ocrVlmTimeoutS",
 }
 DEFAULT_SETTINGS = {
     "schemaVersion": 2,
@@ -32,6 +53,29 @@ DEFAULT_SETTINGS = {
     "customEndpoint": "",
     "customModel": "gpt-3.5-turbo",
     "chatPersistence": True,
+    "ocrEngines": ["tesseract"],     # htr/ollama_vlm land in Stufen 6-7
+    "ocrVisionModel": "qwen3-vl:8b",
+    "ocrHtrModel": "fhswf/TrOCR_german_handwritten",
+    "ocrPaddleModel": "PaddlePaddle/PaddleOCR-VL-1.6",
+    "ocrPaddleBackend": "auto",
+    "ocrTargetDpi": 350,
+    "ocrMinAgreement": 0.98,
+    "ocrMinConfidence": 0.75,
+    "ocrSubject": "",
+    "ocrLanguage": "deu",
+    "ocrRetentionDays": 7,
+    "ocrDeleteAfterApproval": False,
+    "ocrAutoApproveNonStudent": False,
+    "ocrDevice": "auto",
+    "ocrRequireEngines": [],
+    "ocrMaxPages": 40,
+    # Leer = keine Verhaltensaenderung: eine als "verify_engines" benannte
+    # Engine laeuft weiterhin auf jeder Region, bis eine Lehrkraft dies
+    # ausdruecklich einschaltet (siehe pipeline.py:PipelineConfig-Docstring
+    # und engines/ollama_vlm.py Moduldoc "GEMESSENE LAUFZEIT").
+    "ocrVerifyEngines": [],
+    "ocrMaxVerifyRegions": 12,
+    "ocrVlmTimeoutS": 240,
 }
 
 
@@ -43,6 +87,7 @@ class RuntimePaths:
     exports: Path
     logs: Path
     chroma: Path
+    ocr: Path
     settings: Path
     encrypted_state: Path
     migration_manifest: Path
@@ -65,13 +110,14 @@ class RuntimePaths:
             exports=root / "exports",
             logs=root / "logs",
             chroma=root / "chroma_db",
+            ocr=root / "ocr",
             settings=root / "settings.json",
             encrypted_state=root / "state.enc",
             migration_manifest=root / "migration-v2.json",
         )
 
     def ensure(self, template_memory: Path | None = None) -> None:
-        for directory in (self.root, self.memory, self.uploads, self.exports, self.logs, self.chroma):
+        for directory in (self.root, self.memory, self.uploads, self.exports, self.logs, self.chroma, self.ocr):
             directory.mkdir(parents=True, exist_ok=True)
         if template_memory and template_memory.is_dir():
             for source in template_memory.rglob("*"):
@@ -215,6 +261,7 @@ class SettingsStore:
                     current[key] = patch[key]
             if current.get("provider") not in {"openrouter", "ollama", "custom"}:
                 raise ValueError("Unsupported provider")
+            self._sanitize_ocr_settings(current)
 
             if isinstance(patch.get("apiKey"), str) and patch["apiKey"].strip():
                 self.credentials.set(CredentialStore.OPENROUTER, patch["apiKey"])
@@ -227,6 +274,41 @@ class SettingsStore:
 
             self._write(current)
             return self.public()
+
+    def _sanitize_ocr_settings(self, current: dict[str, Any]) -> None:
+        """Clamps/validates the OCR settings keys (Stufe 5 of the OCR
+        refactor's HTTP layer), mirroring the provider check above -- but
+        an invalid value here falls back to its documented default instead
+        of rejecting the whole update, so one bad OCR field can't lock a
+        teacher out of saving the rest of the settings page.
+
+        The ENGINE_FACTORIES import stays local to this method (not at
+        module level): teacherassist_core/__init__.py imports this module
+        before teacherassist_core.ocr exists, and the OCR package's own
+        import contract (teacherassist_core/ocr/engines/__init__.py) wants
+        importing it to stay a fast, deliberate action, not an automatic
+        side effect of every settings save."""
+        from .ocr.engines import ENGINE_FACTORIES
+
+        if current.get("ocrTargetDpi") not in {200, 350, 600}:
+            current["ocrTargetDpi"] = DEFAULT_SETTINGS["ocrTargetDpi"]
+
+        for key in ("ocrMinAgreement", "ocrMinConfidence"):
+            value = current.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not (0.5 <= value <= 1.0):
+                current[key] = DEFAULT_SETTINGS[key]
+
+        retention = current.get("ocrRetentionDays")
+        if isinstance(retention, bool) or not isinstance(retention, int) or not (0 <= retention <= 365):
+            current["ocrRetentionDays"] = DEFAULT_SETTINGS["ocrRetentionDays"]
+
+        for key in ("ocrEngines", "ocrRequireEngines", "ocrVerifyEngines"):
+            value = current.get(key)
+            if not isinstance(value, list) or not all(isinstance(v, str) and v in ENGINE_FACTORIES for v in value):
+                current[key] = list(DEFAULT_SETTINGS[key])
+
+        if current.get("ocrDevice") not in {"auto", "cpu", "cuda"}:
+            current["ocrDevice"] = DEFAULT_SETTINGS["ocrDevice"]
 
     def _write(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -286,4 +368,5 @@ def capability_status() -> dict[str, bool]:
         "rag": available("chromadb") and available("sentence_transformers"),
         "credentialStore": available("keyring"),
         "encryptedStorage": available("cryptography"),
+        "ocrTesseract": available("pytesseract") and tesseract_setup.tesseract_binary() is not None,
     }

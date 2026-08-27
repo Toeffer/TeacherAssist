@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import tool_server
+from conftest import stub_ollama_vlm_factory
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -57,6 +58,11 @@ def isolated_server(tmp_path, monkeypatch):
     )
     # Avoid a real network round-trip to a possibly-absent local Ollama during bootstrap.
     monkeypatch.setattr(tool_server, "check_ollama", lambda: False)
+    # ocr_capability_status() (called from bootstrap) independently builds
+    # ENGINE_FACTORIES["ollama_vlm"] and calls .status() on it -- a SEPARATE
+    # real network call that the check_ollama stub above does not cover
+    # (see tests/conftest.py::stub_ollama_vlm_factory).
+    stub_ollama_vlm_factory(monkeypatch)
 
     # tool_server.logger's RotatingFileHandler is bound to the real LOG_DIR at import
     # time, before this fixture ever runs, so monkeypatching LOG_DIR above does not
@@ -140,6 +146,67 @@ def test_bootstrap_issues_session_then_csrf_gate_blocks_and_allows_api_v1(isolat
         conn.close()
 
 
+def test_camera_permission_is_granted_to_self(isolated_server):
+    """Regression test for the bugfix in tool_server.py ToolHandler.end_headers
+    (~line 693): the Permissions-Policy header used to ship `camera=()`, which
+    disables the Camera API for this origin outright, so the app's own
+    CameraModal (components.jsx:2792) could never call getUserMedia() and always
+    got NotAllowedError regardless of OS/browser permission. Hits a real, public
+    endpoint through the actual HTTP server and asserts the live response header
+    grants the camera to 'self' and no longer carries the disabling `camera=()`."""
+    port = isolated_server
+    host_header = f"localhost:{port}"
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", "/api/v1/bootstrap", headers={"Host": host_header})
+        response = conn.getresponse()
+        response.read()
+        assert response.status == 200
+
+        permissions_policy = response.getheader("Permissions-Policy")
+        assert permissions_policy is not None
+        assert "camera=(self)" in permissions_policy
+        assert "camera=()" not in permissions_policy
+    finally:
+        conn.close()
+
+
+def test_bootstrap_exposes_ocr_capabilities(isolated_server):
+    """/api/v1/bootstrap (tool_server.py:~813) must merge
+    ocr_capability_status() into "capabilities" and expose the richer
+    per-engine list as a top-level "ocrEngines" sibling (Stufe 2 of the OCR
+    refactor, teacherassist_core/ocr/engines/__init__.py:
+    ocr_capability_status/available_engines). The flat bool map drives
+    simple feature gating; ocrEngines carries the "reason" strings Stufe 9's
+    settings UI needs to explain e.g. a missing Tesseract binary."""
+    port = isolated_server
+    host_header = f"localhost:{port}"
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", "/api/v1/bootstrap", headers={"Host": host_header})
+        response = conn.getresponse()
+        body = response.read()
+        assert response.status == 200
+    finally:
+        conn.close()
+
+    payload = json.loads(body)
+    capabilities = payload["capabilities"]
+    for key in ("ocrTesseract", "ocrHtr", "ocrVlm", "ocrPaddle", "ocrConsensus"):
+        assert key in capabilities
+        assert isinstance(capabilities[key], bool)
+
+    ocr_engines = payload["ocrEngines"]
+    assert isinstance(ocr_engines, list) and ocr_engines
+    for engine_status in ocr_engines:
+        assert "name" in engine_status
+        assert "available" in engine_status
+        assert "reason" in engine_status
+        assert "modelId" in engine_status
+
+
 def test_start_bat_health_probe_matches_versioned_route():
     """Regression test: start.bat's health probe once silently drifted to a bare
     /health path while tool_server.py's real route is /api/v1/health, which broke
@@ -157,3 +224,129 @@ def test_tool_server_still_defines_the_versioned_health_route():
     contract, so a route rename shows up here even if start.bat isn't touched."""
     source = Path(tool_server.__file__).read_text(encoding="utf-8")
     assert 'route == "/api/v1/health"' in source
+
+
+def test_ocr_image_no_longer_hardcodes_vlm_discovery():
+    """Source-contract regression test for the Stufe-5 rewrite of _ocr_image
+    (tool_server.py): the inline Ollama-VLM model-discovery list (which
+    included the literal "granite3.2-vision") and the ollamaModel
+    text-model fallback used AS AN IMAGE MODEL are both gone -- OCR now goes
+    exclusively through teacherassist_core.ocr.pipeline.process_single_image_sync.
+
+    "granite3.2-vision" had no other legitimate use in this file and must be
+    gone entirely. "gemma3:4b" is different: it is ALSO the general Ollama
+    chat-model default used by stream_llm()'s ollama branch and the
+    session-summary helpers -- unrelated, pre-existing functionality this
+    Stufe does not touch -- so this test only asserts it is gone from
+    _ocr_image's own body, not from the whole file."""
+    source = Path(tool_server.__file__).read_text(encoding="utf-8")
+    assert "granite3.2-vision" not in source
+
+    start = source.index("def _ocr_image(self):")
+    end = source.index("\n    def ", start + 1)
+    ocr_image_body = source[start:end]
+    assert "gemma3:4b" not in ocr_image_body
+    assert "qwen3-vl" not in ocr_image_body
+    assert "minicpm-v" not in ocr_image_body
+
+
+def test_new_ocr_settings_survive_round_trip(isolated_server):
+    """Regression test for the SETTINGS_KEYS-allowlist trap called out in the
+    Stufe-5 task (runtime.py: SettingsStore._write rebuilds its payload from
+    SETTINGS_KEYS, so a key added only to DEFAULT_SETTINGS but not to
+    SETTINGS_KEYS is silently discarded on the very next save). Saves every
+    OCR settings key added in this Stufe with a non-default, valid value,
+    then re-reads /api/v1/settings on a FRESH request/connection (simulating
+    a reload) and asserts every value survived."""
+    port = isolated_server
+    host_header = f"localhost:{port}"
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", "/api/v1/bootstrap", headers={"Host": host_header})
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        csrf_token = body["csrfToken"]
+        cookie_value = response.getheader("Set-Cookie").split(";", 1)[0]
+    finally:
+        conn.close()
+
+    patch = {
+        "ocrEngines": ["fake"],
+        "ocrVisionModel": "custom-vision-model",
+        "ocrHtrModel": "custom-htr-model",
+        "ocrPaddleModel": "custom-paddle-model",
+        "ocrPaddleBackend": "cpu",
+        "ocrTargetDpi": 600,
+        "ocrMinAgreement": 0.9,
+        "ocrMinConfidence": 0.6,
+        "ocrSubject": "Physik",
+        "ocrLanguage": "eng",
+        "ocrRetentionDays": 30,
+        "ocrDeleteAfterApproval": True,
+        "ocrAutoApproveNonStudent": True,
+        "ocrDevice": "cpu",
+        "ocrRequireEngines": ["fake"],
+        "ocrMaxPages": 10,
+    }
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request(
+            "POST", "/api/v1/settings",
+            body=json.dumps(patch).encode("utf-8"),
+            headers={
+                "Host": host_header,
+                "Cookie": cookie_value,
+                "X-CSRF-Token": csrf_token,
+                "Content-Type": "application/json",
+            },
+        )
+        response = conn.getresponse()
+        assert response.status == 200
+        saved = json.loads(response.read())["settings"]
+        for key, value in patch.items():
+            assert saved[key] == value, f"{key} did not round-trip through the save response"
+    finally:
+        conn.close()
+
+    # Fresh connection/request -- proves it was actually persisted, not just
+    # echoed back from the in-memory patch of the POST handler.
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request(
+            "GET", "/api/v1/settings",
+            headers={"Host": host_header, "Cookie": cookie_value, "X-CSRF-Token": csrf_token},
+        )
+        response = conn.getresponse()
+        assert response.status == 200
+        reloaded = json.loads(response.read())
+        for key, value in patch.items():
+            assert reloaded[key] == value, f"{key} was dropped on reload (SETTINGS_KEYS allowlist trap)"
+    finally:
+        conn.close()
+
+
+def test_static_files_serves_ocr_ui_and_camera_modal_moved_out_of_components():
+    """Source-contract regression test for the Stufe-9 OCR review UI move.
+
+    tool_server.py's STATIC_FILES map must serve the new ocr-ui.jsx (needed
+    for the unbuilt dev-serving mode; _static() at :802 prefers web_dist/ if
+    present, see its docstring/comment), and CameraModal must no longer be
+    defined in components.jsx -- it now lives in ocr-ui.jsx and is exposed as
+    window.CameraModal (see ocr-ui.jsx's trailing Object.assign(window, ...)).
+    The call site in components.jsx (ChatInput) is intentionally unchanged:
+    it references the bare identifier CameraModal, which resolves against the
+    global object at render time once ocr-ui.jsx has run (src/main.jsx loads
+    it before components.jsx)."""
+    assert tool_server.STATIC_FILES.get("/ocr-ui.jsx") == "ocr-ui.jsx"
+
+    components_source = (REPO_ROOT / "components.jsx").read_text(encoding="utf-8")
+    assert "function CameraModal(" not in components_source
+    # The call site must still be present and untouched.
+    assert "<CameraModal" in components_source
+
+    ocr_ui_source = (REPO_ROOT / "ocr-ui.jsx").read_text(encoding="utf-8")
+    assert "function CameraModal(" in ocr_ui_source
+    assert "CameraModal" in ocr_ui_source and "window" in ocr_ui_source
+    assert "Object.assign(window" in ocr_ui_source

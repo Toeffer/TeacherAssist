@@ -89,6 +89,30 @@ schreibt zur Laufzeit ausschliesslich unter `<root>/memory/`.
 
 ---
 
+## Einstellungen (`settings.json`, `SETTINGS_KEYS`)
+
+`teacherassist_core/runtime.py: SETTINGS_KEYS` ist die **Allowlist**, gegen die
+`SettingsStore` jeden gespeicherten Schlüssel filtert (`_write`, `public`,
+`migrate_legacy_settings` – siehe deren Aufrufstellen in `runtime.py`). Die
+OCR-Konsens-Pipeline hat folgende Schlüssel zu `SETTINGS_KEYS`/`DEFAULT_SETTINGS`
+hinzugefügt:
+
+`ocrEngines`, `ocrVisionModel`, `ocrHtrModel`, `ocrPaddleModel`,
+`ocrPaddleBackend`, `ocrTargetDpi`, `ocrMinAgreement`, `ocrMinConfidence`,
+`ocrSubject`, `ocrLanguage`, `ocrRetentionDays`, `ocrDeleteAfterApproval`,
+`ocrAutoApproveNonStudent`, `ocrDevice`, `ocrRequireEngines`, `ocrMaxPages`,
+`ocrVerifyEngines`, `ocrMaxVerifyRegions`, `ocrVlmTimeoutS`.
+
+**Die Allowlist-Falle (hat dieses Projekt schon einmal gebissen, wird es
+wieder tun):** Ein Schlüssel, der nur in `DEFAULT_SETTINGS` steht, aber
+NICHT in `SETTINGS_KEYS`, wird beim allernächsten Speichern still
+verworfen – kein Fehler, keine Warnung, der Wert ist nach dem nächsten
+`POST`/`PATCH /api/v1/settings` einfach wieder weg. Jeder neue
+Einstellungs-Schlüssel muss in **beide** Strukturen eingetragen werden.
+Regressionstest: `tests/test_http_api.py::test_new_ocr_settings_survive_round_trip`.
+
+---
+
 ## Tech-Stack
 
 | Schicht | Technologie | Zweck |
@@ -129,7 +153,9 @@ TeacherAssist/
 │   ├── runtime.py                  ← RuntimePaths, SettingsStore, CredentialStore
 │   ├── storage.py                  ← EncryptedStateStore (Fernet, Chats + Profil)
 │   ├── skills.py                   ← SkillRegistry (validiert gegen skills_index.json)
-│   └── documents.py                ← PDF-Download/-Extraktion (SSRF-sicher)
+│   ├── documents.py                ← PDF-Download/-Extraktion (SSRF-sicher)
+│   └── ocr/                        ← Konsens-OCR-Pipeline + Freigabe-Gate,
+│                                      siehe docs/architektur.md
 │
 ├── index.html, src/main.jsx        ← Vite-Entry-Point
 ├── app.jsx, components.jsx,        ← Anwendungscode (window-global, per <script>
@@ -204,6 +230,9 @@ und blockiert Cross-Site-Requests (`Sec-Fetch-Site: cross-site`).
 | GET | `/api/v1/chats`, `/api/v1/chats/{id}` | Chat-Liste / einzelner Chat |
 | GET | `/api/v1/profile` | Lehrerprofil lesen |
 | GET | `/api/v1/exports/{filename}` | Export-Datei herunterladen |
+| GET | `/api/v1/ocr/jobs` | OCR-Jobs auflisten |
+| GET | `/api/v1/ocr/jobs/{id}` | OCR-Job-Status/-Ergebnis abrufen (Transkript-Text erst nach Freigabe, siehe `docs/architektur.md`) |
+| GET | `/api/v1/ocr/jobs/{id}/pages/{n}` | Seiten-PNG eines OCR-Jobs (optional `?region=` für eine Region) |
 | POST | `/api/v1/chat` | LLM-Chat, SSE-Streaming, DSGVO-Routing |
 | POST | `/api/v1/upload`, `/api/v1/ingest` | PDF hochladen / in ChromaDB indexieren (mit Klassifikation `public_curriculum`/`personal`/`unknown`) |
 | POST | `/api/v1/clear` | Wissensdatenbank leeren |
@@ -219,10 +248,15 @@ und blockiert Cross-Site-Requests (`Sec-Fetch-Site: cross-site`).
 | POST | `/api/v1/session-summary`, `/api/v1/chats/{id}/summary` | Chat-Verlauf zusammenfassen |
 | POST | `/api/v1/chats` | Neuen Chat anlegen |
 | POST | `/api/v1/chats/{id}/messages` | Nachricht senden (streamt Antwort) |
+| POST | `/api/v1/ocr/jobs` | Neuen OCR-Job aus Bild/PDF anlegen (Konsens-Pipeline) |
+| POST | `/api/v1/ocr/jobs/{id}/approve` | OCR-Job freigeben (Freigabe-Gate, siehe `docs/architektur.md`) |
+| POST | `/api/v1/ocr/models/download` | OCR-Modell (HTR/VLM) nachladen |
 | POST/PATCH | `/api/v1/profile` | Lehrerprofil setzen |
 | PATCH | `/api/v1/state` | Gesamten State ersetzen (Browser-Migration) |
+| PATCH | `/api/v1/ocr/jobs/{id}/regions/{regionId}` | Einzelne Region einer Abschrift korrigieren |
 | POST | `/api/v1/migration/browser-state` | Alten Browser-`localStorage`-State importieren |
 | DELETE | `/api/v1/chats/{id}` | Chat löschen |
+| DELETE | `/api/v1/ocr/jobs/{id}` | OCR-Job löschen |
 
 Quelle der Wahrheit ist der Routing-Block in `tool_server.py` (`do_GET` / `do_POST` /
 `do_PATCH` / `do_DELETE`). Bei Änderungen diese Tabelle synchron halten.

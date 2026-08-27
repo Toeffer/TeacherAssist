@@ -1,0 +1,38 @@
+# CUDA-Variante von requirements-ocr.txt fuer die HTR-Engine
+# (teacherassist_core/ocr/engines/htr.py, Stufe 6). NICHT automatisch von
+# install.bat verwendet -- nur fuer Maschinen mit NVIDIA-GPU, manuell
+# nachzuinstallieren.
+#
+# TODO(verify): Die exakte CUDA-Paketierung fuer torch==2.13.0 unter Windows
+# wurde NICHT verifiziert und ist absichtlich nicht fest gepinnt. Vor dem
+# ersten Einsatz dieser Datei bitte pruefen:
+#
+#   1. Ob torch==2.13.0 auf PyPI fuer win_amd64/cp312 bereits ein
+#      CUDA-faehiges Wheel OHNE "+cuXXX"-Suffix ist (recherchiert am
+#      2026-08-24: das PyPI-JSON fuer torch 2.13.0 listet fuer
+#      "torch-2.13.0-cp312-cp312-win_amd64.whl" keinen +cuXXX-Suffix mehr
+#      und die requires_dist-Metadaten referenzieren ein separates
+#      "cuda-toolkit[...]"-Paket -- ein Hinweis darauf, dass neuere
+#      PyTorch-Versionen CUDA ueber eigene nvidia-*-Abhaengigkeiten statt
+#      ueber lokale Wheel-Suffixe ausliefern. Das wurde aber NICHT gegen
+#      eine echte GPU-Installation getestet.)
+#   2. Falls das zutrifft: einfach "pip install torch==2.13.0" (ohne
+#      --extra-index-url) genuegt vermutlich, und pip loest die
+#      CUDA-Abhaengigkeiten selbst auf.
+#   3. Falls NICHT (d.h. falls fuer Windows weiterhin ein separates
+#      "+cuXXX"-Wheel ueber https://download.pytorch.org/whl/cuXXX/torch/
+#      noetig ist): dort den exakten Dateinamen fuer
+#      "torch-2.13.0+cuXXX-cp312-cp312-win_amd64.whl" nachschlagen (welche
+#      cuXXX-Version -- z.B. cu124, cu126, cu128 -- ueberhaupt fuer 2.13.0
+#      existiert) und die Zeilen unten entsprechend ersetzen.
+#
+# Ein erfundener Pin, der beim Installieren fehlschlaegt, ist schlimmer als
+# dieser Hinweis -- deshalb bewusst kein "+cuXXX" unten eingetragen.
+#
+# --extra-index-url https://download.pytorch.org/whl/cuXXX  # TODO(verify): cuXXX ersetzen (siehe oben) oder Zeile entfernen, falls Schritt 2 zutrifft
+# torch==2.13.0+cuXXX  # TODO(verify): siehe Kommentar oben
+transformers==4.57.6
+safetensors==0.8.0
+huggingface-hub==0.36.2
+Pillow==12.2.0
+numpy==2.5.1

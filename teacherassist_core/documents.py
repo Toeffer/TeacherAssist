@@ -6,8 +6,9 @@ import os
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
+from .ocr.page_render import PageImage
 from .security import validate_remote_url
 
 
@@ -46,6 +47,75 @@ def extract_pdf_text(path: Path) -> str:
         return ocr or combined
     except Exception:
         return combined
+
+
+def iter_pdf_pages(
+    path: Path,
+    *,
+    target_dpi: int = 350,
+    max_pages: int = 40,
+) -> Iterator[PageImage]:
+    """Rendert die Seiten von `path` als PIL-Bilder, EINE nach der anderen.
+
+    MUSS ein Generator sein, kein Listen-Aufbau: Eine 350-dpi-A4-RGB-Seite
+    ist 2894x4093 Pixel (siehe render_pdf_pages()-Kommentar zur genauen
+    Herleitung des Skalierungsfaktors), das sind ~35 MB unkomprimiert. Bei 40
+    Seiten waeren das eager ueber 1.4 GB Resident-Speicher fuer ein einziges
+    Dokument -- inakzeptabel fuer einen Prozess, der mehrere Dokumente
+    parallel verarbeiten koennte. Als Generator wird stattdessen jeweils nur
+    die gerade konsumierte Seite im Speicher gehalten.
+
+    pypdfium2s `scale`-Parameter ist relativ zu 72 dpi (gegen die
+    installierte pypdfium2-Version verifiziert, nicht nur angenommen):
+    ``scale = target_dpi / 72.0`` liefert bei einer A4-Seite und
+    target_dpi=350 ein 2894x4093-Bild. Seite und Bitmap werden nach jedem
+    Yield in einem `finally` geschlossen (die Aufruferin haelt zwischen zwei
+    `next()`-Aufrufen jeweils nur eine PDFium-Seite offen), das Dokument am
+    Ende in einem aeusseren `finally`.
+
+    Eigentumsvertrag: die Aufruferin besitzt das per `yield` gelieferte
+    PIL-Bild (`PageImage.image`) und ist fuer dessen Lebensdauer
+    verantwortlich -- dieses Modul haelt danach keine Referenz mehr darauf.
+    """
+    import pypdfium2 as pdfium
+
+    scale = target_dpi / 72.0
+    document = pdfium.PdfDocument(str(path))
+    try:
+        page_count = min(len(document), max_pages)
+        for index in range(page_count):
+            page = document[index]
+            try:
+                bitmap = page.render(scale=scale)
+                try:
+                    image = bitmap.to_pil()
+                finally:
+                    bitmap.close()
+                width, height = image.size
+                yield PageImage(index=index, image=image, dpi=target_dpi, width=width, height=height)
+            finally:
+                page.close()
+    finally:
+        document.close()
+
+
+def render_pdf_pages(
+    path: Path,
+    *,
+    target_dpi: int = 350,
+    max_pages: int = 8,
+) -> list[PageImage]:
+    """Eager-Variante von `iter_pdf_pages` fuer Aufrufer, die wirklich eine
+    Liste brauchen (z.B. um mehrfach durch die Seiten zu iterieren).
+
+    `max_pages` ist hier bewusst niedriger als bei `iter_pdf_pages`
+    (8 statt 40): siehe `iter_pdf_pages`-Docstring zur Speicherrechnung --
+    8 eager gehaltene 350-dpi-A4-RGB-Seiten sind bereits ~280 MB, was fuer
+    einen bewussten "gib mir alle Seiten als Liste"-Aufruf akzeptabel ist,
+    waehrend derselbe Default fuer ein 40-seitiges Dokument (~1.4 GB) es
+    nicht waere. Wer wirklich mehr eager gerenderte Seiten braucht, kann
+    `max_pages` explizit hochsetzen."""
+    return list(iter_pdf_pages(path, target_dpi=target_dpi, max_pages=max_pages))
 
 
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):

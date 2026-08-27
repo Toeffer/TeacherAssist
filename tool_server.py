@@ -56,7 +56,23 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 from teacherassist_core.documents import download_pdf as secure_download_pdf
 from teacherassist_core.documents import extract_pdf_text as secure_extract_pdf_text
+from teacherassist_core.ocr import (
+    ApprovalNotReady,
+    ApprovalRefused,
+    CloudBlocked,
+    EmptyPatchError,
+    ENGINE_FACTORIES,
+    OCRJobStore,
+    OCRStatus,
+    PipelineConfig,
+    available_engines,
+    build_engines,
+    evaluate_grading_gate,
+    ocr_capability_status,
+    process_single_image_sync,
+)
 from teacherassist_core.privacy import (
+    DOCUMENT_CLASSIFICATIONS,
     SENSITIVE_SKILLS,
     anonymize_text,
     decide_privacy,
@@ -99,6 +115,7 @@ MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_CHAT_BYTES = 5 * 1024 * 1024
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_SCAN_BYTES = 25 * 1024 * 1024
 MAX_RESTORE_BYTES = 100 * 1024 * 1024
 MAX_RESTORE_EXPANDED_BYTES = 250 * 1024 * 1024
 MAX_RESTORE_FILES = 1000
@@ -108,6 +125,16 @@ SETTINGS_STORE = SettingsStore(SETTINGS_FILE, CREDENTIALS)
 SESSIONS = SessionManager()
 SKILL_REGISTRY = SkillRegistry(SKILLS_DIR, SKILLS_INDEX)
 STATE_STORE = EncryptedStateStore(RUNTIME_PATHS.encrypted_state, CREDENTIALS.get_or_create_data_key())
+OCR_JOBS = OCRJobStore(RUNTIME_PATHS.ocr)
+
+# Erlaubtes Zeichenalphabet spiegelt secrets.token_urlsafe() (siehe
+# teacherassist_core/ocr/store.py: JOB_ID_RE/REGION_ID_RE) -- die erste
+# Verteidigungslinie gegen Pfadtraversal in der Job-/Regions-ID; OCRJobStore
+# validiert unabhaengig davon selbst noch einmal (doppelt gesichert).
+OCR_JOB_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})$")
+OCR_PAGE_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/pages/(\d{1,4})$")
+OCR_REGION_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/regions/([A-Za-z0-9_-]{1,64})$")
+OCR_APPROVE_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/approve$")
 
 logger = logging.getLogger("tool_server")
 if not logger.handlers:
@@ -205,6 +232,7 @@ STATIC_FILES = {
     "/app.jsx": "app.jsx",
     "/api-client.js": "api-client.js",
     "/components.jsx": "components.jsx",
+    "/ocr-ui.jsx": "ocr-ui.jsx",
     "/tweaks-panel.jsx": "tweaks-panel.jsx",
     "/manifest.json": "manifest.json",
     "/service-worker.js": "service-worker.js",
@@ -397,12 +425,29 @@ def chunk_text(text, max_chars=900, overlap=150):
         start = max(end - overlap, start + 1)
     return chunks
 
-def parse_multipart(body, boundary):
+def parse_multipart_parts(body, boundary):
+    """Parst einen multipart/form-data-Body in Datei- und Feld-Teile.
+
+    Rückgabe: (files, fields)
+    files:  list[(filename, bytes)]  — identisch zum bisherigen parse_multipart-Ergebnis
+    fields: dict[str, str]           — Nicht-Datei-Teile (name= vorhanden, filename= fehlt),
+                                        UTF-8-dekodiert mit errors='replace', jeder Wert auf
+                                        4096 Bytes gekappt.
+
+    Trennt gemäß RFC 2046 auf b"\\r\\n--" + boundary, da ein Boundary-Delimiter immer von
+    CRLF eingeleitet wird; ein bloßes "--boundary" könnte sonst zufällig im Dateiinhalt
+    auftauchen und die Zerlegung verfälschen. Der führende Boundary (ohne vorangehendes
+    CRLF im Body) wird durch Voranstellen von b"\\r\\n" vor dem Split abgefangen.
+    """
     files = []
-    sep = ("--" + boundary).encode()
-    for part in body.split(sep)[1:]:
+    fields = {}
+    delimiter = b"\r\n--" + boundary.encode()
+    data = b"\r\n" + body
+    for part in data.split(delimiter)[1:]:
         if not part.strip() or part.strip() == b"--":
             continue
+        if part.startswith(b"\r\n"):
+            part = part[2:]
         if b"\r\n\r\n" not in part:
             continue
         raw_headers, content = part.split(b"\r\n\r\n", 1)
@@ -410,15 +455,25 @@ def parse_multipart(body, boundary):
             content = content[:-2]
         headers = raw_headers.decode("utf-8", errors="replace")
         filename = None
+        name = None
         for line in headers.split("\r\n"):
-            if "filename=" in line:
+            if "filename=" in line or "name=" in line:
                 for seg in line.split(";"):
                     seg = seg.strip()
                     if seg.lower().startswith("filename="):
                         filename = seg[9:].strip('"')
+                    elif seg.lower().startswith("name="):
+                        name = seg[5:].strip('"')
         if filename:
             files.append((os.path.basename(filename), content))
-    return files
+        elif name:
+            fields[name] = content[:4096].decode("utf-8", errors="replace")
+    return files, fields
+
+
+def parse_multipart(body, boundary):
+    """Rückwärtskompatibler Wrapper; /api/v1/upload und /api/v1/ocr-image funktionieren unverändert."""
+    return parse_multipart_parts(body, boundary)[0]
 
 # ---------------------------------------------------------------------------
 # RAG-Kontext
@@ -676,6 +731,46 @@ def _send_sse(wfile, data):
     except Exception:
         pass
 
+
+def _stream_ollama_pull(wfile, model):
+    """Fuehrt ``ollama pull {model}`` aus und streamt den Fortschritt per SSE.
+
+    Extrahiert aus ToolHandler._ollama_pull, damit
+    ToolHandler._download_ocr_model (engine == "ollama_vlm", Stufe 7) und der
+    bestehende /api/v1/ollama/pull-Endpunkt dieselbe SSE-Form/Logik teilen,
+    statt sie zu duplizieren. Aufrufer haben den Modellnamen bereits gegen
+    dieselbe strenge Regex geprueft (dieser Wert erreicht einen Subprozess)
+    und die SSE-Response-Header bereits gesendet."""
+    try:
+        proc = subprocess.Popen(
+            ["ollama", "pull", model],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+        )
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+                if "completed" in parsed and "total" in parsed:
+                    pct = int(parsed["completed"] / max(parsed["total"], 1) * 100)
+                    _send_sse(wfile, {"type": "progress", "percent": pct, "status": parsed.get("status", "downloading")})
+                elif "status" in parsed:
+                    _send_sse(wfile, {"type": "status", "message": parsed["status"]})
+            except json.JSONDecodeError:
+                _send_sse(wfile, {"type": "status", "message": line})
+
+        proc.wait()
+        if proc.returncode == 0:
+            _send_sse(wfile, {"type": "done", "success": True, "model": model})
+        else:
+            _send_sse(wfile, {"type": "error", "message": f"ollama pull fehlgeschlagen (code {proc.returncode})"})
+    except FileNotFoundError:
+        _send_sse(wfile, {"type": "error", "message": "Ollama ist nicht installiert. Bitte von ollama.com/download herunterladen."})
+    except Exception as e:
+        _send_sse(wfile, {"type": "error", "message": str(e)})
+
 # ---------------------------------------------------------------------------
 # HTTP-Handler
 # ---------------------------------------------------------------------------
@@ -690,7 +785,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
+        self.send_header("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         super().end_headers()
 
@@ -788,10 +883,16 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 encrypted_state = STATE_STORE.get_state()
             except (PersistenceUnavailable, RuntimeError):
                 encrypted_state = {"profile": {}, "chats": []}
+            settings = SETTINGS_STORE.load()
             self._json({
                 "csrfToken": csrf,
                 "settings": SETTINGS_STORE.public(),
-                "capabilities": {**capability_status(), "ollama": check_ollama()},
+                "capabilities": {
+                    **capability_status(),
+                    "ollama": check_ollama(),
+                    **ocr_capability_status(settings),
+                },
+                "ocrEngines": [status.to_dict() for status in available_engines(settings)],
                 "skills": SKILL_REGISTRY.public_index(),
                 "state": encrypted_state,
                 "dataSchemaVersion": 2,
@@ -826,6 +927,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._get_chat(route.rsplit("/", 1)[-1])
         elif route.startswith("/api/v1/exports/"):
             self._download_export(unquote(route[len("/api/v1/exports/"):]))
+        elif route == "/api/v1/ocr/jobs":
+            self._list_ocr_jobs()
+        elif OCR_PAGE_RE.match(route):
+            self._ocr_job_page(OCR_PAGE_RE.match(route), parsed)
+        elif OCR_JOB_RE.match(route):
+            self._get_ocr_job(OCR_JOB_RE.match(route).group(1))
         else:
             self.send_error(404)
 
@@ -881,6 +988,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             "/api/v1/chats": self._create_chat,
             "/api/v1/profile": self._set_profile,
             "/api/v1/migration/browser-state": self._import_browser_state,
+            "/api/v1/ocr/jobs": self._create_ocr_job,
+            "/api/v1/ocr/models/download": self._download_ocr_model,
         }
         handler = routes.get(route)
         if handler:
@@ -891,6 +1000,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             return
         if route.startswith("/api/v1/chats/") and route.endswith("/summary"):
             self._chat_summary(route.split("/")[-2])
+            return
+        if OCR_APPROVE_RE.match(route):
+            self._approve_ocr_job(OCR_APPROVE_RE.match(route).group(1))
             return
         self.send_error(404)
 
@@ -904,6 +1016,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._set_profile()
         elif route == "/api/v1/state":
             self._replace_state()
+        elif OCR_REGION_RE.match(route):
+            match = OCR_REGION_RE.match(route)
+            self._patch_ocr_region(match.group(1), match.group(2))
         else:
             self.send_error(404)
 
@@ -913,6 +1028,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             return
         if route.startswith("/api/v1/chats/"):
             self._delete_chat(route.rsplit("/", 1)[-1])
+        elif OCR_JOB_RE.match(route):
+            self._delete_ocr_job(OCR_JOB_RE.match(route).group(1))
         else:
             self.send_error(404)
 
@@ -951,6 +1068,27 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             document_classifications=rag_classifications,
             rag_context=rag_context,
         )
+
+        # SICHERHEITSKRITISCH -- Reihenfolge ist verbindlich, keine
+        # verschiebbaren Zeilen: dieser Block MUSS nach der skill_id-
+        # Aufloesung, aber VOR self.send_response(200)/den SSE-Headern
+        # stehen. Sobald die SSE-Header einmal gesendet sind, ist nur noch
+        # ein SSE-"error"-Event moeglich, nie mehr ein regulaerer
+        # HTTP-Statuscode -- ein 409 liesse sich dann nicht mehr sauber
+        # ausliefern. Diese eine Stelle deckt sowohl /api/v1/chat als auch
+        # /api/v1/chats/{id}/messages ab, weil beide Routen durch
+        # _stream_chat_payload() laufen -- genau deshalb steht die Pruefung
+        # hier und nicht in den einzelnen Routen-Handlern.
+        gate = evaluate_grading_gate(
+            skill_id=skill_id,
+            ocr_job_ids=[j for j in (data.get("ocrJobIds") or data.get("ocr_job_ids") or [])
+                         if isinstance(j, str)][:20],
+            jobs=OCR_JOBS.snapshot(),
+        )
+        if not gate.allowed:
+            logger.info("Bewertung blockiert: %s", gate.reasons)
+            self._error("OCR_APPROVAL_REQUIRED", gate.message, 409)
+            return ""
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1254,6 +1392,206 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # ---- OCR-Job-Endpunkte (Stufe 5 des OCR-Refactors) ----------------------
+    # Reine HTTP-Adapter-Schicht: Parsen, Delegieren an OCR_JOBS
+    # (teacherassist_core/ocr/store.py) und Formen der Antwort. Keine
+    # OCR-Fachlogik hier (siehe docs/architektur.md).
+
+    def _list_ocr_jobs(self):
+        self._json({"jobs": OCR_JOBS.list()})
+
+    def _get_ocr_job(self, job_id):
+        doc = OCR_JOBS.get(job_id)
+        if doc is None:
+            self._error("OCR_JOB_NOT_FOUND", "OCR-Job wurde nicht gefunden.", 404)
+            return
+        self._json(doc.to_dict())
+
+    def _ocr_job_page(self, match, parsed):
+        job_id, page_raw = match.group(1), match.group(2)
+        try:
+            page = int(page_raw)
+        except ValueError:
+            self._error("OCR_JOB_NOT_FOUND", "Seite wurde nicht gefunden.", 404)
+            return
+        region_id = parse_qs(parsed.query).get("region", [None])[0]
+        png_bytes = OCR_JOBS.page_png(job_id, page, region_id=region_id)
+        if png_bytes is None:
+            self._error("OCR_JOB_NOT_FOUND", "Seite oder Region wurde nicht gefunden.", 404)
+            return
+        # Bewusst kein <img src=...> auf Client-Seite (siehe Auftrag): das
+        # Frontend holt dieses Bild per fetch()+blob(), weil <img> die
+        # Session-Cookie mitschickt, aber kein X-CSRF-Token -- _authorize
+        # wuerde das mit 403 ablehnen. Keine CSRF-Ausnahme dafuer einbauen.
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(png_bytes)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(png_bytes)
+
+    def _create_ocr_job(self):
+        content_type = self.headers.get("Content-Type", "")
+        settings = load_settings()
+
+        if "multipart/form-data" in content_type:
+            try:
+                body = self._body(MAX_SCAN_BYTES + 1024 * 1024)
+            except RequestTooLarge:
+                self._error("OCR_IMAGE_TOO_LARGE", "Bild ist größer als 25 MB.", 413)
+                return
+            boundary = next((seg.strip()[9:].strip('"') for seg in content_type.split(";") if seg.strip().startswith("boundary=")), "")
+            if not boundary:
+                self._error("OCR_INVALID_IMAGE", "Multipart-Grenze fehlt.", 400)
+                return
+            files, fields = parse_multipart_parts(body, boundary)
+            if not files:
+                self._error("OCR_INVALID_IMAGE", "Kein Bild übermittelt.", 400)
+                return
+            _, content = files[0]
+            source = content
+            source_name = "scan.png"
+            classification = fields.get("classification") or "student_submission"
+            subject = fields.get("subject") or None
+            language = fields.get("language") or None
+        elif "application/json" in content_type:
+            try:
+                data = self._read_json()
+            except RequestTooLarge:
+                self._error("REQUEST_TOO_LARGE", "Anfrage ist zu groß.", 413)
+                return
+            except ValueError:
+                self._error("INVALID_JSON", "Ungültiges JSON.", 400)
+                return
+            raw_path = data.get("path", "")
+            # Client-gelieferter Pfad ist nicht vertrauenswuerdig -- muss
+            # innerhalb von RUNTIME_PATHS.uploads bleiben (spiegelt
+            # _download_export's Pfadtraversal-Schutz, siehe oben).
+            try:
+                path_obj = Path(raw_path).resolve()
+                path_obj.relative_to(RUNTIME_PATHS.uploads.resolve())
+            except (ValueError, TypeError):
+                self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
+                return
+            if not path_obj.is_file():
+                self._error("NOT_FOUND", "Upload wurde nicht gefunden.", 404)
+                return
+            source = path_obj
+            source_name = path_obj.name
+            classification = data.get("classification") or "student_submission"
+            subject = data.get("subject") or None
+            language = data.get("language") or None
+        else:
+            self._error("INVALID_CONTENT_TYPE", "multipart/form-data oder application/json erwartet.", 400)
+            return
+
+        if classification not in DOCUMENT_CLASSIFICATIONS:
+            self._error("INVALID_CLASSIFICATION", "Ungültige Dokumentklassifikation.", 400)
+            return
+
+        overrides = dict(settings)
+        if subject:
+            overrides["ocrSubject"] = subject
+        if language:
+            overrides["ocrLanguage"] = language
+        config = PipelineConfig.from_settings(overrides, classification=classification)
+
+        engine_statuses = available_engines(settings)
+        if not any(status.available for status in engine_statuses):
+            self._error("OCR_UNAVAILABLE", "Keine OCR-Engine verfügbar.", 503)
+            return
+        # "classification" wird hier in die settings-Mapping eingemischt,
+        # NICHT dauerhaft gespeichert -- ENGINE_FACTORIES["ollama_vlm"]
+        # (engines/__init__.py) liest sie daraus, damit assert_local_only()
+        # dieselbe Klassifikation sieht wie PipelineConfig oben (siehe
+        # dortigen Docstring).
+        engines = build_engines({**settings, "classification": config.classification})
+
+        stub = OCR_JOBS.create(source=source, source_name=source_name, config=config, engines=engines)
+        self._json({"jobId": stub.job_id, "status": stub.status.value}, 202)
+
+    def _patch_ocr_region(self, job_id, region_id):
+        try:
+            data = self._read_json()
+        except RequestTooLarge:
+            self._error("REQUEST_TOO_LARGE", "Anfrage ist zu groß.", 413)
+            return
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
+            return
+
+        text = data.get("text")
+        candidate_engine = data.get("candidateEngine")
+        if text is not None and not isinstance(text, str):
+            self._error("INVALID_REQUEST", "text muss eine Zeichenkette sein.", 400)
+            return
+        if candidate_engine is not None and not isinstance(candidate_engine, str):
+            self._error("INVALID_REQUEST", "candidateEngine muss eine Zeichenkette sein.", 400)
+            return
+
+        try:
+            region = OCR_JOBS.patch_region(job_id, region_id, text=text, candidate_engine=candidate_engine)
+        except EmptyPatchError as exc:
+            self._error("OCR_EMPTY_PATCH", str(exc), 400)
+            return
+        except ValueError as exc:
+            self._error("OCR_INVALID_ENGINE", str(exc), 400)
+            return
+        if region is None:
+            self._error("OCR_JOB_NOT_FOUND", "OCR-Job oder Region wurde nicht gefunden.", 404)
+            return
+        # include_text wird -- wie an JEDER anderen Stelle (siehe
+        # DocumentResult.to_dict()) -- ausschliesslich vom Freigabestatus
+        # des ELTERNDOKUMENTS abgeleitet, NIEMALS als Literal uebergeben
+        # (siehe Auftrag: das war genau die Luecke, durch die ein reiner
+        # No-op-PATCH nicht freigegebenen Transkripttext auslesen konnte).
+        # Die Review-UI bekommt den soeben gepatchten Text trotzdem: sie
+        # kennt ihn bereits (sie hat ihn in der Anfrage geschickt) und
+        # rendert ihn lokal weiter, statt sich auf dieses Echo zu
+        # verlassen.
+        doc = OCR_JOBS.get(job_id)
+        include_text = doc is not None and doc.status is OCRStatus.APPROVED
+        self._json(region.to_dict(include_text=include_text))
+
+    def _approve_ocr_job(self, job_id):
+        doc = OCR_JOBS.get(job_id)
+        if doc is None:
+            self._error("OCR_JOB_NOT_FOUND", "OCR-Job wurde nicht gefunden.", 404)
+            return
+        # KEIN eigener Statuscheck hier mehr (siehe Auftrag): OCRJobStore.approve()
+        # (store.py) ist der alleinige, autoritative Choke-Point fuer diese Regel
+        # und wirft ApprovalNotReady/ApprovalRefused selbst -- eine zweite,
+        # duplizierte Pruefung hier koennte mit der Zeit von store.py abweichen.
+        try:
+            approved = OCR_JOBS.approve(job_id)
+        except ApprovalNotReady:
+            self._error(
+                "OCR_NOT_READY",
+                "Freigabe nicht möglich: die Erkennung läuft noch bzw. ist fehlgeschlagen. "
+                "Bitte warten Sie, bis die Verarbeitung abgeschlossen ist, oder laden Sie "
+                "das Dokument bei einem Fehlschlag erneut hoch.",
+                409,
+            )
+            return
+        except ApprovalRefused as exc:
+            self._error(
+                "OCR_CRITICAL_UNRESOLVED",
+                "Freigabe abgelehnt: ungeklärte kritische Unsicherheiten in Region(en) "
+                + ", ".join(exc.region_ids) + ". Bitte die markierten Stellen prüfen.",
+                409,
+            )
+            return
+        if approved is None:
+            self._error("OCR_JOB_NOT_FOUND", "OCR-Job wurde nicht gefunden.", 404)
+            return
+        self._json(approved.to_dict())
+
+    def _delete_ocr_job(self, job_id):
+        if not OCR_JOBS.delete(job_id):
+            self._error("OCR_JOB_NOT_FOUND", "OCR-Job wurde nicht gefunden.", 404)
+            return
+        self._json({"deleted": True})
+
     def _clear(self):
         try:
             col, _ = get_collection()
@@ -1519,106 +1857,81 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _ocr_image(self):
-        ct  = self.headers.get("Content-Type", "")
+        """Legacy-Endpunkt: "lies dieses Foto in mein Chat-Eingabefeld" --
+        NICHT "bewerte diese Schülerarbeit" (dafür sind die Job-Endpunkte
+        oben da, mit Freigabe-Gate). Reine Delegation an
+        teacherassist_core.ocr.pipeline.process_single_image_sync; keine
+        VLM-Modellauswahl, kein Prompt und kein Tesseract-Aufruf mehr hier
+        (das lebt jetzt vollständig in teacherassist_core/ocr/)."""
         try:
             body = self._body(MAX_IMAGE_BYTES + 1024 * 1024)
         except RequestTooLarge:
-            self._error("IMAGE_TOO_LARGE", "Bild ist größer als 10 MB.", 413)
+            self._error("OCR_IMAGE_TOO_LARGE", "Bild ist größer als 10 MB.", 413)
             return
+
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            boundary = next((seg.strip()[9:].strip('"') for seg in content_type.split(";") if seg.strip().startswith("boundary=")), "")
+            files = parse_multipart(body, boundary) if boundary else []
+            if not files:
+                self._error("OCR_INVALID_IMAGE", "Kein Bild übermittelt.", 400)
+                return
+            _, content = files[0]
+        else:
+            content = body
+        if not content:
+            self._error("OCR_INVALID_IMAGE", "Kein Bild übermittelt.", 400)
+            return
+
+        settings = load_settings()
+        # classification="unknown", nicht "student_submission": dies ist der
+        # Foto-ins-Eingabefeld-Pfad ohne Freigabe-Workflow, keine Bewertung.
+        config = PipelineConfig.from_settings(settings, classification="unknown")
+        # Wie oben in _create_ocr_job: "classification" wird nur fuer diesen
+        # Aufruf in die settings-Mapping eingemischt, damit
+        # ENGINE_FACTORIES["ollama_vlm"] dieselbe Klassifikation sieht wie
+        # PipelineConfig.
+        engines = build_engines({**settings, "classification": config.classification})
+        if not engines or not any(status.available for status in available_engines(settings)):
+            self._error("OCR_UNAVAILABLE", "Keine OCR-Engine verfügbar.", 503)
+            return
+
         try:
-            if "multipart/form-data" in ct:
-                boundary = ""
-                for seg in ct.split(";"):
-                    seg = seg.strip()
-                    if seg.startswith("boundary="):
-                        boundary = seg[9:].strip('"')
-                files = parse_multipart(body, boundary)
-                if not files:
-                    self._json({"error": "Kein Bild übermittelt"}, 400)
-                    return
-                name, content = files[0]
-            else:
-                name, content = "image.jpg", body
+            result = process_single_image_sync(content, config=config, engines=engines)
+        except CloudBlocked as exc:
+            logger.error("OCR-Cloud-Zugriff blockiert (Schülerdaten dürfen die Maschine nicht verlassen): %s", exc)
+            self._error("OCR_CLOUD_BLOCKED", "Cloud-Zugriff für diese OCR-Anfrage ist nicht erlaubt.", 500)
+            return
 
-            suffix = '.jpg' if name.lower().endswith(('.jpg', '.jpeg')) else '.png'
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-                f.write(content)
-                tmp_path = f.name
+        if result.status is OCRStatus.FAILED or not result.pages:
+            self._error("OCR_UNAVAILABLE", result.error or "OCR ist fehlgeschlagen.", 503)
+            return
 
-            # ── VLM-Pfad: Versuche Ollama Vision-Modell für Handschrift ──
-            if check_ollama():
+        page = result.pages[0]
+        # consensus_text bewusst MIT den [...]-Unsicherheitsmarkierungen --
+        # kein sauber aussehender, aber erfundener Text (siehe Auftrag).
+        text = page.consensus_text
+        if not text.strip():
+            self._error("OCR_QUALITY_REJECTED", "Kein Text erkannt. Bitte ein deutlicheres Foto machen.", 422)
+            return
+
+        reference_engine = next((r.reference_engine for r in page.regions if r.reference_engine), engines[0].name)
+        model_id = ""
+        for engine in engines:
+            if engine.name == reference_engine:
                 try:
-                    import base64
-                    with open(tmp_path, "rb") as bf:
-                        b64 = base64.b64encode(bf.read()).decode("ascii")
-                    # Nutze das erste verfügbare VLM oder das aktuelle Ollama-Modell
-                    settings = load_settings()
-                    vision_model = ""
-                    # Prüfe ob ein Vision-Modell verfügbar ist
-                    req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-                    with urllib.request.urlopen(req, timeout=3) as resp:
-                        tags_data = json.loads(resp.read())
-                        models = [m.get("name", "") for m in tags_data.get("models", [])]
-                        for vm in ["qwen3-vl", "granite3.2-vision", "minicpm-v", "llava", "bakllava"]:
-                            if any(m.startswith(vm) for m in models):
-                                vision_model = next(m for m in models if m.startswith(vm))
-                                break
-                    if not vision_model:
-                        vision_model = settings.get("ollamaModel", "gemma3:4b")
+                    model_id = engine.status().model_id
+                except Exception:  # noqa: BLE001 -- reine Anzeige-Metadaten, nie kritisch
+                    model_id = ""
+                break
 
-                    vlm_body = {
-                        "model": vision_model,
-                        "prompt": "Lies den Text auf diesem Bild. Gib nur den erkannten Text zurück, keine zusätzlichen Erklärungen. Wenn es sich um handgeschriebenen Text handelt, gib ihn so genau wie möglich wieder. Erwähne nichts über das Bild selbst.",
-                        "images": [b64],
-                        "stream": False,
-                    }
-                    vlm_req = urllib.request.Request(
-                        "http://localhost:11434/api/generate",
-                        data=json.dumps(vlm_body).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(vlm_req, timeout=60) as vlm_resp:
-                        vlm_text = ""
-                        for line in vlm_resp:
-                            try:
-                                p = json.loads(line)
-                                vlm_text += p.get("response", "")
-                            except Exception:
-                                pass
-                        vlm_text = vlm_text.strip()
-                        if vlm_text and len(vlm_text) > 5:
-                            try: os.unlink(tmp_path)
-                            except: pass
-                            self._json({"text": vlm_text, "method": "ollama", "model": vision_model})
-                            return
-                except Exception:
-                    pass  # VLM fehlgeschlagen → Fallback zu Tesseract
-
-            # ── Tesseract-Fallback ──
-            try:
-                import pytesseract
-                from PIL import Image
-            except Exception:
-                try: os.unlink(tmp_path)
-                except: pass
-                self._json({"error": "OCR nicht verfügbar – bitte Tesseract installieren oder Ollama mit VLM starten."}, 500)
-                return
-
-            try:
-                img  = Image.open(tmp_path)
-                text = pytesseract.image_to_string(img, lang="deu")
-                os.unlink(tmp_path)
-            except Exception:
-                try: os.unlink(tmp_path)
-                except: pass
-                raise
-            if not text.strip():
-                self._json({"error": "Kein Text erkannt. Bitte ein deutlicheres Foto machen."})
-                return
-            self._json({"text": text.strip()})
-        except Exception as e:
-            self._json({"error": f"OCR fehlgeschlagen: {str(e)}"}, 500)
+        self._json({
+            "text": text,
+            "method": reference_engine,
+            "model": model_id,
+            "needsReview": result.has_critical_uncertainty,
+            "jobId": None,
+        })
 
     def _ollama_pull(self):
         """Lädt ein Ollama-Modell herunter und streamt den Fortschritt per SSE."""
@@ -1641,35 +1954,91 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
-        try:
-            proc = subprocess.Popen(
-                ["ollama", "pull", model],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
-            )
-            for line in proc.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    parsed = json.loads(line)
-                    if "completed" in parsed and "total" in parsed:
-                        pct = int(parsed["completed"] / max(parsed["total"], 1) * 100)
-                        _send_sse(self.wfile, {"type": "progress", "percent": pct, "status": parsed.get("status", "downloading")})
-                    elif "status" in parsed:
-                        _send_sse(self.wfile, {"type": "status", "message": parsed["status"]})
-                except json.JSONDecodeError:
-                    _send_sse(self.wfile, {"type": "status", "message": line})
+        _stream_ollama_pull(self.wfile, model)
 
-            proc.wait()
-            if proc.returncode == 0:
-                _send_sse(self.wfile, {"type": "done", "success": True, "model": model})
-            else:
-                _send_sse(self.wfile, {"type": "error", "message": f"ollama pull fehlgeschlagen (code {proc.returncode})"})
-        except FileNotFoundError:
-            _send_sse(self.wfile, {"type": "error", "message": "Ollama ist nicht installiert. Bitte von ollama.com/download herunterladen."})
+    def _download_ocr_model(self):
+        """Laedt die Gewichte/das Modell einer OCR-Engine ("htr" oder
+        "ollama_vlm") herunter und streamt den Fortschritt per SSE in
+        derselben Form wie _ollama_pull oben, damit das Frontend dieselbe
+        Fortschritts-Komponente wiederverwenden kann.
+
+        WICHTIG: Dieser Endpoint ist der EINZIGE Ort, der einen HTR-Modell-
+        download (~1.3 GB) bzw. einen "ollama pull" fuer die Vision-Engine
+        ausloest. Er wird niemals implizit aus einem student_submission-Job
+        heraus aufgerufen -- HtrEngine._load() (engines/htr.py) verwendet
+        local_files_only=True und beide Engines' status() pruefen nur lokal
+        (HF-Cache bzw. /api/tags), gerade damit recognize() nie selbst
+        herunterlaedt/pullt. Der Download muss explizit von der Lehrkraft
+        angestossen werden.
+        """
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+        except Exception:
+            self._json({"error": "Ungültiges JSON"}, 400)
+            return
+        engine_name = (data.get("engine") or "").strip()
+        factory = ENGINE_FACTORIES.get(engine_name)
+        if factory is None:
+            self._json({"error": "Unbekannte OCR-Engine"}, 400)
+            return
+
+        settings = load_settings()
+        engine = factory(settings)
+        model_id = getattr(engine, "model_id", None) or ""
+        # model_id stammt aus den (server-seitig gespeicherten) Settings,
+        # erreicht hier aber einen Netzwerkaufruf (snapshot_download bzw.
+        # "ollama pull" -- ein Subprozessaufruf) -- daher dieselbe strenge
+        # Pruefung wie bei _ollama_pull's Modellnamen, statt der
+        # Konfiguration blind zu vertrauen.
+        if not re.match(r'^[a-zA-Z0-9_./:@-]{1,100}$', model_id):
+            self._json({"error": "Ungültige Modell-ID"}, 400)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        if engine_name == "ollama_vlm":
+            # Kein snapshot_download -- Vision-Modelle kommen ueber
+            # "ollama pull", genau wie beim bestehenden Ollama-Chat-Modell-
+            # Download (_ollama_pull oben). Wiederverwendet dieselbe
+            # Streaming-Logik, statt sie zu duplizieren.
+            _stream_ollama_pull(self.wfile, model_id)
+            return
+
+        wfile = self.wfile
+        try:
+            from huggingface_hub import snapshot_download
+            from huggingface_hub.utils import tqdm as hf_tqdm
+
+            class _ProgressTqdm(hf_tqdm):
+                """Meldet Fortschritt der jeweils aktuell ladenden Datei per
+                SSE -- huggingface_hub fuehrt pro Datei im Snapshot eine
+                eigene tqdm-Instanz, daher ist "percent" der Fortschritt der
+                aktuellen Datei, nicht des gesamten Snapshots (mehrere
+                kleinere Dateien wie tokenizer/config folgen dem grossen
+                Gewichts-Download)."""
+
+                def update(self, n=1):
+                    super().update(n)
+                    try:
+                        if self.total:
+                            pct = int(min(self.n, self.total) / self.total * 100)
+                            _send_sse(wfile, {
+                                "type": "progress",
+                                "percent": pct,
+                                "status": self.desc or "Lade herunter",
+                            })
+                    except Exception:
+                        pass
+
+            _send_sse(wfile, {"type": "status", "message": f"Lade Modell {model_id} herunter …"})
+            snapshot_download(model_id, tqdm_class=_ProgressTqdm)
+            _send_sse(wfile, {"type": "done", "success": True, "model": model_id})
         except Exception as e:
-            _send_sse(self.wfile, {"type": "error", "message": str(e)})
+            _send_sse(wfile, {"type": "error", "message": str(e)})
 
     def _shutdown(self):
         self._json({"success": True, "message": "TeacherAssist wird beendet."})
@@ -1796,7 +2165,11 @@ if __name__ == "__main__":
 
     port = 8789
     migration = SETTINGS_STORE.migrate_legacy(LEGACY_SETTINGS_FILE)
-    logger.info("Starting Tool-Server port=%d python=%s settings_migrated=%s", port, sys.executable, migration.get("migrated", False))
+    purged_ocr_jobs = OCR_JOBS.purge_expired(SETTINGS_STORE.load().get("ocrRetentionDays", 7))
+    logger.info(
+        "Starting Tool-Server port=%d python=%s settings_migrated=%s ocr_jobs_purged=%d",
+        port, sys.executable, migration.get("migrated", False), purged_ocr_jobs,
+    )
     try:
         server = _QuietThreadingHTTPServer(("127.0.0.1", port), ToolHandler)
     except OSError as e:
@@ -1810,3 +2183,5 @@ if __name__ == "__main__":
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Tool-Server beendet (KeyboardInterrupt)")
+    finally:
+        OCR_JOBS.shutdown()

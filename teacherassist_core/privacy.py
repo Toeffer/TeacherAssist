@@ -17,6 +17,13 @@ SENSITIVE_SKILLS = {
     "klassenstatistik",
 }
 
+DOCUMENT_CLASSIFICATIONS = frozenset({"public_curriculum", "personal", "unknown", "student_submission"})
+CLOUD_FORBIDDEN_CLASSIFICATIONS = frozenset({"student_submission"})
+
+
+def cloud_allowed_for_classification(classification: str) -> bool:
+    return classification == "public_curriculum"
+
 PERSONAL_PATTERNS = (
     ("email", re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")),
     ("phone", re.compile(r"(?:\+49|0049|0\d{2,5})[\s\-/]?\d[\d\s\-/]{4,}")),
@@ -86,6 +93,8 @@ def decide_privacy(
     classifications = set(document_classifications)
     if any(item != "public_curriculum" for item in classifications):
         reasons.add("document_not_public")
+    if classifications & CLOUD_FORBIDDEN_CLASSIFICATIONS:
+        reasons.add("student_submission")
     for finding in findings_for({"messages": messages, "profile": profile, "rag": rag_context}):
         reasons.add(f"personal_data:{finding}")
     mode = "local_required" if reasons else "cloud_allowed"

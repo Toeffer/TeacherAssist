@@ -37,5 +37,6 @@ window.SanitizedMarkdown = function SanitizedMarkdown({ children }) {
 };
 
 await import('../tweaks-panel.jsx');
+await import('../ocr-ui.jsx');
 await import('../components.jsx');
 await import('../app.jsx');

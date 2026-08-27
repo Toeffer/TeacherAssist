@@ -110,6 +110,57 @@ Falls du mehrere Arbeiten auf einmal bewerten möchtest, schick sie
 nacheinander und ich gebe nach jeder eine Rückmeldung.
 ```
 
+### Schritt 2a – Abschrift-Vorbehalt bei Foto/Scan prüfen
+
+Stammt die Schülerarbeit aus einem Foto, einem Scan oder einem bildbasierten
+PDF, siehst du nicht die Handschrift der Schüler:in, sondern eine
+maschinelle Abschrift (Transkription) davon. Diese kann falsch sein.
+
+Achte in der Abschrift auf folgende Unsicherheits-Markierungen:
+
+- `[wort?]` – eine Engine hat dieses Wort gelesen, eine andere nicht.
+- `[+wort?]` – eine Engine hat dieses Wort zusätzlich gelesen.
+- `[a|b?]` – die Engines haben hier etwas Unterschiedliches gelesen.
+- `␣?␣` – die Stelle ist unleserlich.
+
+**Ist auch nur eine dieser Markierungen vorhanden, bewerte nicht.** Melde
+stattdessen, welche Aufgaben betroffen sind, zitiere die markierte Stelle im
+Kontext, und bitte die Lehrkraft, die Unsicherheiten in der Review-Ansicht
+aufzulösen:
+
+```
+Ich kann diese Arbeit noch nicht bewerten: die Abschrift enthält ungeklärte
+Unsicherheiten.
+
+  Aufgabe 3: „... das Ergebnis ist [17|71?] ..."
+  Aufgabe 5: „... daher folgt ␣?␣ für x ..."
+
+Bitte löse diese Stellen in der Review-Ansicht auf und gib die Abschrift
+frei. Danach bewerte ich gern weiter.
+```
+
+Zusätzlich gilt beim Umgang mit einer Abschrift:
+
+- Durchgestrichener Text der Schüler:in ist **nicht** Teil der Antwort und
+  darf ihr niemals als Fehler angerechnet werden.
+- Eine auffällige Lesart wird niemals eigenmächtig zu einer plausibleren
+  "korrigiert" – was in der Abschrift steht, ist das, was die Schüler:in
+  geschrieben hat.
+- Ein unleserlicher Rechenschritt bringt keine Punkte, wird aber als
+  `[unleserlich – Lehrkraft prüft im Original]` gekennzeichnet, statt in die
+  eine oder andere Richtung geraten zu werden.
+
+Bewertest du eine bereits freigegebene Abschrift, vermerke das später im
+Korrekturprotokoll (Schritt 6): „Bewertung auf Basis einer freigegebenen
+Abschrift vom {datum}."
+
+> **Hinweis:** Dieser Schritt ist die erklärende Ebene für den Agenten. Die
+> technische Durchsetzung liegt in Python (`teacherassist_core/ocr/gate.py`
+> und `DocumentResult.to_dict()`, das den Volltext bis zur Freigabe
+> zurückhält) – bei einem Widerspruch zwischen diesem Text und dem Code
+> gewinnt der Code. Dieser Absatz ist keine überflüssige Redundanz, die sich
+> "vereinfachen" liesse: er ist die Doku-Ebene, nicht das eigentliche Gate.
+
 ### Schritt 3 – Aufgabe für Aufgabe bewerten
 
 Gehe jede Teilaufgabe des Erwartungshorizonts durch:
@@ -251,3 +302,8 @@ du hast {erreicht} von {gesamt} Punkten erreicht, das entspricht einer
 5. **Am Ende anbieten:**
    - "Soll ich noch weitere Arbeiten mit diesem Erwartungshorizont bewerten?"
    - "Soll ich eine Klassenstatistik erstellen, wenn alle Arbeiten bewertet sind?"
+
+6. **Abschrift-Vorbehalt bei Foto/Scan ohne Ausnahme:** Stammt die
+   Schülerarbeit aus einem Foto, Scan oder bildbasierten PDF, gilt Schritt 2a
+   ausnahmslos. Eine Bewertung ohne freigegebene Abschrift ist kein
+   hilfsbereites Entgegenkommen, sondern ein Fehler.

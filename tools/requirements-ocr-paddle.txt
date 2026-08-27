@@ -1,0 +1,58 @@
+# Optionale Abhaengigkeit fuer die PaddleOCR-VL-Engine ("paddleocr"-Backend,
+# teacherassist_core/ocr/engines/paddleocr_vl.py, Stufe 8 des OCR-Refactors).
+#
+# NICHT von install.bat installiert. NICHT Teil von requirements.txt. Diese
+# Engine ist absichtlich per Default AUS (nicht in ENGINE_FACTORIES's
+# DEFAULT_ENGINES) -- siehe paddleocr_vl.py Moduldoc fuer die vollstaendige
+# Begruendung. Wer diese Datei installiert, tut das bewusst UND fuer sich
+# selbst: install.bat's `pip check`-Gate ist hart geschaltet und wird NACH
+# einer Installation dieser Datei mit hoher Wahrscheinlichkeit rot sein
+# (siehe unten) -- das ist kein Installationsfehler, sondern der reale,
+# unaufloesbare Konflikt mit requirements.txt/requirements-ocr.txt.
+#
+# ZWEI ECHTE KONFLIKTE, BEIDE VERIFIZIERT (nicht vermutet):
+#
+# 1. numpy. paddleocr[doc-parser] zieht paddlex[genai-client,ocr]
+#    (Requires-Dist der paddleocr==3.7.0-METADATA: "paddlex[genai-client,ocr]
+#    <3.8.0,>=3.7.0"). paddlex==3.7.0s eigene METADATA verlangt
+#    "numpy<2.4,>=1.24". Dieses venv haelt numpy==2.5.1 (Required-by laut
+#    `pip show numpy`: chromadb, onnxruntime, scikit-learn, scipy,
+#    transformers) -- 2.5.1 verletzt paddlex' Obergrenze <2.4 direkt. Ein
+#    `pip install -r requirements-ocr-paddle.txt` neben requirements.txt
+#    zwingt pip, numpy auf <2.4 herunterzustufen (oder scheitert an einem
+#    unloesbaren Resolver-Konflikt) -- beides bricht den RAG-Embedding-Pfad
+#    (sentence-transformers/chromadb) bzw. transformers, die auf der
+#    aktuellen numpy-Version aufbauen.
+# 2. opencv/shapely/pyclipper. paddlex[ocr] (transitiv ueber
+#    paddleocr[doc-parser]) verlangt zusaetzlich
+#    "opencv-contrib-python==4.10.0.84" (exakt gepinnt, kein Bereich),
+#    "shapely" und "pyclipper" -- keines davon ist heute Teil von
+#    requirements.txt/requirements-ocr.txt. Alle drei sind fuer
+#    Windows/cp312 als fertige Wheels verfuegbar (verifiziert per
+#    `pip download --no-deps`, nicht installiert), ziehen aber deutlich
+#    zusaetzliches Gewicht (opencv-contrib-python allein: ~45 MB Wheel) in
+#    ein venv, dessen ChromaDB-Pfad bereits eigene, empfindliche Pins haelt.
+#
+# Beide Konflikte wurden gegen die echten PyPI-Metadaten dieser Pakete
+# verifiziert (siehe Versionsangaben unten), NICHT geraten.
+#
+# Verifiziert per `pip index versions <paket>` und `pip download --no-deps`
+# gegen den echten PyPI-Index (kein Installationsversuch in diesem venv):
+paddlepaddle==3.3.1
+paddleocr[doc-parser]==3.7.0
+
+# paddleocr[doc-parser]==3.7.0 loest paddlex[genai-client,ocr]<3.8.0,>=3.7.0
+# selbst auf -- pip waehlt die konkreten Versionen von paddlex und dessen
+# eigenen Extras (u.a. opencv-contrib-python==4.10.0.84, shapely, pyclipper,
+# s.o.) beim Installieren dieser Datei automatisch. Absichtlich NICHT hier
+# einzeln nachgepinnt: paddlex==3.7.0 pinnt opencv-contrib-python bereits
+# exakt (==4.10.0.84) und shapely/pyclipper ungepinnt in seiner eigenen
+# METADATA -- ein zusaetzlicher, hier von Hand gepflegter Pin wuerde bei
+# einem paddlex-Update lautlos veralten, ohne dass jemand ihn bemerkt.
+#
+# TODO(verify): ob paddleocr[doc-parser]==3.7.0 tatsaechlich das
+# PaddleOCR-VL-1.6-Modell (siehe paddleocr_vl.py:DEFAULT_PADDLE_MODEL)
+# unterstuetzt bzw. automatisch laedt, ist NICHT verifiziert -- diese Datei
+# pinnt nur die zum Zeitpunkt der Erstellung neueste, gegen PyPI aufloesbare
+# paddleocr/paddlepaddle-Kombination. Vor dem ersten echten Einsatz pruefen,
+# ob eine neuere/andere paddleocr-Version fuer dieses Modell noetig ist.

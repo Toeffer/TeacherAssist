@@ -300,7 +300,13 @@ function extractKlassenStufen(text) {
 }
 
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined) {
+// `ocrJobIds` (Stufe 9): die OCR-Job-IDs, die der aktive Chat bisher referenziert
+// hat. Der Server (tool_server.py:_stream_chat_payload) prüft sie gegen
+// evaluate_grading_gate() BEVOR die SSE-Antwort beginnt und lehnt mit 409
+// OCR_APPROVAL_REQUIRED ab, wenn ein referenzierter Job nicht freigegeben ist
+// (oder trotz Freigabe noch kritische Unsicherheit hat). Ohne dieses Feld war
+// das Gate zwar serverseitig fertig, aber nie scharf: die Liste kam nie an.
+async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined, ocrJobIds = []) {
   const response = await taFetch('/api/v1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -313,13 +319,19 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
       modelOverride,
       ollamaModelOverride,
       force_skill: forceSkill || undefined,
+      ocrJobIds,
     }),
     signal,
   });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(window.taApi.errorMessage(err) || `Server-Fehler ${response.status}`);
+    const message = window.taApi.errorMessage(err) || `Server-Fehler ${response.status}`;
+    const error = new Error(message);
+    // Lässt handleSend zwischen "OCR-Freigabe fehlt" (409 OCR_APPROVAL_REQUIRED
+    // -- eigene, nicht-generische Behandlung) und anderen Fehlern unterscheiden.
+    error.code = (err && err.error && err.error.code) || null;
+    throw error;
   }
 
   const reader = response.body.getReader();
@@ -415,9 +427,15 @@ function App() {
   const [onboardingStep, setOnboardingStep] = useState(0);
   const initialState = window.taApi.getBootstrap()?.state || {};
   const [profile, setProfile] = useState(() => ({ assistant_name: 'Mila', ...(initialState.profile || {}) }));
-  const [chats, setChats] = useState(() => initialState.chats?.length
-    ? initialState.chats
-    : [{ id: crypto.randomUUID(), title: 'Onboarding', messages: [] }]);
+  const [chats, setChats] = useState(() => {
+    const initial = initialState.chats?.length
+      ? initialState.chats
+      : [{ id: crypto.randomUUID(), title: 'Onboarding', messages: [] }];
+    // ocrJobIds (Stufe 9): pro Chat, damit sie beim Chat-Wechsel nicht
+    // vermischt werden; ältere persistierte Chats ohne dieses Feld
+    // bekommen hier defensiv eine leere Liste.
+    return initial.map(c => ({ ocrJobIds: [], ...c }));
+  });
   const [activeChatId, setActiveChatId] = useState(() => initialState.chats?.[0]?.id || null);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -442,6 +460,9 @@ function App() {
   const [tailscaleStatus, setTailscaleStatus] = useState('unknown');
   const [showStylePopover, setShowStylePopover] = useState(false);
   const [dsgvoRoutingActive, setDsgvoRoutingActive] = useState(false);
+  // Stufe 9: 409 OCR_APPROVAL_REQUIRED von /api/v1/chat -- { message, jobIds } | null.
+  const [ocrGateBlock, setOcrGateBlock] = useState(null);
+  const [ocrReopenJobId, setOcrReopenJobId] = useState(null);
   const [uploadPhase, setUploadPhase] = useState(null); // null | 'uploading' | 'indexing'
   const [batchQueue,  setBatchQueue]  = useState([]);   // [{file, status:'pending'|'active'|'done'|'error'}]
   const batchRunning = useRef(false);
@@ -548,6 +569,42 @@ function App() {
   const addMessage = useCallback((chatId, msg) => {
     setChats(prev => prev.map(c => c.id === chatId ? { ...c, messages: [...c.messages, msg] } : c));
   }, []);
+
+  // Stufe 9: hängt eine freigegebene OCR-Job-ID an den jeweiligen Chat --
+  // dedupliziert, und auf 20 gedeckelt wie der Server (evaluate_grading_gate
+  // liest nur data.get("ocrJobIds")[:20]). Da wir hier selbst schon auf 20
+  // Einträge kappen, bleibt beim späteren Senden nichts von serverseitig
+  // abgeschnitten -- wir behalten bewusst die JÜNGSTEN 20 (statt der ERSTEN
+  // 20 wie der Server), weil die zuletzt referenzierten Jobs für die
+  // aktuelle Bewertungsanfrage relevanter sind.
+  const addOcrJobId = useCallback((chatId, jobId) => {
+    if (!chatId || !jobId) return;
+    setChats(prev => prev.map(c => {
+      if (c.id !== chatId) return c;
+      const existing = c.ocrJobIds || [];
+      if (existing.includes(jobId)) return c;
+      return { ...c, ocrJobIds: [...existing, jobId].slice(-20) };
+    }));
+  }, []);
+
+  // ocr-ui.jsx's OcrReviewModal dispatcht dieses Event bei jeder erfolgreichen
+  // Freigabe (unabhängig davon, ob die Modal-Instanz aus CameraModal heraus
+  // oder -- wie beim Wiedereröffnen nach einem 409 unten -- direkt aus dieser
+  // Komponente gestartet wurde). Wir können ocr-ui.jsx/CameraModal nicht per
+  // Prop erreichen (CameraModal wird ausschließlich innerhalb von
+  // ChatInput/components.jsx gerendert), daher der lose gekoppelte
+  // window-CustomEvent-Kanal -- dasselbe Muster wie api-client.js'
+  // 'teacherassist:bootstrap'/'teacherassist:credentials'.
+  useEffect(() => {
+    function onOcrApproved(e) {
+      const jobId = e.detail?.jobId;
+      if (!jobId) return;
+      addOcrJobId(activeChatId, jobId);
+      setOcrGateBlock(prev => (prev && prev.jobIds.includes(jobId)) ? null : prev);
+    }
+    window.addEventListener('teacherassist:ocr-approved', onOcrApproved);
+    return () => window.removeEventListener('teacherassist:ocr-approved', onOcrApproved);
+  }, [activeChatId, addOcrJobId]);
 
   const addBotMessage = useCallback((text, delay = 600) => {
     setIsTyping(true);
@@ -789,8 +846,10 @@ function App() {
       return c;
     }));
 
-    const historySnapshot = chats.find(c => c.id === activeChatId)?.messages || [];
+    const currentChat = chats.find(c => c.id === activeChatId);
+    const historySnapshot = currentChat?.messages || [];
     const currentMessages = [...historySnapshot, userMsg];
+    const activeOcrJobIds = currentChat?.ocrJobIds || [];
 
     setIsStreaming(true);
     setStreamingText('');
@@ -820,10 +879,18 @@ function App() {
             addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
           }
         }
-      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal);
+      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal, activeOcrJobIds);
     } catch (err) {
       if (err && err.name === 'AbortError') {
         aborted = true;
+      } else if (err && err.code === 'OCR_APPROVAL_REQUIRED') {
+        // Eigene Behandlung statt der generischen Fehlermeldung unten: der
+        // Server liefert bereits eine passende deutsche Erklärung (siehe
+        // teacherassist_core/ocr/gate.py:_GATE_MESSAGE_DE) -- die geben wir
+        // unverändert weiter, statt eine eigene Formulierung zu erfinden.
+        aborted = true; // unterdrückt die generische "(Keine Antwort erhalten)"-Bubble unten
+        addMessage(activeChatId, { role: 'bot', text: `🔒 ${err.message}`, ts: Date.now() });
+        setOcrGateBlock({ message: err.message, jobIds: activeOcrJobIds });
       } else {
         fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
       }
@@ -1335,6 +1402,41 @@ function App() {
             queue={batchQueue}
             onDismiss={() => setBatchQueue([])}
           />
+          {ocrGateBlock && (
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 8,
+              padding: '10px 16px', background: 'rgba(245,158,11,0.12)',
+              borderTop: '1px solid #f59e0b', fontSize: 13, color: '#92400e', flexShrink: 0,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <span>🔒 {ocrGateBlock.message}</span>
+                <button onClick={() => setOcrGateBlock(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#92400e', display: 'flex', flexShrink: 0 }}>
+                  {Icons.close}
+                </button>
+              </div>
+              {/* Der Server nennt in der Fehlermeldung selbst keine Job-ID (nur im
+                  Server-Log) -- wir bieten daher alle vom aktuellen Chat referenzierten
+                  Jobs zum erneuten Öffnen an, statt (fälschlich) einen einzelnen
+                  "Übeltäter" zu erraten. */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {ocrGateBlock.jobIds.map(id => (
+                  <button key={id} onClick={() => setOcrReopenJobId(id)} style={{
+                    padding: '6px 12px', borderRadius: 8, border: '1.5px solid #f59e0b',
+                    background: 'transparent', color: '#92400e', fontSize: 12, cursor: 'pointer', fontWeight: 600,
+                  }}>
+                    Review öffnen ({id.slice(0, 8)}…)
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {ocrReopenJobId && window.OcrReviewModal && (
+            <window.OcrReviewModal
+              jobId={ocrReopenJobId}
+              onClose={() => setOcrReopenJobId(null)}
+              onApprove={() => setOcrReopenJobId(null)}
+            />
+          )}
           <ChatInput
             value={inputValue}
             onChange={setInputValue}

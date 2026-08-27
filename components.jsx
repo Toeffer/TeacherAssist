@@ -1760,6 +1760,13 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
         </div>
       </CollapsibleSection>
 
+      {/* OCR & Texterkennung */}
+      <CollapsibleSection title="📷 OCR & Texterkennung" subtitle="Handschrift- und Druckschrift-Erkennung für gescannte Schülerarbeiten">
+        <div style={{ padding: '16px 20px' }}>
+          {window.OcrSettingsSection ? <window.OcrSettingsSection toolStatus={toolStatus} /> : null}
+        </div>
+      </CollapsibleSection>
+
       {/* Backup & Restore */}
       {toolStatus === 'online' && (
         <CollapsibleSection title="💾 Backup und Wiederherstellung" subtitle="Profil, Lehrplan-Index und Raster als ZIP sichern">
@@ -2784,176 +2791,6 @@ function TemplateGalleryView({ onUseTemplate }) {
           Keine Vorlagen gefunden für „{search}"
         </div>
       )}
-    </div>
-  );
-}
-
-/* ---------- Kamera-Modal (Foto-zu-Korrektur) ---------- */
-function CameraModal({ onClose, onCapture }) {
-  const videoRef   = React.useRef(null);
-  const streamRef  = React.useRef(null);
-  const [preview,    setPreview]    = React.useState(null);
-  const [ocrText,    setOcrText]    = React.useState('');
-  const [ocrLoading, setOcrLoading] = React.useState(false);
-  const [errMsg,     setErrMsg]     = React.useState('');
-
-  React.useEffect(() => {
-    startCamera();
-    return () => stopCamera();
-  }, []);
-
-  async function startCamera() {
-    setErrMsg('');
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
-      streamRef.current = s;
-      if (videoRef.current) videoRef.current.srcObject = s;
-    } catch (e) {
-      setErrMsg('Kamera nicht zugänglich: ' + (e.message || e.name));
-    }
-  }
-
-  function stopCamera() {
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    streamRef.current = null;
-  }
-
-  function capture() {
-    const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
-    const canvas = document.createElement('canvas');
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0);
-    stopCamera();
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    setPreview(dataUrl);
-    canvas.toBlob(async (blob) => {
-      setOcrLoading(true);
-      try {
-        const fd = new FormData();
-        fd.append('image', blob, 'capture.jpg');
-        const res  = await taFetch('http://localhost:8789/ocr-image', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setOcrText(data.text);
-      } catch (e) {
-        setErrMsg('OCR: ' + e.message);
-      }
-      setOcrLoading(false);
-    }, 'image/jpeg', 0.92);
-  }
-
-  function retake() {
-    setPreview(null); setOcrText(''); setErrMsg('');
-    startCamera();
-  }
-
-  const inputStyle = {
-    width: '100%', padding: '9px 13px', borderRadius: 10, boxSizing: 'border-box',
-    border: '1.5px solid var(--border)', background: 'var(--surface-input)',
-    color: 'var(--text-primary)', fontSize: 13, fontFamily: 'inherit',
-    resize: 'vertical', minHeight: 100,
-  };
-
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 3000,
-      background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
-    }}>
-      <div style={{
-        background: 'var(--surface)', borderRadius: 20, padding: 24,
-        maxWidth: 480, width: '100%', maxHeight: '90vh', overflowY: 'auto',
-        animation: 'fadeInUp 0.25s ease',
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ fontWeight: 700, fontSize: 17, color: 'var(--text-primary)', margin: 0 }}>
-            📸 Arbeit fotografieren
-          </h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}>
-            {Icons.close}
-          </button>
-        </div>
-
-        {!preview && (
-          <>
-            {errMsg ? (
-              <div style={{ padding: '14px', borderRadius: 10, background: 'rgba(220,38,38,0.08)', color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
-                ⚠️ {errMsg}
-              </div>
-            ) : (
-              <video ref={videoRef} autoPlay playsInline muted style={{
-                width: '100%', borderRadius: 12, background: '#000',
-                maxHeight: 320, objectFit: 'cover', display: 'block', marginBottom: 12,
-              }} />
-            )}
-            <button onClick={capture} disabled={!!errMsg} style={{
-              width: '100%', padding: '12px', borderRadius: 12,
-              background: errMsg ? 'var(--border)' : 'var(--accent)', color: '#fff',
-              border: 'none', cursor: errMsg ? 'default' : 'pointer', fontSize: 15, fontWeight: 600,
-            }}>
-              📸 Foto aufnehmen
-            </button>
-          </>
-        )}
-
-        {preview && (
-          <>
-            <img src={preview} alt="Aufnahme" style={{ width: '100%', borderRadius: 12, marginBottom: 12, display: 'block' }} />
-            {ocrLoading && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text-tertiary)', fontSize: 13, marginBottom: 12 }}>
-                <div style={{ width: 14, height: 14, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.7s linear infinite', flexShrink: 0 }}></div>
-                Erkenne Text…
-              </div>
-            )}
-            {errMsg && !ocrLoading && (
-              <div style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(220,38,38,0.08)', color: 'var(--danger)', fontSize: 12, marginBottom: 12 }}>
-                ⚠️ {errMsg}
-              </div>
-            )}
-            {ocrText && (
-              <>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 }}>
-                  Erkannter Text (bearbeitbar):
-                </div>
-                <textarea
-                  value={ocrText}
-                  onChange={e => setOcrText(e.target.value)}
-                  style={inputStyle}
-                />
-              </>
-            )}
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <button onClick={retake} style={{
-                flex: 1, padding: '10px', borderRadius: 10, cursor: 'pointer',
-                border: '1.5px solid var(--border)', background: 'var(--surface-elevated)',
-                color: 'var(--text-secondary)', fontSize: 13,
-              }}>
-                ↩ Neu aufnehmen
-              </button>
-              {(ocrText || errMsg) && (
-                <button
-                  onClick={() => { onCapture(ocrText || ''); onClose(); }}
-                  disabled={!ocrText}
-                  style={{
-                    flex: 2, padding: '10px', borderRadius: 10, cursor: ocrText ? 'pointer' : 'default',
-                    background: ocrText ? 'var(--accent)' : 'var(--border)', color: '#fff',
-                    border: 'none', fontSize: 13, fontWeight: 600,
-                  }}
-                >
-                  In Chat einfügen →
-                </button>
-              )}
-            </div>
-          </>
-        )}
-
-        <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-          💡 Tipp: Auf hellem Untergrund fotografieren, Blatt gerade halten.
-          Der erkannte Text wird in das Eingabefeld eingefügt.
-        </div>
-      </div>
     </div>
   );
 }

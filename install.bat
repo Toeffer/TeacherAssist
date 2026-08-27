@@ -132,6 +132,29 @@ if errorlevel 1 (
     exit /b 1
 )
 cd ..
+
+:: Optionale Handschrifterkennung (HTR, ~1.3 GB Modell-Download separat ueber
+:: die Web-UI, hier nur die Python-Abhaengigkeiten). torch/transformers sind
+:: bereits transitiv ueber sentence-transformers installiert -- dieser
+:: Schritt pinnt sie nur explizit nach. Schlaegt er fehl (z.B. keine
+:: Internetverbindung), bleibt TeacherAssist trotzdem voll installierbar und
+:: nutzbar (Tesseract-OCR reicht dafuer aus) -- deshalb KEIN exit /b 1 hier.
+echo.
+echo  [opt]  Installiere Handschrifterkennung (HTR, optional)...
+tools\.venv\Scripts\pip install -r tools\requirements-ocr.txt -q
+if errorlevel 1 (
+    echo         HINWEIS: HTR-Abhaengigkeiten konnten nicht installiert werden.
+    echo         Handschrifterkennung ist vorerst nicht verfuegbar, alles andere
+    echo         funktioniert weiterhin normal.
+) else (
+    echo         OK: HTR-Abhaengigkeiten installiert.
+)
+
+tools\.venv\Scripts\python.exe -m pip check
+if errorlevel 1 (
+    echo PROBLEM: Abhaengigkeitskonflikte wurden gefunden.
+    exit /b 1
+)
 tools\.venv\Scripts\python.exe scripts\capability_check.py
 if errorlevel 1 exit /b 1
 echo         OK: Alle Komponenten installiert und geprueft.
