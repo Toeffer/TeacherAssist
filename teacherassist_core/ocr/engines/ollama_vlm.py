@@ -93,6 +93,7 @@ import time
 import urllib.request
 from typing import Any, Mapping, Sequence
 
+from ...privacy import cloud_allowed_for_classification
 from ..consensus import tokenize
 from ..markup import parse_markup
 from ..privacy_guard import assert_local_only
@@ -107,6 +108,17 @@ VISION_MODEL_PREFIXES = (
     "minicpm-v", "llama3.2-vision", "llava", "bakllava", "moondream",
 )
 DEFAULT_VISION_MODEL = "qwen3-vl:8b"
+
+# PRIVACY-Luecke (siehe Auftrag): Ollama kann Modell-Tags bedienen, die NICHT
+# lokal inferieren, sondern die Anfrage an Ollamas gehostete Cloud-
+# Infrastruktur weiterleiten -- der HTTP-Request geht dabei WEITERHIN an
+# ``self.endpoint`` (typischerweise 127.0.0.1), also sieht assert_local_only()
+# einen Loopback-Endpunkt und laesst ihn passieren. Diese Konstante haelt
+# ALLE bekannten Marker fuer ein solches Remote-Tag an EINER Stelle, damit
+# ein spaeterer weiterer Marker (falls Ollama das Namensschema erweitert)
+# nicht an mehreren Stellen im Modul nachgezogen werden muss. "-cloud" ist
+# der einzige heute bekannte Marker (z.B. "qwen3-vl:235b-cloud").
+REMOTE_MODEL_MARKERS = ("-cloud",)
 
 # Siehe Moduldoc "GEMESSENE LAUFZEIT": eine einzelne Zeile brauchte 90.6 s
 # auf gemessener CPU-Inferenz. Der alte Default von 120 s liess dafuer kaum
@@ -204,6 +216,19 @@ def _fetch_tags(endpoint: str) -> list[str] | None:
 def _is_vision_model_name(name: str) -> bool:
     lowered = name.lower()
     return any(lowered.startswith(prefix.lower()) for prefix in VISION_MODEL_PREFIXES)
+
+
+def _is_remote_model(tag: str) -> bool:
+    """True, wenn ``tag`` (Ollamas ``<modell>:<variante>``-Namensschema) auf
+    ein Modell verweist, dessen Inferenz NICHT lokal laeuft (siehe
+    REMOTE_MODEL_MARKERS oben). Geprueft wird ausschliesslich der Tag-Teil
+    NACH dem ersten ``:``, case-insensitive, als Suffix -- ein Modellname
+    ganz ohne ``:`` hat keinen Tag-Teil und gilt daher nicht als Remote-Modell
+    (Ollama liefert Tags aus ``/api/tags`` in der Praxis immer mit
+    ``:``-Variante, siehe ``models[].name``)."""
+    _, _, variant = tag.partition(":")
+    lowered_variant = variant.lower()
+    return any(lowered_variant.endswith(marker) for marker in REMOTE_MODEL_MARKERS)
 
 
 def _encode_image_to_base64(image: Any) -> str:
@@ -327,7 +352,7 @@ class OllamaVlmEngine:
                 capabilities=self.capabilities,
             )
         try:
-            self._resolve_vision_model(tags)
+            resolved_model = self._resolve_vision_model(tags)
         except EngineError as exc:
             return EngineStatus(
                 name=self.name,
@@ -343,6 +368,7 @@ class OllamaVlmEngine:
             available=True,
             reason="",
             model_id=self.model_id,
+            resolved_model_id=resolved_model,
             capabilities=self.capabilities,
         )
 
@@ -355,14 +381,46 @@ class OllamaVlmEngine:
         """Siehe Moduldoc "BUG 2": liefert NUR einen Namen, der (a) in `tags`
         vorkommt und (b) zu einem bekannten Vision-Praefix passt. Bevorzugt
         `self.model_id`, sonst der Reihe nach VISION_MODEL_PREFIXES. Sonst
-        EngineError -- NIE ein Fallback auf ein Nicht-Vision-Modell."""
-        tag_set = set(tags)
+        EngineError -- NIE ein Fallback auf ein Nicht-Vision-Modell.
+
+        PRIVACY (siehe Auftrag, Moduldoc "PRIVACY" oben betrifft nur den
+        Endpunkt, dies hier den Modell-TAG): Verbietet die Klassifikation
+        Cloud-Zugriff (``not cloud_allowed_for_classification``), werden
+        Remote-/Cloud-Tags (``_is_remote_model``) VOR jeder Praefix-Pruefung
+        aus der Kandidatenmenge entfernt -- ein solches Tag darf hier nie
+        gewaehlt werden, auch nicht als letzter Ausweg. Zwei Faelle werfen
+        EngineError statt still auszuweichen:
+          - ``self.model_id`` selbst ist explizit auf ein Remote-Tag gesetzt
+            (z.B. ueber die Einstellung ``ocrVisionModel``) -- eine explizite
+            Konfiguration hebelt die Privacy-Regel fuer Schuelerarbeiten
+            NICHT aus, es wird NICHT still auf ein anderes, lokales Modell
+            ausgewichen, selbst wenn eines verfuegbar waere.
+          - nach Ausschluss aller Remote-Tags bleibt kein nutzbares
+            Vision-Modell mehr uebrig, aber unter den urspruenglichen `tags`
+            war mindestens eines (dann war der einzige Treffer ein
+            Cloud-Modell) -- auch dann ``remote_model_forbidden``, NICHT der
+            generische ``model_not_pulled``, damit status()/UI den
+            eigentlichen Grund zeigen koennen."""
+        forbids_cloud = not cloud_allowed_for_classification(self.classification)
+
+        if forbids_cloud and self.model_id in tags and _is_remote_model(self.model_id):
+            raise EngineError(self.name, f"remote_model_forbidden:{self.model_id}")
+
+        usable_tags = [tag for tag in tags if not (forbids_cloud and _is_remote_model(tag))]
+        tag_set = set(usable_tags)
+
         if self.model_id in tag_set and _is_vision_model_name(self.model_id):
             return self.model_id
         for prefix in VISION_MODEL_PREFIXES:
-            for tag in tags:
+            for tag in usable_tags:
                 if tag.lower().startswith(prefix.lower()):
                     return tag
+
+        if forbids_cloud:
+            for tag in tags:
+                if _is_vision_model_name(tag) and _is_remote_model(tag):
+                    raise EngineError(self.name, f"remote_model_forbidden:{tag}")
+
         raise EngineError(self.name, f"model_not_pulled:{self.model_id}")
 
     def recognize(
@@ -457,6 +515,7 @@ __all__ = [
     "OllamaVlmEngine",
     "VISION_MODEL_PREFIXES",
     "DEFAULT_VISION_MODEL",
+    "REMOTE_MODEL_MARKERS",
     "VLM_CONFIDENCE",
     "DEFAULT_TIMEOUT_S",
 ]

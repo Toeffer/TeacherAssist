@@ -158,6 +158,89 @@ def test_prefers_configured_model_then_prefix_order(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Remote-/Cloud-Modell-Tags (z.B. "qwen3-vl:235b-cloud"): der Endpunkt bleibt
+# lokal (127.0.0.1), aber Ollama leitet die Anfrage an gehostete Infrastruktur
+# weiter -- assert_local_only() sieht das nicht, siehe _is_remote_model.
+# ---------------------------------------------------------------------------
+def test_cloud_tagged_model_is_rejected_for_student_submission(monkeypatch):
+    """Ist unter allen /api/tags-Ergebnissen NUR ein "-cloud"-Tag vorhanden,
+    muss recognize() EngineError("remote_model_forbidden:...") werfen -- NIE
+    auf das Cloud-Tag ausweichen. Der Stub laesst den Test scheitern, falls
+    je ein Generate-Aufruf versucht wird."""
+    stub = _StubTransport(
+        tags=["qwen3-vl:235b-cloud"], forbid=("/v1/chat/completions", "/api/generate")
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine(classification="student_submission")
+    with pytest.raises(EngineError) as excinfo:
+        engine.recognize(_make_image(), region_type=RegionType.PARAGRAPH)
+
+    assert excinfo.value.reason == "remote_model_forbidden:qwen3-vl:235b-cloud"
+    assert stub.calls == ["http://127.0.0.1:11434/api/tags"]
+
+
+def test_local_model_preferred_over_cloud_model():
+    """Stehen ein lokales und ein Cloud-Tag zur Auswahl, gewinnt IMMER das
+    lokale -- unabhaengig von der Reihenfolge in `tags`."""
+    engine = OllamaVlmEngine(classification="student_submission")
+
+    assert (
+        engine._resolve_vision_model(["qwen3-vl:235b-cloud", "qwen3-vl:32b"])
+        == "qwen3-vl:32b"
+    )
+    assert (
+        engine._resolve_vision_model(["qwen3-vl:32b", "qwen3-vl:235b-cloud"])
+        == "qwen3-vl:32b"
+    )
+
+
+def test_explicitly_configured_cloud_model_still_rejected(monkeypatch):
+    """Eine explizite Konfiguration (ocrVisionModel -> model_id) auf ein
+    Cloud-Tag hebelt die Privacy-Regel NICHT aus -- auch wenn ein anderes,
+    lokales Vision-Modell verfuegbar waere, weicht recognize() NICHT
+    stillschweigend auf dieses aus, sondern wirft EngineError."""
+    stub = _StubTransport(
+        tags=["qwen3-vl:235b-cloud", "qwen3-vl:32b"],
+        forbid=("/v1/chat/completions", "/api/generate"),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine(model_id="qwen3-vl:235b-cloud", classification="student_submission")
+    with pytest.raises(EngineError) as excinfo:
+        engine.recognize(_make_image(), region_type=RegionType.PARAGRAPH)
+
+    assert excinfo.value.reason == "remote_model_forbidden:qwen3-vl:235b-cloud"
+
+
+def test_cloud_model_allowed_for_non_forbidden_classification(monkeypatch):
+    """Die Sperre gilt der Klassifikation (Schuelerdaten), nicht Cloud an
+    sich: fuer "public_curriculum" (cloud_allowed_for_classification()==True)
+    darf ein Cloud-Tag gewaehlt und tatsaechlich aufgerufen werden."""
+    stub = _StubTransport(tags=["qwen3-vl:235b-cloud"], chat_content="Text")
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine(classification="public_curriculum")
+    candidate = engine.recognize(_make_image(), region_type=RegionType.PARAGRAPH)
+
+    assert candidate.text == "Text"
+    assert stub.bodies[0]["model"] == "qwen3-vl:235b-cloud"
+
+
+def test_status_reports_remote_model_forbidden(monkeypatch):
+    """status() muss dieselbe Ablehnung wie recognize() spiegeln, statt einen
+    gruenen Haken fuer eine Engine zu zeigen, die zur Laufzeit verweigert."""
+    stub = _StubTransport(tags=["qwen3-vl:235b-cloud"])
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine(classification="student_submission")
+    status = engine.status()
+
+    assert status.available is False
+    assert status.reason == "remote_model_forbidden:qwen3-vl:235b-cloud"
+
+
+# ---------------------------------------------------------------------------
 # Privacy
 # ---------------------------------------------------------------------------
 def test_refuses_non_loopback_endpoint_before_any_socket(monkeypatch):
@@ -219,6 +302,52 @@ def test_status_never_pulls_a_model(monkeypatch):
     status = engine.status()
     assert status.available is True
     assert stub.calls == ["http://127.0.0.1:11434/api/tags"]
+
+
+def test_status_reports_resolved_model_when_prefix_match_differs(monkeypatch):
+    """Bug 2: das konfigurierte Modell ist nicht gepullt, aber ein anderes
+    Vision-Modell mit passendem Praefix ist es -- status() muss BEIDE Namen
+    zeigen (model_id bleibt das konfigurierte, resolved_model_id das
+    tatsaechlich verwendete), statt den Unterschied zu verschweigen."""
+    stub = _StubTransport(tags=["qwen3-vl:32b"])
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine(model_id="qwen3-vl:8b")
+    status = engine.status()
+
+    assert status.available is True
+    assert status.model_id == "qwen3-vl:8b"
+    assert status.resolved_model_id == "qwen3-vl:32b"
+    assert status.to_dict()["modelId"] == "qwen3-vl:8b"
+    assert status.to_dict()["resolvedModelId"] == "qwen3-vl:32b"
+
+
+def test_status_resolved_model_equals_configured_when_present(monkeypatch):
+    """Ist das konfigurierte Modell selbst vorhanden, weichen model_id und
+    resolved_model_id NICHT auseinander."""
+    stub = _StubTransport(tags=["qwen3-vl:8b"])
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine(model_id="qwen3-vl:8b")
+    status = engine.status()
+
+    assert status.available is True
+    assert status.model_id == "qwen3-vl:8b"
+    assert status.resolved_model_id == "qwen3-vl:8b"
+
+
+def test_status_resolved_model_empty_when_resolution_fails(monkeypatch):
+    """Schlaegt die Aufloesung fehl (kein Vision-Modell gepullt), bleibt
+    resolved_model_id leer -- es gibt nichts, was tatsaechlich verwendet
+    wuerde."""
+    stub = _StubTransport(tags=["gemma3:4b"])
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+
+    engine = OllamaVlmEngine()
+    status = engine.status()
+
+    assert status.available is False
+    assert status.resolved_model_id == ""
 
 
 # ---------------------------------------------------------------------------

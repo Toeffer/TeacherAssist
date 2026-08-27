@@ -854,7 +854,8 @@ function OcrReviewModal({ jobId, onClose, onApprove, onRetake }) {
 // implementiert", obwohl die Engine zu dem Zeitpunkt längst registriert war,
 // siehe engines/__init__.py:ENGINE_FACTORIES). Diese Sektion rendert daher
 // AUSSCHLIESSLICH aus dem, was /api/v1/bootstrap unter "ocrEngines" (Liste
-// von EngineStatus.to_dict(): name/kind/available/reason/modelId/capabilities)
+// von EngineStatus.to_dict(): name/kind/available/reason/modelId/
+// resolvedModelId/capabilities)
 // tatsächlich zurückgibt -- egal welche Engine-Namen ENGINE_FACTORIES gerade
 // kennt. Eine Engine, die noch in keiner Einstellung referenziert ist,
 // erscheint hier folgerichtig nicht von selbst; das "Engine hinzufügen"-Feld
@@ -883,6 +884,27 @@ function describeEngineReason(reason) {
       // bereits installierte Paketversion, kein fehlendes Modell) -- daher
       // bewusst KEIN offerDownload:true, anders als bei model_not_downloaded.
       return { label: 'Nicht verfügbar: Paket-Konflikt', detail: rest, offerDownload: false };
+    case 'remote_model_forbidden': {
+      // rest ist der betroffene Modell-Tag, z.B. "qwen3-vl:235b-cloud" -- bei
+      // recognize() (nicht bei status()) kann zusätzlich ":region=<id>"
+      // angehängt sein (siehe ollama_vlm.py:_region_suffix). Für die Anzeige
+      // abschneiden, den Basisnamen (vor dem ersten ":") liefert der
+      // Pull-Hinweis unten in beiden Fällen richtig.
+      const tag = rest.replace(/:region=.*$/, '');
+      const baseName = tag.split(':')[0] || tag;
+      // Kein Download-Button: das Modell IST vorhanden, es liegt nur in
+      // Ollamas Cloud-Infrastruktur -- ein Download kann daran nichts
+      // ändern, wie bei transformers_too_old. Das ist eine bewusste
+      // Schutzmaßnahme (Schülertext soll die Maschine nicht verlassen),
+      // keine Fehlfunktion -- der Ton entsprechend zurückhaltend statt alarmierend.
+      return {
+        label: 'Nur ein Cloud-Modell verfügbar – für Schülerarbeiten nicht zulässig',
+        detail: tag
+          ? `Modell „${tag}“ wird aus Datenschutzgründen nicht verwendet – Schülertext würde sonst an Ollamas Cloud-Infrastruktur gesendet. Lokale Variante laden: ollama pull ${baseName}`
+          : 'Wird aus Datenschutzgründen nicht verwendet – Schülertext würde sonst an Ollamas Cloud-Infrastruktur gesendet.',
+        offerDownload: false,
+      };
+    }
     default:
       // Unbekanntes Präfix (neue Engine, neuer Grund): roh anzeigen statt
       // verschlucken -- lieber ein technischer String als Stille.
@@ -1052,6 +1074,18 @@ function OcrSettingsSection({ toolStatus }) {
               {!status.available && info.detail && (
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4, marginLeft: 26 }}>
                   {info.detail}
+                </div>
+              )}
+              {status.resolvedModelId && status.resolvedModelId !== status.modelId && (
+                // Bug 2: _resolve_vision_model() (ollama_vlm.py) darf per
+                // Praefix-Match ein ANDERES, tatsaechlich vorhandenes Modell
+                // waehlen als das konfigurierte -- das ist keine Fehlfunktion
+                // (der Job laeuft), aber die Lehrkraft muss sehen koennen,
+                // welches Modell tatsaechlich die Erkennung liefert, statt
+                // stillschweigend von den konfigurierten Ergebnissen
+                // abzuweichen.
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, marginLeft: 26 }}>
+                  Konfiguriertes Modell „{status.modelId}“ nicht gefunden – verwendet wird stattdessen „{status.resolvedModelId}“.
                 </div>
               )}
               {info.offerDownload && !download?.active && (

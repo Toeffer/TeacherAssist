@@ -30,6 +30,14 @@ class EngineStatus:
     reason: str
     model_id: str
     capabilities: Mapping[str, bool] = field(default_factory=dict)
+    # Leer, wenn die Engine model_id direkt (unaufgeloest) verwendet
+    # (tesseract/htr/paddleocr_vl) oder wenn die Aufloesung fehlgeschlagen
+    # ist. Nur ollama_vlm kann hier von model_id abweichen: _resolve_vision_
+    # model() darf per Praefix-Match ein ANDERES, tatsaechlich vorhandenes
+    # Tag waehlen als das konfigurierte (siehe ollama_vlm.py "BUG 2"). Beide
+    # Felder bleiben sichtbar, damit "konfiguriert" und "wird tatsaechlich
+    # verwendet" nie stillschweigend auseinanderlaufen.
+    resolved_model_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -38,6 +46,7 @@ class EngineStatus:
             "available": self.available,
             "reason": self.reason,
             "modelId": self.model_id,
+            "resolvedModelId": self.resolved_model_id,
             "capabilities": dict(self.capabilities),
         }
 

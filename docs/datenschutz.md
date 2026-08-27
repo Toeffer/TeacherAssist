@@ -49,6 +49,39 @@ Sichtbar wird das je nach Aufrufpfad unterschiedlich:
 `process_page`/`process_document`) niemals stillschweigend abgefangen – kein
 Fallback auf eine andere Engine, kein "catch and continue".
 
+### Risikoklasse: ein lokaler Endpunkt, der selbst weiterleitet
+
+`assert_local_only()` prüft nur die **Endpunkt-URL** – das reicht nicht,
+wenn der Dienst an dieser URL selbst ein Proxy ist. Ollama ist so ein Fall:
+neben lokal ausgeführten Modellen kann es Modell-Tags mit `-cloud`-Suffix
+bedienen (z. B. `qwen3-vl:235b-cloud`), die auf Ollamas eigener gehosteter
+Infrastruktur laufen. Der HTTP-Request bleibt dabei auf `127.0.0.1:11434`
+– `assert_local_only()` sieht einen vertrauenswürdigen Loopback-Endpunkt
+und lässt ihn passieren –, aber Ollama leitet Bild und Prompt danach an
+einen entfernten Rechner weiter. Für eine `student_submission` würde das
+bedeuten, dass eine Schülerarbeit unbemerkt das Gerät verlässt, obwohl die
+Endpunkt-Prüfung grün ist.
+
+`teacherassist_core/ocr/engines/ollama_vlm.py: _is_remote_model()` schließt
+diese Lücke unabhängig von `assert_local_only()`: Modell-Tags, die einen der
+in `REMOTE_MODEL_MARKERS` gelisteten Marker tragen, werden in
+`_resolve_vision_model()` **vor** jeder Präfix-Prüfung aus der
+Kandidatenmenge entfernt, sobald die Klassifikation Cloud-Zugriff verbietet
+– auch wenn das betreffende Tag explizit über `ocrVisionModel` konfiguriert
+wurde. Bleibt dadurch kein nutzbares Modell übrig, wirft die Engine
+`EngineError("remote_model_forbidden:<tag>")`, statt still auf das
+Cloud-Tag auszuweichen; `status()` spiegelt dieselbe Ablehnung
+(`available=False`, derselbe `reason`), damit die Settings-UI das anzeigt,
+statt einen grünen Haken für eine Engine zu zeigen, die zur Laufzeit
+verweigert.
+
+**Für die nächste Engine, die einen Netzwerk-Endpunkt anspricht:** Prüfe
+nicht nur, ob der Endpunkt selbst lokal ist, sondern auch, ob der Dienst an
+diesem Endpunkt Betriebsmodi kennt, die die Anfrage an einen Drittanbieter
+oder eine gehostete Infrastruktur weiterreichen (Modell-Auswahl,
+Backend-Flag, Routing-Header o. Ä.). Eine Endpunkt-Prüfung allein reicht
+nur, wenn der Endpunkt garantiert kein Proxy ist.
+
 ## Schülerarbeiten und ChromaDB
 
 Schülerarbeiten laufen ausschließlich durch die OCR-Job-Pipeline
