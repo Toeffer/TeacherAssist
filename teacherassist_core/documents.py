@@ -50,7 +50,7 @@ def extract_pdf_text(path: Path) -> str:
 
 
 def iter_pdf_pages(
-    path: Path,
+    path: Path | bytes,
     *,
     target_dpi: int = 350,
     max_pages: int = 40,
@@ -80,7 +80,7 @@ def iter_pdf_pages(
     import pypdfium2 as pdfium
 
     scale = target_dpi / 72.0
-    document = pdfium.PdfDocument(str(path))
+    document = pdfium.PdfDocument(path if isinstance(path, bytes) else str(path))
     try:
         page_count = min(len(document), max_pages)
         for index in range(page_count):

@@ -115,6 +115,7 @@ def test_bootstrap_issues_session_then_csrf_gate_blocks_and_allows_api_v1(isolat
     finally:
         conn.close()
 
+
     # A protected /api/v1/ route without cookie/CSRF must be rejected (403).
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     try:
@@ -142,6 +143,32 @@ def test_bootstrap_issues_session_then_csrf_gate_blocks_and_allows_api_v1(isolat
         assert response.status == 200
         settings_payload = json.loads(body)
         assert "provider" in settings_payload
+    finally:
+        conn.close()
+
+
+def test_bootstrap_reuses_an_existing_tab_session(isolated_server):
+    """A second bootstrap with the current cookie must not invalidate the
+    first tab by replacing its session or CSRF token."""
+    port = isolated_server
+    host = f"localhost:{port}"
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", "/api/v1/bootstrap", headers={"Host": host})
+        first = conn.getresponse()
+        payload = json.loads(first.read())
+        cookie = first.getheader("Set-Cookie").split(";", 1)[0]
+    finally:
+        conn.close()
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", "/api/v1/bootstrap", headers={"Host": host, "Cookie": cookie})
+        second = conn.getresponse()
+        repeated = json.loads(second.read())
+        assert second.status == 200
+        assert repeated["csrfToken"] == payload["csrfToken"]
+        assert second.getheader("Set-Cookie") is None
     finally:
         conn.close()
 

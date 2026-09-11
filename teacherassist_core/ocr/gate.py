@@ -72,7 +72,7 @@ def evaluate_grading_gate(
         if job.status is not OCRStatus.APPROVED:
             reasons.append(f"not_approved:{job_id}")
             continue
-        if job.has_critical_uncertainty:
+        if job.has_unresolved_critical_uncertainty:
             reasons.append(f"critical_uncertainty:{job_id}")
 
     if reasons:

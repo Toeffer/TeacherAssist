@@ -744,6 +744,69 @@ def test_delete_returns_false_for_unknown_job(store):
     assert store.delete(unknown_job_id) is False
 
 
+def test_editing_an_approved_transcription_requires_reapproval(store):
+    """Approval covers the exact text; a later correction cannot silently
+    remain available to grading or exports."""
+    job_id, region_id = _create_two_region_job(store)
+    store.patch_region(job_id, region_id, text="Freigegebener Text")
+    assert store.approve(job_id).status is OCRStatus.APPROVED
+
+    store.patch_region(job_id, region_id, text="Korrigierter Text")
+    doc = store.get(job_id)
+    assert doc.status is OCRStatus.NEEDS_REVIEW
+    assert doc.approved_at is None
+    assert doc.to_dict()["pages"][0]["text"] is None
+    assert store.approve(job_id).status is OCRStatus.APPROVED
+
+
+def test_scan_cleanup_keeps_approved_record_and_disables_images(store):
+    """Deleting scans after approval removes originals/caches but preserves
+    the approved transcription and audit record across a reload."""
+    job_id, region_id = _create_two_region_job(store)
+    store.patch_region(job_id, region_id, text="Freigegebener Text")
+    assert store.page_png(job_id, 0) is not None
+
+    approved = store.approve(job_id, delete_scan=True)
+    assert approved.scan_cleanup_status == "completed"
+    job_dir = store.root / job_id
+    assert not (job_dir / "source.upload").exists()
+    assert not (job_dir / "page-0.png").exists()
+    assert store.page_png(job_id, 0) is None
+
+    reloaded = OCRJobStore(store.root, max_workers=1)
+    try:
+        saved = reloaded.get(job_id)
+        assert saved is not None
+        assert saved.status is OCRStatus.APPROVED
+        assert saved.scan_cleanup_status == "completed"
+        assert saved.to_dict()["pages"][0]["text"] is not None
+    finally:
+        reloaded.shutdown()
+
+
+def test_delete_running_job_cannot_resurrect(store, monkeypatch):
+    """A running worker observes the durable deletion marker before it can
+    publish either a result or a failure after directory cleanup."""
+    import teacherassist_core.ocr.store as store_module
+
+    release = threading.Event()
+
+    def blocked(*args, **kwargs):
+        release.wait(POLL_TIMEOUT_S)
+        raise RuntimeError("late worker failure")
+
+    monkeypatch.setattr(store_module, "process_document", blocked)
+    stub = store.create(
+        source=_make_image_bytes(), source_name="scan.png",
+        config=PipelineConfig(require_engines=()), engines=[FakeEngine("tesseract", "Text")],
+    )
+    assert store.delete(stub.job_id) is True
+    release.set()
+    time.sleep(0.1)
+    assert store.get(stub.job_id) is None
+    assert not (store.root / stub.job_id).exists()
+
+
 # ---------------------------------------------------------------------------
 # Fix A -- error_code als echtes DocumentResult-Feld (types.py)
 # ---------------------------------------------------------------------------

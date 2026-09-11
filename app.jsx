@@ -1,3 +1,5 @@
+import React from 'react';
+
 /* ============================================
    TeacherAssist – Main App
    ============================================ */
@@ -306,7 +308,7 @@ function extractKlassenStufen(text) {
 // OCR_APPROVAL_REQUIRED ab, wenn ein referenzierter Job nicht freigegeben ist
 // (oder trotz Freigabe noch kritische Unsicherheit hat). Ohne dieses Feld war
 // das Gate zwar serverseitig fertig, aber nie scharf: die Liste kam nie an.
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined, ocrJobIds = []) {
+async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined, ocrJobIds = [], stickyPrivacyMode = 'auto') {
   const response = await taFetch('/api/v1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -320,6 +322,7 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
       ollamaModelOverride,
       force_skill: forceSkill || undefined,
       ocrJobIds,
+      stickyPrivacyMode,
     }),
     signal,
   });
@@ -415,6 +418,30 @@ function AssistantStylePopover({ profile, onUpdate, onClose }) {
 }
 
 /* ---------- Main App ---------- */
+function newChat(title = 'Neuer Chat') {
+  const id = typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return { id, title, messages: [], ocrJobIds: [], privacyMode: 'auto' };
+}
+
+function initialAppState() {
+  const boot = window.taApi.getBootstrap();
+  // main.jsx does not mount this component until bootstrap has succeeded.
+  const state = boot.state;
+  const savedChats = Array.isArray(state.chats) ? state.chats : [];
+  const chats = savedChats.length
+    ? savedChats.map(chat => ({ ocrJobIds: [], privacyMode: 'auto', ...chat }))
+    : [newChat('Onboarding')];
+  return {
+    profile: { assistant_name: 'Mila', ...(state.profile || {}) },
+    chats,
+    activeChatId: chats[0].id,
+    stateRevision: Number.isInteger(state.stateRevision) ? state.stateRevision : 0,
+    settings: boot.settings || {},
+  };
+}
+
 function App() {
   const [dark, setDark] = useState(() => {
     try { return JSON.parse(localStorage.getItem('ta_dark')) || false; } catch { return false; }
@@ -425,38 +452,39 @@ function App() {
     try { return JSON.parse(localStorage.getItem('ta_onboarded')) || false; } catch { return false; }
   });
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const initialState = window.taApi.getBootstrap()?.state || {};
-  const [profile, setProfile] = useState(() => ({ assistant_name: 'Mila', ...(initialState.profile || {}) }));
-  const [chats, setChats] = useState(() => {
-    const initial = initialState.chats?.length
-      ? initialState.chats
-      : [{ id: crypto.randomUUID(), title: 'Onboarding', messages: [] }];
+  const [bootState] = useState(initialAppState);
+  const [profile, setProfile] = useState(bootState.profile);
+  const [chats, setChats] = useState(bootState.chats);
+  const [activeChatId, setActiveChatId] = useState(bootState.activeChatId);
+  const [stateRevision, setStateRevision] = useState(bootState.stateRevision);
+  const [stateSaveError, setStateSaveError] = useState(null);
+  const [stateConflict, setStateConflict] = useState(null);
+  /*
     // ocrJobIds (Stufe 9): pro Chat, damit sie beim Chat-Wechsel nicht
     // vermischt werden; ältere persistierte Chats ohne dieses Feld
     // bekommen hier defensiv eine leere Liste.
     return initial.map(c => ({ ocrJobIds: [], ...c }));
-  });
-  const [activeChatId, setActiveChatId] = useState(() => initialState.chats?.[0]?.id || null);
+  */
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [apiKey, setApiKey] = useState('');
-  const [hasApiKey, setHasApiKey] = useState(false);
-  const [model, setModel] = useState(() => localStorage.getItem('ta_model') || 'deepseek/deepseek-chat');
+  const [hasApiKey, setHasApiKey] = useState(Boolean(bootState.settings.hasApiKey));
+  const [model, setModel] = useState(() => bootState.settings.model || 'deepseek/deepseek-chat');
   const [apiKeyModalDismissed, setApiKeyModalDismissed] = useState(false);
   const [toolStatus, setToolStatus] = useState('unknown');
   const [ragDocCount, setRagDocCount] = useState(0);
-  const [provider, setProvider] = useState(() => localStorage.getItem('ta_provider') || 'openrouter');
-  const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ta_ollama_model') || 'gemma3:4b');
+  const [provider, setProvider] = useState(() => bootState.settings.provider || 'openrouter');
+  const [ollamaModel, setOllamaModel] = useState(() => bootState.settings.ollamaModel || 'gemma3:4b');
   const [ollamaStatus, setOllamaStatus] = useState('unknown');
   const [ollamaModels, setOllamaModels] = useState([]);
-  const [openrouterStatus, setOpenrouterStatus] = useState('unknown');
+  const [openrouterStatus, setOpenrouterStatus] = useState(bootState.settings.hasApiKey ? 'online' : 'unknown');
   const [sessionTokens, setSessionTokens] = useState(0);
-  const [customEndpoint, setCustomEndpoint] = useState(() => localStorage.getItem('ta_custom_endpoint') || '');
+  const [customEndpoint, setCustomEndpoint] = useState(() => bootState.settings.customEndpoint || '');
   const [customApiKey, setCustomApiKey] = useState('');
-  const [hasCustomApiKey, setHasCustomApiKey] = useState(false);
-  const [customModel, setCustomModel] = useState(() => localStorage.getItem('ta_custom_model') || 'gpt-3.5-turbo');
+  const [hasCustomApiKey, setHasCustomApiKey] = useState(Boolean(bootState.settings.hasCustomApiKey));
+  const [customModel, setCustomModel] = useState(() => bootState.settings.customModel || 'gpt-3.5-turbo');
   const [tailscaleStatus, setTailscaleStatus] = useState('unknown');
   const [showStylePopover, setShowStylePopover] = useState(false);
   const [dsgvoRoutingActive, setDsgvoRoutingActive] = useState(false);
@@ -468,6 +496,12 @@ function App() {
   const batchRunning = useRef(false);
   const chatContainerRef = useRef(null);
   const chatAbortRef = useRef(null);
+  const stateSyncRef = useRef({ lastSaved: null, latest: null, inFlight: false, blocked: false, dirty: false });
+  const stateRevisionRef = useRef(stateRevision);
+  const [stateSaveTick, setStateSaveTick] = useState(0);
+  const settingsReadyRef = useRef(false);
+  const settingsSaveRef = useRef(Promise.resolve());
+  const settingsLastSavedRef = useRef(JSON.stringify({ provider, ollamaModel, model, customEndpoint, customModel }));
 
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
 
@@ -488,34 +522,89 @@ function App() {
   useEffect(() => { localStorage.setItem('ta_custom_model', customModel); }, [customModel]);
 
   useEffect(() => {
+    const fingerprint = JSON.stringify({ profile, chats });
+    const sync = stateSyncRef.current;
+    if (sync.lastSaved === null) {
+      // Hydration is a read, not an edit.  Never turn it into an empty or
+      // redundant replacement write when the connection becomes available.
+      sync.lastSaved = fingerprint;
+      return;
+    }
+    if (sync.lastSaved === fingerprint || sync.blocked) return;
+    sync.latest = { profile, chats, fingerprint };
+    sync.dirty = true;
     if (toolStatus !== 'online') return;
-    const timer = setTimeout(() => {
-      taFetch('/api/v1/state', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile, chats }),
-      }).catch(() => {});
+
+    const timer = setTimeout(async () => {
+      if (sync.inFlight) return;
+      const pending = sync.latest;
+      if (!pending || sync.blocked) return;
+      sync.inFlight = true;
+      try {
+        const response = await taFetch('/api/v1/state', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            profile: pending.profile,
+            chats: pending.chats,
+            expectedRevision: stateRevisionRef.current,
+          }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.status === 409 && result?.error?.code === 'STATE_CONFLICT') {
+          sync.blocked = true;
+          setStateConflict(result.error);
+          setStateSaveError('Ein anderer Tab hat den gespeicherten Stand geändert. Dein Entwurf bleibt erhalten.');
+          return;
+        }
+        if (!response.ok) throw new Error(window.taApi.errorMessage(result));
+        const revision = result?.state?.stateRevision;
+        if (!Number.isInteger(revision)) throw new Error('Die Speicherung hat keine Revision zurückgegeben.');
+        stateRevisionRef.current = revision;
+        setStateRevision(revision);
+        sync.lastSaved = pending.fingerprint;
+        sync.dirty = sync.latest?.fingerprint !== pending.fingerprint;
+        setStateSaveError(null);
+      } catch (error) {
+        sync.blocked = true;
+        setStateSaveError(error.message || 'Speichern fehlgeschlagen. Dein Entwurf bleibt erhalten.');
+      } finally {
+        sync.inFlight = false;
+        if (!sync.blocked && sync.latest?.fingerprint !== sync.lastSaved) {
+          setStateSaveTick(value => value + 1);
+        }
+      }
     }, 250);
     return () => clearTimeout(timer);
-  }, [toolStatus, profile, chats]);
+  }, [toolStatus, profile, chats, stateSaveTick]);
 
   // Non-secret settings are persisted as JSON; credentials go to Credential Manager.
   useEffect(() => {
+    if (!settingsReadyRef.current) {
+      settingsReadyRef.current = true;
+      return;
+    }
     if (toolStatus !== 'online') return;
     const patch = { provider, ollamaModel, model, customEndpoint, customModel };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     if (customApiKey.trim()) patch.customApiKey = customApiKey.trim();
-    taFetch('/api/v1/settings', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    }).then(r => r.json()).then(data => {
+    const fingerprint = JSON.stringify(patch);
+    if (settingsLastSavedRef.current === fingerprint) return;
+    settingsSaveRef.current = settingsSaveRef.current.then(async () => {
+      const response = await taFetch('/api/v1/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(window.taApi.errorMessage(data));
       const next = data.settings || data;
       setHasApiKey(Boolean(next.hasApiKey));
       setHasCustomApiKey(Boolean(next.hasCustomApiKey));
       if (apiKey) setApiKey('');
       if (customApiKey) setCustomApiKey('');
-    }).catch(() => {});
+      settingsLastSavedRef.current = JSON.stringify({ provider, ollamaModel, model, customEndpoint, customModel });
+    }).catch(error => setStateSaveError(`Einstellungen konnten nicht gespeichert werden: ${error.message}`));
   }, [toolStatus, provider, ollamaModel, model, apiKey, customEndpoint, customApiKey, customModel]);
 
   useEffect(() => {
@@ -523,19 +612,16 @@ function App() {
     const check = async () => {
       // Same-origin bootstrap establishes the session and reports local capabilities.
       try {
-        const boot = await window.taApi.bootstrap();
+        const status = await taFetch('/api/v1/status').then(response => {
+          if (!response.ok) throw new Error('Status nicht verfügbar');
+          return response.json();
+        });
         if (cancelled) return;
-        const settings = boot.settings || {};
         setToolStatus('online');
-        setHasApiKey(Boolean(settings.hasApiKey));
-        setHasCustomApiKey(Boolean(settings.hasCustomApiKey));
-        setProvider(settings.provider || 'openrouter');
-        setModel(settings.model || 'deepseek/deepseek-chat');
-        setOllamaModel(settings.ollamaModel || 'gemma3:4b');
-        setCustomEndpoint(settings.customEndpoint || '');
-        setCustomModel(settings.customModel || 'gpt-3.5-turbo');
-        setOllamaStatus(boot.capabilities?.ollama ? 'online' : 'offline');
-        setOpenrouterStatus(settings.hasApiKey ? 'online' : 'unknown');
+        setHasApiKey(Boolean(status.credentials?.hasApiKey));
+        setHasCustomApiKey(Boolean(status.credentials?.hasCustomApiKey));
+        setOllamaStatus(status.capabilities?.ollama ? 'online' : 'offline');
+        setOpenrouterStatus(status.credentials?.hasApiKey ? 'online' : 'unknown');
         const col = await taFetch('/api/v1/collections').then(r => r.json()).catch(() => ({}));
         if (!cancelled) setRagDocCount(col.chunks || 0);
       } catch {
@@ -546,6 +632,16 @@ function App() {
     const id = setInterval(check, 30000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
+
+  useEffect(() => {
+    const warnBeforeClose = event => {
+      if (!stateSyncRef.current.dirty && !stateConflict) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeClose);
+    return () => window.removeEventListener('beforeunload', warnBeforeClose);
+  }, [stateConflict]);
 
   useEffect(() => {
     if (chatContainerRef.current) {
@@ -871,6 +967,11 @@ function App() {
         if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
         else if (type === 'privacy') {
           setDsgvoRoutingActive(data.mode === 'local_required');
+          if (data.mode === 'local_required') {
+            setChats(prev => prev.map(chat => chat.id === activeChatId
+              ? { ...chat, privacyMode: 'local_required' }
+              : chat));
+          }
         } else if (type === 'dsgvo') {
           if (data.routing === 'dsgvo_local') {
             setDsgvoRoutingActive(true);
@@ -879,7 +980,7 @@ function App() {
             addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
           }
         }
-      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal, activeOcrJobIds);
+      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal, activeOcrJobIds, currentChat?.privacyMode || 'auto');
     } catch (err) {
       if (err && err.name === 'AbortError') {
         aborted = true;
@@ -1052,9 +1153,9 @@ function App() {
   }, [handleSend]);
 
   const handleNewChat = useCallback(() => {
-    const id = 'c' + Date.now();
-    setChats(prev => [{ id, title: 'Neuer Chat', messages: [] }, ...prev]);
-    setActiveChatId(id);
+    const chat = newChat();
+    setChats(prev => [chat, ...prev]);
+    setActiveChatId(chat.id);
     setCurrentView('chat');
     setSidebarOpen(false);
   }, []);
@@ -1062,7 +1163,7 @@ function App() {
   const handleDeleteChat = useCallback((id) => {
     setChats(prev => {
       const filtered = prev.filter(c => c.id !== id);
-      if (!filtered.length) filtered.push({ id: 'c' + Date.now(), title: 'Neuer Chat', messages: [] });
+      if (!filtered.length) filtered.push(newChat());
       if (activeChatId === id) setActiveChatId(filtered[0].id);
       return filtered;
     });
@@ -1084,10 +1185,7 @@ function App() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.error) throw new Error(data.error || 'Export fehlgeschlagen');
 
-      const a = document.createElement('a');
-      a.href = data.url;
-      a.download = data.filename;
-      a.click();
+      await window.downloadTeacherAssistExport(data.url, data.filename);
 
       addMessage(activeChatId, {
         role: 'bot',
@@ -1143,7 +1241,8 @@ function App() {
   }, []);
 
   const handleSessionSummary = useCallback(async () => {
-    const msgs = chats.find(c => c.id === activeChatId)?.messages || [];
+    const summaryChat = chats.find(c => c.id === activeChatId);
+    const msgs = summaryChat?.messages || [];
     if (msgs.filter(m => m.role === 'user').length < 2) {
       addMessage(activeChatId, { role: 'bot', text: 'Es gibt noch nicht genug Nachrichten zum Zusammenfassen. Stelle erst ein paar Fragen.', ts: Date.now() });
       return;
@@ -1162,7 +1261,9 @@ function App() {
           modelOverride: model,
           ollamaModelOverride: ollamaModel,
           customEndpoint,
-              customModel,
+          customModel,
+          ocrJobIds: summaryChat?.ocrJobIds || [],
+          stickyPrivacyMode: summaryChat?.privacyMode || 'auto',
         }),
       });
       const data = await res.json();
@@ -1227,9 +1328,9 @@ function App() {
     setOnboardingDone(false);
     setOnboardingStep(0);
     setProfile({});
-    const newId = 'c' + Date.now();
-    setChats([{ id: newId, title: 'Onboarding', messages: [] }]);
-    setActiveChatId(newId);
+    const chat = newChat('Onboarding');
+    setChats([chat]);
+    setActiveChatId(chat.id);
     setCurrentView('chat');
     setSidebarOpen(false);
   }, []);
@@ -1251,6 +1352,18 @@ function App() {
       fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
       overflow: 'hidden',
     }}>
+      {stateSaveError && (
+        <div role="alert" style={{ padding: '8px 16px', background: '#7f1d1d', color: '#fff', fontSize: 13, zIndex: 30 }}>
+          {stateSaveError}
+          {stateConflict && <span style={{ marginLeft: 12 }}>
+            <button onClick={() => navigator.clipboard.writeText(JSON.stringify({ profile, chats }, null, 2))}
+              style={{ marginRight: 8 }}>Entwurf kopieren</button>
+            <button onClick={() => {
+              if (window.confirm('Ungespeicherte Änderungen verwerfen und den gespeicherten Stand neu laden?')) window.location.reload();
+            }}>Gespeicherten Stand laden</button>
+          </span>}
+        </div>
+      )}
       <Sidebar
         open={sidebarOpen} onClose={() => setSidebarOpen(false)}
         chats={chats} activeChatId={activeChatId}

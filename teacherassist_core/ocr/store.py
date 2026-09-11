@@ -62,7 +62,7 @@ import shutil
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -179,6 +179,10 @@ class EmptyPatchError(ValueError):
         super().__init__(
             "Patch muss mindestens 'text' oder 'candidateEngine' angeben."
         )
+
+
+class DeletionCleanupFailed(RuntimeError):
+    """The job is durably deleted, but its directory needs startup cleanup."""
 
 
 def _find_region(doc: DocumentResult, region_id: str) -> Region | None:
@@ -346,6 +350,7 @@ def _serialize_document(doc: DocumentResult) -> dict:
         # hier persistiert, damit es einen Neustart mitten in einem Batch
         # ueberlebt (siehe Modul-Docstring).
         "errorCode": doc.error_code,
+        "scanCleanupStatus": doc.scan_cleanup_status,
     }
 
 
@@ -360,6 +365,7 @@ def _deserialize_document(data: dict) -> DocumentResult:
         approved_at=data.get("approvedAt"),
         error=data.get("error"),
         error_code=data.get("errorCode"),
+        scan_cleanup_status=data.get("scanCleanupStatus", "retained"),
     )
     return doc
 
@@ -440,9 +446,16 @@ class OCRJobStore:
     def __init__(self, root: Path, *, max_workers: int = 1) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        # A deletion marker lives outside an individual job directory.  A
+        # running worker can therefore still see it after `delete()` has
+        # removed that directory and must never publish a resurrected result.
+        self._deleted_root = self.root / ".deleted"
+        self._deleted_root.mkdir(exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._lock = threading.RLock()
         self._cache: dict[str, DocumentResult] = {}
+        self._deleted_ids: set[str] = set()
+        self._futures: dict[str, Future[Any]] = {}
         self._load_existing()
 
     # -- Start/Wiederherstellung -----------------------------------------
@@ -454,8 +467,19 @@ class OCRJobStore:
         uebersprungen, bricht den Store-Start aber nicht ab."""
         if not self.root.exists():
             return
+        self._deleted_ids = {
+            marker.stem
+            for marker in self._deleted_root.glob("*.json")
+            if JOB_ID_RE.match(marker.stem)
+        }
         for job_dir in self.root.iterdir():
-            if not job_dir.is_dir():
+            if not job_dir.is_dir() or job_dir == self._deleted_root:
+                continue
+            if job_dir.name in self._deleted_ids:
+                try:
+                    shutil.rmtree(job_dir)
+                except OSError:
+                    logger.exception("Deleted OCR job cleanup will be retried: %s", job_dir)
                 continue
             job_json = job_dir / "job.json"
             if not job_json.exists():
@@ -467,6 +491,13 @@ class OCRJobStore:
                 logger.warning("OCR-Job konnte beim Start nicht geladen werden: %s", job_dir)
                 continue
             self._cache[doc.job_id] = doc
+
+        # A shutdown may have happened after approval was recorded but before
+        # scan cleanup completed.  Keep the records and retry only the owned
+        # scan assets on startup.
+        for job_id, doc in list(self._cache.items()):
+            if doc.scan_cleanup_status in {"pending", "failed"}:
+                self._cleanup_scans(job_id)
 
     # -- Pfadtraversal-Schutz ----------------------------------------------
 
@@ -497,8 +528,20 @@ class OCRJobStore:
     def _generate_job_id(self) -> str:
         while True:
             candidate = secrets.token_urlsafe(24)
-            if JOB_ID_RE.match(candidate) and candidate not in self._cache:
+            if (
+                JOB_ID_RE.match(candidate)
+                and candidate not in self._cache
+                and candidate not in self._deleted_ids
+            ):
                 return candidate
+
+    def _is_deleted_locked(self, job_id: str) -> bool:
+        return job_id in self._deleted_ids or (self._deleted_root / f"{job_id}.json").exists()
+
+    def _mark_deleted_locked(self, job_id: str) -> None:
+        marker = self._deleted_root / f"{job_id}.json"
+        _atomic_write_json(marker, {"jobId": job_id, "deletedAt": time.time()})
+        self._deleted_ids.add(job_id)
 
     def create(
         self,
@@ -514,7 +557,9 @@ class OCRJobStore:
         job_id = self._generate_job_id()
         job_dir = self.root / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
-        self._persist_source(job_dir, source)
+        # Process the job-owned source so the request upload can be removed
+        # without affecting a queued or running worker.
+        processing_source = self._persist_source(job_dir, source)
 
         stub = DocumentResult(
             job_id=job_id,
@@ -527,10 +572,20 @@ class OCRJobStore:
         with self._lock:
             self._persist_locked(job_id, stub, config=config, engines=engines)
 
-        self._executor.submit(self._run_job, job_id, source, source_name, config, engines)
+        future = self._executor.submit(
+            self._run_job, job_id, processing_source, source_name, config, engines
+        )
+        with self._lock:
+            self._futures[job_id] = future
+        future.add_done_callback(lambda completed, jid=job_id: self._forget_future(jid, completed))
         return stub
 
-    def _persist_source(self, job_dir: Path, source: Any) -> None:
+    def _forget_future(self, job_id: str, future: Future[Any]) -> None:
+        with self._lock:
+            if self._futures.get(job_id) is future:
+                self._futures.pop(job_id, None)
+
+    def _persist_source(self, job_dir: Path, source: Any) -> Any:
         """Sichert die Original-Bytes fuer spaeteres Nachrendern
         (``page_png``). Bei einer bereits vorbereiteten
         ``Iterable[PageImage]`` (kein Path/bytes) gibt es nichts zu
@@ -541,10 +596,14 @@ class OCRJobStore:
             elif isinstance(source, (bytes, bytearray)):
                 data = bytes(source)
             else:
-                return
-            (job_dir / _SOURCE_FILENAME).write_bytes(data)
+                return source
+            source_path = job_dir / _SOURCE_FILENAME
+            source_path.write_bytes(data)
+            return source_path
         except OSError:
             logger.warning("Quelle für OCR-Job konnte nicht gesichert werden: %s", job_dir)
+
+        return source
 
     def _run_job(
         self,
@@ -574,6 +633,9 @@ class OCRJobStore:
         Endpunkt zu senden) fuer Ops-Tooling/UI von einem gewoehnlichen
         Absturz (kaputtes PDF, OOM) unterscheidbar bleibt, ohne die
         deutsche Fehlermeldung parsen zu muessen."""
+        with self._lock:
+            if self._is_deleted_locked(job_id):
+                return
         try:
             result = process_document(
                 source,
@@ -605,6 +667,8 @@ class OCRJobStore:
                 engine_desc,
             )
             with self._lock:
+                if self._is_deleted_locked(job_id):
+                    return
                 existing = self._cache.get(job_id)
                 if existing is None:
                     existing = DocumentResult(
@@ -625,6 +689,8 @@ class OCRJobStore:
         except Exception as exc:  # noqa: BLE001 -- siehe Docstring
             logger.exception("OCR-Job %s ist fehlgeschlagen", job_id)
             with self._lock:
+                if self._is_deleted_locked(job_id):
+                    return
                 existing = self._cache.get(job_id)
                 if existing is None:
                     existing = DocumentResult(
@@ -644,6 +710,8 @@ class OCRJobStore:
             return
 
         with self._lock:
+            if self._is_deleted_locked(job_id):
+                return
             result.error_code = None
             self._persist_locked(job_id, result, config=config, engines=engines)
 
@@ -784,6 +852,13 @@ class OCRJobStore:
                 "status": doc.status.value,
                 "createdAt": doc.created_at,
                 "pageCount": len(doc.pages),
+                "unresolvedCriticalCount": sum(
+                    1
+                    for page in doc.pages
+                    for region in page.regions
+                    if region.has_unresolved_critical_uncertainty
+                ),
+                "scanCleanupStatus": doc.scan_cleanup_status,
             }
             for doc in docs
         ]
@@ -827,44 +902,59 @@ class OCRJobStore:
         if job_dir is None:
             return None
 
-        doc = self.get(job_id)
-        if doc is None or page < 0 or page >= len(doc.pages):
-            return None
+        # Rendering and cache writes share the lifecycle lock with deletion
+        # and scan cleanup.  This deliberately keeps a delete waiting while a
+        # single image is encoded, so a late image write cannot recreate an
+        # already removed scan directory.
+        with self._lock:
+            doc = self._cache.get(job_id)
+            if (
+                doc is None
+                or self._is_deleted_locked(job_id)
+                or doc.scan_cleanup_status != "retained"
+                or page < 0
+                or page >= len(doc.pages)
+            ):
+                return None
 
-        if region_id is None:
-            cache_path = job_dir / f"page-{page}.png"
+            if region_id is None:
+                cache_path = job_dir / f"page-{page}.png"
+                if cache_path.exists():
+                    return cache_path.read_bytes()
+                image = self._render_source_page(job_dir, page)
+                if image is None:
+                    return None
+                png_bytes = _downscale_and_encode(image, max_long_side=_PAGE_MAX_LONG_SIDE_PX)
+                if self._is_deleted_locked(job_id) or doc.scan_cleanup_status != "retained":
+                    return None
+                cache_path.write_bytes(png_bytes)
+                return png_bytes
+
+            cache_path = job_dir / f"region-{region_id}.png"
             if cache_path.exists():
                 return cache_path.read_bytes()
+
+            region = _find_region(doc, region_id)
+            if region is None or region.bbox is None:
+                return None
             image = self._render_source_page(job_dir, page)
             if image is None:
                 return None
-            png_bytes = _downscale_and_encode(image, max_long_side=_PAGE_MAX_LONG_SIDE_PX)
+
+            x0, y0, x1, y1 = region.bbox
+            pad = _REGION_CROP_PADDING_PX
+            box = (
+                max(0, x0 - pad),
+                max(0, y0 - pad),
+                min(image.width, x1 + pad),
+                min(image.height, y1 + pad),
+            )
+            crop = image.crop(box)
+            png_bytes = _encode_png(crop)
+            if self._is_deleted_locked(job_id) or doc.scan_cleanup_status != "retained":
+                return None
             cache_path.write_bytes(png_bytes)
             return png_bytes
-
-        cache_path = job_dir / f"region-{region_id}.png"
-        if cache_path.exists():
-            return cache_path.read_bytes()
-
-        region = _find_region(doc, region_id)
-        if region is None or region.bbox is None:
-            return None
-        image = self._render_source_page(job_dir, page)
-        if image is None:
-            return None
-
-        x0, y0, x1, y1 = region.bbox
-        pad = _REGION_CROP_PADDING_PX
-        box = (
-            max(0, x0 - pad),
-            max(0, y0 - pad),
-            min(image.width, x1 + pad),
-            min(image.height, y1 + pad),
-        )
-        crop = image.crop(box)
-        png_bytes = _encode_png(crop)
-        cache_path.write_bytes(png_bytes)
-        return png_bytes
 
     # -- Lehrkraft-Aktionen ---------------------------------------------------
 
@@ -918,10 +1008,22 @@ class OCRJobStore:
                 region.selected_text = text
                 region.edited_by_teacher = True
 
+            # Approval authenticates the exact transcription.  Any later
+            # teacher edit makes that approval stale and requires a fresh
+            # explicit approval before text may be used for grading/export.
+            if doc.status is OCRStatus.APPROVED:
+                doc.status = OCRStatus.NEEDS_REVIEW
+                doc.approved_at = None
             self._persist_locked(job_id, doc)
         return region
 
-    def approve(self, job_id: str, pages: Sequence[int] | None = None) -> DocumentResult | None:
+    def approve(
+        self,
+        job_id: str,
+        pages: Sequence[int] | None = None,
+        *,
+        delete_scan: bool = False,
+    ) -> DocumentResult | None:
         """Setzt `DocumentResult.mark_approved()`, nachdem sichergestellt
         ist, dass (a) der Job ueberhaupt in einem freigebbaren Zustand ist
         und (b) keine betroffene Region noch eine ungeklaerte kritische
@@ -962,22 +1064,63 @@ class OCRJobStore:
             if doc is None:
                 return None
 
-            if doc.status is not OCRStatus.NEEDS_REVIEW:
+            if doc.status not in {OCRStatus.NEEDS_REVIEW, OCRStatus.APPROVED}:
                 raise ApprovalNotReady(doc.status)
 
-            target_pages = doc.pages if pages is None else [p for p in doc.pages if p.index in pages]
-            unresolved = [
-                region.id
-                for page in target_pages
-                for region in page.regions
-                if region.has_critical_uncertainty and not region.edited_by_teacher
-            ]
-            if unresolved:
-                raise ApprovalRefused(unresolved)
+            if doc.status is OCRStatus.NEEDS_REVIEW:
+                target_pages = doc.pages if pages is None else [p for p in doc.pages if p.index in pages]
+                unresolved = [
+                    region.id
+                    for page in target_pages
+                    for region in page.regions
+                    if region.has_unresolved_critical_uncertainty
+                ]
+                if unresolved:
+                    raise ApprovalRefused(unresolved)
+                doc.mark_approved()
 
-            doc.mark_approved()
+            if delete_scan and doc.scan_cleanup_status != "completed":
+                # Persist this before touching files.  From this point on
+                # image rendering is disabled, including across a restart.
+                doc.scan_cleanup_status = "pending"
             self._persist_locked(job_id, doc)
-        return doc
+        if delete_scan:
+            self._cleanup_scans(job_id)
+        return self.get(job_id)
+
+    def _cleanup_scans(self, job_id: str) -> bool:
+        """Remove only scan assets, retaining the review and approval record.
+
+        `job.json` is deliberately left in place: it contains the approved
+        text, classification, and audit history that grading depends on.
+        A failed unlink is durable as ``failed`` and retried on the next
+        approval request or store startup.
+        """
+        job_dir = self._resolve_job_dir(job_id)
+        if job_dir is None:
+            return False
+        with self._lock:
+            doc = self._cache.get(job_id)
+            if doc is None or self._is_deleted_locked(job_id):
+                return False
+            if doc.scan_cleanup_status == "completed":
+                return True
+            doc.scan_cleanup_status = "pending"
+            self._persist_locked(job_id, doc)
+            try:
+                for asset in job_dir.iterdir():
+                    if asset.name == "job.json" or not asset.is_file():
+                        continue
+                    if asset.name == _SOURCE_FILENAME or asset.name.startswith(("page-", "region-")):
+                        asset.unlink()
+            except OSError:
+                logger.exception("OCR scan cleanup failed for job %s", job_id)
+                doc.scan_cleanup_status = "failed"
+                self._persist_locked(job_id, doc)
+                return False
+            doc.scan_cleanup_status = "completed"
+            self._persist_locked(job_id, doc)
+            return True
 
     def delete(self, job_id: str) -> bool:
         """Liefert `True` nur, wenn `job_id` tatsaechlich ein im Store
@@ -991,11 +1134,23 @@ class OCRJobStore:
         if job_dir is None:
             return False
         with self._lock:
-            existed_in_store = self._cache.pop(job_id, None) is not None
-        if not existed_in_store:
-            return False
-        if job_dir.exists():
-            shutil.rmtree(job_dir, ignore_errors=True)
+            existed_in_store = self._cache.get(job_id) is not None
+            if not existed_in_store:
+                return False
+            # The marker is durable before cache/directory cleanup.  A queued
+            # Future can be cancelled; a running one observes the marker
+            # before it ever persists a success or failure.
+            self._mark_deleted_locked(job_id)
+            future = self._futures.get(job_id)
+            if future is not None:
+                future.cancel()
+            self._cache.pop(job_id, None)
+            if job_dir.exists():
+                try:
+                    shutil.rmtree(job_dir)
+                except OSError as exc:
+                    logger.exception("OCR job cleanup failed for deleted job %s", job_id)
+                    raise DeletionCleanupFailed(job_id) from exc
         return True
 
     def purge_expired(self, retention_days: int) -> int:
@@ -1034,14 +1189,8 @@ class OCRJobStore:
 
         removed = 0
         for job_id in expired_ids:
-            with self._lock:
-                if job_id not in self._cache:
-                    continue
-                self._cache.pop(job_id, None)
-                job_dir = self._resolve_job_dir(job_id)
-                if job_dir is not None and job_dir.exists():
-                    shutil.rmtree(job_dir, ignore_errors=True)
-            removed += 1
+            if self.delete(job_id):
+                removed += 1
 
         removed += self._purge_orphaned_directories(cutoff)
         return removed

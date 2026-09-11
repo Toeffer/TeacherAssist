@@ -1,4 +1,6 @@
 
+import React from 'react';
+
 // tweaks-panel.jsx
 // Reusable Tweaks shell + form-control helpers.
 //

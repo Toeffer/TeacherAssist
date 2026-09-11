@@ -18,6 +18,15 @@ class PersistenceUnavailable(RuntimeError):
     pass
 
 
+class StateConflict(RuntimeError):
+    """Raised when a browser tries to replace an out-of-date saved state."""
+
+    def __init__(self, expected_revision: int | None, actual_revision: int) -> None:
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
+        super().__init__("Saved state was changed in another browser tab")
+
+
 class EncryptedStateStore:
     def __init__(self, path: Path, raw_key: bytes | None) -> None:
         self.path = path
@@ -33,7 +42,7 @@ class EncryptedStateStore:
 
     @staticmethod
     def _empty() -> dict[str, Any]:
-        return {"schemaVersion": 1, "profile": {}, "chats": {}}
+        return {"schemaVersion": 2, "stateRevision": 0, "profile": {}, "chats": {}}
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -41,7 +50,14 @@ class EncryptedStateStore:
         try:
             plaintext = self._fernet().decrypt(self.path.read_bytes())
             data = json.loads(plaintext.decode("utf-8"))
-            return data if isinstance(data, dict) else self._empty()
+            if not isinstance(data, dict):
+                return self._empty()
+            # Existing encrypted files predate revisions.  Treat them as the
+            # first version rather than forcing an unsafe browser overwrite.
+            revision = data.get("stateRevision", 0)
+            data["stateRevision"] = revision if isinstance(revision, int) and revision >= 0 else 0
+            data["schemaVersion"] = 2
+            return data
         except PersistenceUnavailable:
             raise
         except Exception as exc:
@@ -71,9 +87,19 @@ class EncryptedStateStore:
             data = self._load()
             chats = list((data.get("chats") or {}).values())
             chats.sort(key=lambda item: item.get("updatedAt", 0), reverse=True)
-            return {"profile": dict(data.get("profile") or {}), "chats": chats}
+            return {
+                "stateRevision": data.get("stateRevision", 0),
+                "profile": dict(data.get("profile") or {}),
+                "chats": chats,
+            }
 
-    def replace_state(self, profile: dict[str, Any], chats: list[dict[str, Any]]) -> dict[str, Any]:
+    def replace_state(
+        self,
+        profile: dict[str, Any],
+        chats: list[dict[str, Any]],
+        *,
+        expected_revision: int | None,
+    ) -> dict[str, Any]:
         if not isinstance(profile, dict) or not isinstance(chats, list) or len(chats) > 500:
             raise ValueError("Invalid browser state")
         normalized = {}
@@ -101,14 +127,24 @@ class EncryptedStateStore:
             normalized[chat_id] = chat
         with self._lock:
             data = self._load()
+            actual_revision = data.get("stateRevision", 0)
+            if expected_revision != actual_revision:
+                raise StateConflict(expected_revision, actual_revision)
             data["profile"] = dict(profile)
             data["chats"] = normalized
+            data["stateRevision"] = actual_revision + 1
             self._save(data)
         return self.get_state()
 
-    def import_browser_state(self, profile: dict[str, Any], chats: list[dict[str, Any]]) -> dict[str, Any]:
+    def import_browser_state(
+        self,
+        profile: dict[str, Any],
+        chats: list[dict[str, Any]],
+        *,
+        expected_revision: int | None,
+    ) -> dict[str, Any]:
         source = {"profile": profile, "chats": chats}
-        state = self.replace_state(profile, chats)
+        state = self.replace_state(profile, chats, expected_revision=expected_revision)
         return {
             "sourceChecksum": self._canonical_checksum(source),
             "profileImported": bool(profile),
@@ -126,6 +162,7 @@ class EncryptedStateStore:
         with self._lock:
             data = self._load()
             data["profile"] = profile
+            data["stateRevision"] = data.get("stateRevision", 0) + 1
             self._save(data)
         return profile
 
@@ -156,6 +193,7 @@ class EncryptedStateStore:
         with self._lock:
             data = self._load()
             data.setdefault("chats", {})[chat["id"]] = chat
+            data["stateRevision"] = data.get("stateRevision", 0) + 1
             self._save(data)
         return chat
 
@@ -174,6 +212,7 @@ class EncryptedStateStore:
         with self._lock:
             data = self._load()
             data.setdefault("chats", {})[chat_id] = chat
+            data["stateRevision"] = data.get("stateRevision", 0) + 1
             self._save(data)
         return chat
 
@@ -182,5 +221,6 @@ class EncryptedStateStore:
             data = self._load()
             removed = data.setdefault("chats", {}).pop(chat_id, None) is not None
             if removed:
+                data["stateRevision"] = data.get("stateRevision", 0) + 1
                 self._save(data)
             return removed

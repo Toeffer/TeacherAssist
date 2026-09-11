@@ -60,9 +60,11 @@ from teacherassist_core.ocr import (
     ApprovalNotReady,
     ApprovalRefused,
     CloudBlocked,
+    DeletionCleanupFailed,
     EmptyPatchError,
     ENGINE_FACTORIES,
     OCRJobStore,
+    OCRBusy,
     OCRStatus,
     PipelineConfig,
     available_engines,
@@ -94,7 +96,8 @@ from teacherassist_core.security import (
     validate_remote_url,
 )
 from teacherassist_core.skills import SkillRegistry
-from teacherassist_core.storage import EncryptedStateStore, PersistenceUnavailable
+from teacherassist_core.storage import EncryptedStateStore, PersistenceUnavailable, StateConflict
+from teacherassist_core.ollama_locality import LocalModelRequired, assert_local_ollama_model
 
 # Hardened runtime services are kept separate from the HTTP adapter.
 
@@ -160,6 +163,40 @@ def apply_request_overrides(settings, data):
             settings[settings_key] = value.strip()
 
     return settings
+
+
+def require_verified_local_ollama(settings):
+    """Fail closed before a sensitive prompt is assembled or transmitted."""
+    model = (settings.get("ollamaModel") or "gemma3:4b").strip()
+    if not check_ollama():
+        raise LocalModelRequired(
+            "Dieses Material braucht ein lokales Modell. Ollama ist nicht verfügbar."
+        )
+    assert_local_ollama_model(model)
+    return model
+
+
+def require_verified_local_ocr_model(settings, classification):
+    if classification == "public_curriculum":
+        return
+    configured = settings.get("ocrEngines") or []
+    if "ollama_vlm" not in configured:
+        return
+    model = (settings.get("ocrVisionModel") or "qwen3-vl:8b").strip()
+    if not check_ollama():
+        raise LocalModelRequired("Das lokale OCR-Modell ist nicht verfügbar.")
+    assert_local_ollama_model(model)
+
+
+def referenced_ocr_classifications(data, jobs):
+    """Resolve every client OCR reference; an unknown reference is private."""
+    raw_ids = data.get("ocrJobIds") or data.get("ocr_job_ids") or []
+    if not isinstance(raw_ids, list):
+        return [], []
+    job_ids = [job_id for job_id in raw_ids if isinstance(job_id, str)][:20]
+    return job_ids, [
+        jobs[job_id].classification if job_id in jobs else "unknown" for job_id in job_ids
+    ]
 
 def memory_zip_destination(name):
     """Return a safe restore destination below memory/, or None for ignored entries."""
@@ -480,6 +517,11 @@ def parse_multipart(body, boundary):
 # ---------------------------------------------------------------------------
 def search_rag(query, limit=4):
     try:
+        # Do not initialize SentenceTransformer (which can load/download a
+        # model) for an installation that has never indexed a document.
+        # Ingestion creates the persistent collection explicitly.
+        if _col is None and not any(CHROMA_DIR.iterdir()):
+            return ("", [])
         col, _ = get_collection()
         n = col.count()
         if n == 0:
@@ -578,11 +620,12 @@ def stream_llm(
     custom_endpoint = (settings.get("customEndpoint") or "").strip()
 
     if decision.local_required:
-        if provider == "custom" and is_trusted_loopback_endpoint(custom_endpoint):
-            effective_provider = "custom"
-        elif check_ollama():
-            effective_provider = "ollama"
-        else:
+        # A loopback HTTP address alone does not establish locality: Ollama
+        # can expose cloud-backed aliases.  The caller verifies /api/show
+        # before streaming; retain this defensive check for direct callers.
+        try:
+            local_model = settings.get("_verifiedLocalOllamaModel") or require_verified_local_ollama(settings)
+        except LocalModelRequired as exc:
             _send_sse(wfile, {
                 "type": "privacy",
                 "mode": decision.mode,
@@ -591,11 +634,13 @@ def stream_llm(
             _send_sse(wfile, {
                 "type": "error",
                 "code": "LOCAL_MODEL_REQUIRED",
-                "message": "Diese Unterhaltung muss lokal verarbeitet werden. Bitte starte Ollama.",
+                "message": str(exc),
             })
             _send_sse(wfile, {"type": "done"})
             return ""
+        effective_provider = "ollama"
     else:
+        local_model = ""
         effective_provider = provider
 
     _send_sse(wfile, {
@@ -629,7 +674,7 @@ def stream_llm(
         endpoint = "http://127.0.0.1:11434/v1/chat/completions"
         headers = {"Content-Type": "application/json"}
         body = {
-            "model": settings.get("ollamaModel") or "gemma3:4b",
+            "model": local_model or settings.get("ollamaModel") or "gemma3:4b",
             "messages": api_messages,
             "stream": True,
         }
@@ -878,12 +923,23 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         elif route == "/api/v1/health":
             self._json({"status": "ok", "version": "2.0"})
         elif route == "/api/v1/bootstrap":
-            session_id, csrf = SESSIONS.create()
+            session_id, csrf, created_session = SESSIONS.bootstrap(self.headers.get("Cookie", ""))
             try:
                 encrypted_state = STATE_STORE.get_state()
-            except (PersistenceUnavailable, RuntimeError):
-                encrypted_state = {"profile": {}, "chats": []}
+            except PersistenceUnavailable:
+                self._error("PERSISTENCE_UNAVAILABLE", "Verschlüsselte gespeicherte Daten können nicht gelesen werden.", 503)
+                return
+            except RuntimeError:
+                logger.exception("Encrypted state bootstrap failed")
+                self._error("PERSISTENCE_ERROR", "Gespeicherte Daten konnten nicht gelesen werden. Bitte erneut versuchen.", 503)
+                return
             settings = SETTINGS_STORE.load()
+            headers = {}
+            if created_session:
+                headers["Set-Cookie"] = (
+                    f"{SESSIONS.COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; "
+                    f"Path=/; Max-Age={SESSIONS.MAX_AGE_SECONDS}"
+                )
             self._json({
                 "csrfToken": csrf,
                 "settings": SETTINGS_STORE.public(),
@@ -896,9 +952,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 "skills": SKILL_REGISTRY.public_index(),
                 "state": encrypted_state,
                 "dataSchemaVersion": 2,
-            }, extra_headers={
-                "Set-Cookie": f"{SESSIONS.COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSIONS.MAX_AGE_SECONDS}",
-            })
+            }, extra_headers=headers)
+        elif route == "/api/v1/status":
+            self._status()
         elif route == "/api/v1/settings":
             self._json(SETTINGS_STORE.public())
         elif route == "/api/v1/collections":
@@ -935,6 +991,18 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._get_ocr_job(OCR_JOB_RE.match(route).group(1))
         else:
             self.send_error(404)
+
+    def _status(self):
+        settings = SETTINGS_STORE.load()
+        self._json({
+            "capabilities": {
+                **capability_status(),
+                "ollama": check_ollama(),
+                **ocr_capability_status(settings),
+            },
+            "credentials": CREDENTIALS.status(),
+            "ocrEngines": [status.to_dict() for status in available_engines(settings)],
+        })
 
     def _search(self, parsed):
         params = parse_qs(parsed.query)
@@ -1058,6 +1126,16 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             skill_record = SKILL_REGISTRY.match(last_user)
         skill_id = skill_record.skill_id if skill_record else None
         skill_content = skill_record.content if skill_record else ""
+        jobs = OCR_JOBS.snapshot()
+        ocr_job_ids, ocr_classifications = referenced_ocr_classifications(data, jobs)
+        # Do the approval gate before optional RAG work.  Besides shortening
+        # rejected grading requests, this keeps an unknown OCR reference from
+        # touching any further document context.
+        gate = evaluate_grading_gate(skill_id=skill_id, ocr_job_ids=ocr_job_ids, jobs=jobs)
+        if not gate.allowed:
+            logger.info("Bewertung blockiert: %s", gate.reasons)
+            self._error("OCR_APPROVAL_REQUIRED", gate.message, 409)
+            return ""
         rag_context, rag_classifications = search_rag(last_user)
         decision = decide_privacy(
             messages=messages,
@@ -1065,7 +1143,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             skill_id=skill_id,
             requested_mode=data.get("privacy_mode", data.get("privacyMode", "auto")),
             sticky_mode=(persisted_chat or {}).get("privacyMode", data.get("stickyPrivacyMode", "auto")),
-            document_classifications=rag_classifications,
+            document_classifications=[*rag_classifications, *ocr_classifications],
             rag_context=rag_context,
         )
 
@@ -1079,16 +1157,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # /api/v1/chats/{id}/messages ab, weil beide Routen durch
         # _stream_chat_payload() laufen -- genau deshalb steht die Pruefung
         # hier und nicht in den einzelnen Routen-Handlern.
-        gate = evaluate_grading_gate(
-            skill_id=skill_id,
-            ocr_job_ids=[j for j in (data.get("ocrJobIds") or data.get("ocr_job_ids") or [])
-                         if isinstance(j, str)][:20],
-            jobs=OCR_JOBS.snapshot(),
-        )
-        if not gate.allowed:
-            logger.info("Bewertung blockiert: %s", gate.reasons)
-            self._error("OCR_APPROVAL_REQUIRED", gate.message, 409)
-            return ""
+        if decision.local_required:
+            try:
+                settings["_verifiedLocalOllamaModel"] = require_verified_local_ollama(settings)
+            except LocalModelRequired as exc:
+                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+                return ""
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1111,6 +1185,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _storage_error(self, action):
         try:
             return action()
+        except StateConflict as exc:
+            self._json({
+                "error": {
+                    "code": "STATE_CONFLICT",
+                    "message": "Gespeicherte Daten wurden in einem anderen Tab geändert.",
+                    "expectedRevision": exc.expected_revision,
+                    "actualRevision": exc.actual_revision,
+                }
+            }, 409)
         except PersistenceUnavailable:
             self._error("PERSISTENCE_UNAVAILABLE", "Verschlüsselte Speicherung ist auf diesem System nicht verfügbar.", 503)
         except RuntimeError:
@@ -1124,7 +1207,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, RequestTooLarge):
             self._error("INVALID_STATE", "Ungültiger Speicherstand.", 400)
             return
-        result = self._storage_error(lambda: STATE_STORE.replace_state(data.get("profile", {}), data.get("chats", [])))
+        result = self._storage_error(lambda: STATE_STORE.replace_state(
+            data.get("profile", {}), data.get("chats", []),
+            expected_revision=data.get("expectedRevision"),
+        ))
         if result is not None:
             self._json({"state": result})
 
@@ -1134,7 +1220,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, RequestTooLarge):
             self._error("INVALID_MIGRATION", "Ungültige Migrationsdaten.", 400)
             return
-        result = self._storage_error(lambda: STATE_STORE.import_browser_state(data.get("profile", {}), data.get("chats", [])))
+        result = self._storage_error(lambda: STATE_STORE.import_browser_state(
+            data.get("profile", {}), data.get("chats", []),
+            expected_revision=data.get("expectedRevision"),
+        ))
         if result is not None:
             self._json(result)
 
@@ -1179,13 +1268,22 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("EMPTY_MESSAGE", "Nachricht fehlt.", 400)
             return
         chat.setdefault("messages", []).append({"role": "user", "text": content.strip(), "ts": int(time.time() * 1000)})
+        if isinstance(data.get("ocrJobIds"), list):
+            chat["ocrJobIds"] = [item for item in data["ocrJobIds"] if isinstance(item, str)][:20]
         payload = {**data, "messages": chat["messages"], "stickyPrivacyMode": chat.get("privacyMode", "auto")}
+        jobs = OCR_JOBS.snapshot()
+        _, ocr_classifications = referenced_ocr_classifications(payload, jobs)
+        requested_skill = data.get("skill_id") or data.get("force_skill") or data.get("forceSkill")
+        skill_record = SKILL_REGISTRY.get(requested_skill) if isinstance(requested_skill, str) else None
+        if skill_record is None:
+            skill_record = SKILL_REGISTRY.match(content)
         decision = decide_privacy(
             messages=chat["messages"],
             profile=STATE_STORE.get_profile(),
-            skill_id=data.get("skill_id"),
+            skill_id=skill_record.skill_id if skill_record else None,
             requested_mode=data.get("privacy_mode", "auto"),
             sticky_mode=chat.get("privacyMode", "auto"),
+            document_classifications=ocr_classifications,
         )
         if decision.local_required:
             chat["privacyMode"] = "local_required"
@@ -1214,7 +1312,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _chat_summary(self, chat_id):
         chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
         if chat:
-            self._summarize_messages(chat.get("messages", []), chat.get("privacyMode", "auto"))
+            self._summarize_messages(
+                chat.get("messages", []),
+                chat.get("privacyMode", "auto"),
+                {"ocrJobIds": chat.get("ocrJobIds", []), "profile": STATE_STORE.get_profile()},
+            )
 
     # ---- Bestehende Endpunkte (unverändert) ---------------------------------
     def _upload(self):
@@ -1417,6 +1519,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         region_id = parse_qs(parsed.query).get("region", [None])[0]
         png_bytes = OCR_JOBS.page_png(job_id, page, region_id=region_id)
         if png_bytes is None:
+            doc = OCR_JOBS.get(job_id)
+            if doc is not None and doc.scan_cleanup_status != "retained":
+                self._error("OCR_SCAN_DELETED", "Die Scanbilder wurden nach der Freigabe gelöscht.", 410)
+                return
             self._error("OCR_JOB_NOT_FOUND", "Seite oder Region wurde nicht gefunden.", 404)
             return
         # Bewusst kein <img src=...> auf Client-Seite (siehe Auftrag): das
@@ -1505,9 +1611,19 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # (engines/__init__.py) liest sie daraus, damit assert_local_only()
         # dieselbe Klassifikation sieht wie PipelineConfig oben (siehe
         # dortigen Docstring).
+        try:
+            require_verified_local_ocr_model(settings, config.classification)
+        except LocalModelRequired as exc:
+            self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+            return
         engines = build_engines({**settings, "classification": config.classification})
 
         stub = OCR_JOBS.create(source=source, source_name=source_name, config=config, engines=engines)
+        if isinstance(source, Path):
+            try:
+                source.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Temporary OCR upload cleanup failed: %s", source)
         self._json({"jobId": stub.job_id, "status": stub.status.value}, 202)
 
     def _patch_ocr_region(self, job_id, region_id):
@@ -1563,7 +1679,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # und wirft ApprovalNotReady/ApprovalRefused selbst -- eine zweite,
         # duplizierte Pruefung hier koennte mit der Zeit von store.py abweichen.
         try:
-            approved = OCR_JOBS.approve(job_id)
+            approved = OCR_JOBS.approve(
+                job_id,
+                delete_scan=bool(load_settings().get("ocrDeleteAfterApproval", False)),
+            )
         except ApprovalNotReady:
             self._error(
                 "OCR_NOT_READY",
@@ -1587,7 +1706,16 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self._json(approved.to_dict())
 
     def _delete_ocr_job(self, job_id):
-        if not OCR_JOBS.delete(job_id):
+        try:
+            deleted = OCR_JOBS.delete(job_id)
+        except DeletionCleanupFailed:
+            self._error(
+                "OCR_DELETE_CLEANUP_PENDING",
+                "Der OCR-Job wurde gelöscht; die Scan-Dateien werden beim nächsten Start erneut bereinigt.",
+                503,
+            )
+            return
+        if not deleted:
             self._error("OCR_JOB_NOT_FOUND", "OCR-Job wurde nicht gefunden.", 404)
             return
         self._json({"deleted": True})
@@ -1891,6 +2019,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # Aufruf in die settings-Mapping eingemischt, damit
         # ENGINE_FACTORIES["ollama_vlm"] dieselbe Klassifikation sieht wie
         # PipelineConfig.
+        try:
+            require_verified_local_ocr_model(settings, config.classification)
+        except LocalModelRequired as exc:
+            self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+            return
         engines = build_engines({**settings, "classification": config.classification})
         if not engines or not any(status.available for status in available_engines(settings)):
             self._error("OCR_UNAVAILABLE", "Keine OCR-Engine verfügbar.", 503)
@@ -1898,12 +2031,18 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             result = process_single_image_sync(content, config=config, engines=engines)
+        except OCRBusy as exc:
+            self._error("OCR_BUSY", str(exc), 503)
+            return
         except CloudBlocked as exc:
             logger.error("OCR-Cloud-Zugriff blockiert (Schülerdaten dürfen die Maschine nicht verlassen): %s", exc)
             self._error("OCR_CLOUD_BLOCKED", "Cloud-Zugriff für diese OCR-Anfrage ist nicht erlaubt.", 500)
             return
 
         if result.status is OCRStatus.FAILED or not result.pages:
+            if result.error and result.error.startswith("Zeitüberschreitung"):
+                self._error("OCR_TIMEOUT", result.error, 504)
+                return
             self._error("OCR_UNAVAILABLE", result.error or "OCR ist fehlgeschlagen.", 503)
             return
 
@@ -2069,20 +2208,24 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         if not user_texts:
             self._error("NO_MESSAGES", "Keine User-Nachrichten vorhanden.", 400)
             return
+        jobs = OCR_JOBS.snapshot()
+        _, ocr_classifications = referenced_ocr_classifications(request_data, jobs)
         decision = decide_privacy(
             messages=messages,
             profile=request_data.get("profile", {}),
             requested_mode=request_data.get("privacy_mode", "auto"),
             sticky_mode=sticky_mode,
+            document_classifications=ocr_classifications,
         )
         settings = apply_request_overrides(load_settings(), request_data)
         if decision.local_required:
-            if not check_ollama():
-                self._error("LOCAL_MODEL_REQUIRED", "Diese Zusammenfassung muss lokal erstellt werden. Bitte starte Ollama.", 409)
+            try:
+                model = require_verified_local_ollama(settings)
+            except LocalModelRequired as exc:
+                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
                 return
             endpoint = "http://127.0.0.1:11434/v1/chat/completions"
             headers = {"Content-Type": "application/json"}
-            model = settings.get("ollamaModel") or "gemma3:4b"
         elif settings.get("provider") == "custom":
             endpoint = (settings.get("customEndpoint") or "").strip()
             if not endpoint:

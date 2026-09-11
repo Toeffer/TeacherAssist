@@ -102,14 +102,30 @@
       return rawFetch(normalized, { ...options, credentials: 'same-origin' });
     }
     await bootstrap();
-    const headers = new Headers(options.headers || {});
-    headers.set('X-CSRF-Token', csrfToken);
-    return rawFetch(normalized, {
-      ...options,
-      headers,
-      credentials: 'same-origin',
-      cache: options.cache || 'no-store',
-    });
+    const request = () => {
+      const headers = new Headers(options.headers || {});
+      headers.set('X-CSRF-Token', csrfToken);
+      return rawFetch(normalized, {
+        ...options,
+        headers,
+        credentials: 'same-origin',
+        cache: options.cache || 'no-store',
+      });
+    };
+    let response = await request();
+    // A second tab can outlive a purged session.  Refresh once only when the
+    // server explicitly identifies authentication as the failure; streams
+    // that have already started are never retried.
+    const retryableBody = !(typeof ReadableStream !== 'undefined' && options.body instanceof ReadableStream);
+    if (response.status === 403 && retryableBody) {
+      let code = '';
+      try { code = (await response.clone().json())?.error?.code || ''; } catch {}
+      if (code === 'AUTH_REQUIRED') {
+        await bootstrap(true);
+        response = await request();
+      }
+    }
+    return response;
   }
 
   window.taApi = {

@@ -20,10 +20,19 @@ OPTIONAL_BINARIES = ("tesseract",)
 
 def main() -> int:
     status = {}
-    for name in REQUIRED + OPTIONAL:
+    for name in REQUIRED:
         try:
             importlib.import_module(name)
             status[name] = "ok"
+        except Exception as exc:
+            status[name] = f"missing: {type(exc).__name__}"
+    # Optional capabilities are reported for installation guidance.  Importing
+    # SentenceTransformer or Torch here can initialise native runtimes and
+    # block this lightweight support command for a minute or more.  A module
+    # spec answers the capability question without that side effect.
+    for name in OPTIONAL:
+        try:
+            status[name] = "ok" if importlib.util.find_spec(name) is not None else "missing: ModuleNotFoundError"
         except Exception as exc:
             status[name] = f"missing: {type(exc).__name__}"
 

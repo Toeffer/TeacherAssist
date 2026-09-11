@@ -94,7 +94,7 @@ def load_pages(
     if is_pdf:
         # Lokaler statt Modulebenen-Import -- siehe Modul-Docstring zur
         # Zyklus-Vermeidung.
-        from .documents import iter_pdf_pages
+        from ..documents import iter_pdf_pages
 
         yield from iter_pdf_pages(source, target_dpi=target_dpi, max_pages=max_pages)
         return

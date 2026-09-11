@@ -1,3 +1,5 @@
+import React from 'react';
+
 /* ============================================
    TeacherAssist – OCR Review UI (Stufe 9)
    ============================================

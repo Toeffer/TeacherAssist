@@ -129,6 +129,10 @@ class Region:
     def has_critical_uncertainty(self) -> bool:
         return any(d.critical for d in self.disagreements)
 
+    @property
+    def has_unresolved_critical_uncertainty(self) -> bool:
+        return self.has_critical_uncertainty and not self.edited_by_teacher
+
     def to_dict(self, *, include_text: bool) -> dict:
         return {
             "id": self.id,
@@ -215,6 +219,10 @@ class PageResult:
         return any(r.has_critical_uncertainty for r in self.regions)
 
     @property
+    def has_unresolved_critical_uncertainty(self) -> bool:
+        return any(r.has_unresolved_critical_uncertainty for r in self.regions)
+
+    @property
     def text(self) -> str:
         """Zusammengefuegter, ausgewaehlter (ggf. lehrerkorrigierter) Text."""
         return "\n".join(r.selected_text for r in self.regions)
@@ -263,10 +271,15 @@ class DocumentResult:
     # Privacy-Blockierung gescheiterter Job muss diagnostizierbar sein, ohne
     # dass irgendjemand etwas freigegeben hat.
     error_code: str | None = None
+    scan_cleanup_status: str = "retained"
 
     @property
     def has_critical_uncertainty(self) -> bool:
         return any(p.has_critical_uncertainty for p in self.pages)
+
+    @property
+    def has_unresolved_critical_uncertainty(self) -> bool:
+        return any(p.has_unresolved_critical_uncertainty for p in self.pages)
 
     def mark_approved(self) -> None:
         """Die explizite Lehrkraft-Freigabe. Das ist NICHT die einzige Stelle,
@@ -287,6 +300,10 @@ class DocumentResult:
         critical_count = sum(
             1 for page in self.pages for region in page.regions if region.has_critical_uncertainty
         )
+        unresolved_critical_count = sum(
+            1 for page in self.pages for region in page.regions
+            if region.has_unresolved_critical_uncertainty
+        )
         return {
             "jobId": self.job_id,
             "sourceName": self.source_name,
@@ -300,6 +317,9 @@ class DocumentResult:
             "errorCode": self.error_code,
             "pageCount": len(self.pages),
             "criticalCount": critical_count,
+            "unresolvedCriticalCount": unresolved_critical_count,
             "hasCriticalUncertainty": self.has_critical_uncertainty,
+            "hasUnresolvedCriticalUncertainty": self.has_unresolved_critical_uncertainty,
+            "scanCleanupStatus": self.scan_cleanup_status,
             "pages": [p.to_dict(include_text=include_text) for p in self.pages],
         }

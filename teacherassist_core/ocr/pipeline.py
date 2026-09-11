@@ -24,6 +24,7 @@ PIL/numpy/paddle direkt.
 from __future__ import annotations
 
 import time
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -40,6 +41,13 @@ from .types import DocumentResult, OCRCandidate, OCRStatus, PageResult, Region
 
 OnPage = Callable[[int, PageResult], None]
 OnProgress = Callable[[float, str], None]
+
+
+class OCRBusy(RuntimeError):
+    """The legacy synchronous OCR slot is still occupied by a timed-out job."""
+
+
+_sync_ocr_slot = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -606,24 +614,35 @@ def process_single_image_sync(
     nicht laenger darauf. Das ist fuer den vorgesehenen Anwendungsfall
     (ein einzelnes Foto, HTTP-Anfrage mit Timeout) akzeptabel."""
     job_id = f"sync-{uuid.uuid4().hex[:12]}"
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            process_document,
-            image_bytes,
+    if not _sync_ocr_slot.acquire(blocking=False):
+        raise OCRBusy("Eine frühere OCR-Anfrage wird noch beendet.")
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(
+        process_document,
+        image_bytes,
+        job_id=job_id,
+        source_name="single_image",
+        config=config,
+        engines=engines,
+    )
+
+    def release_slot(_future):
+        _sync_ocr_slot.release()
+        executor.shutdown(wait=False)
+
+    future.add_done_callback(release_slot)
+    try:
+        return future.result(timeout=timeout_s)
+    except FutureTimeoutError:
+        # The worker cannot be forcibly stopped in Python.  The callback keeps
+        # the one request slot occupied until it exits, while this HTTP request
+        # returns immediately.
+        return DocumentResult(
             job_id=job_id,
             source_name="single_image",
-            config=config,
-            engines=engines,
+            classification=config.classification,
+            created_at=time.time(),
+            pages=[],
+            status=OCRStatus.FAILED,
+            error=f"Zeitüberschreitung nach {timeout_s}s",
         )
-        try:
-            return future.result(timeout=timeout_s)
-        except FutureTimeoutError:
-            return DocumentResult(
-                job_id=job_id,
-                source_name="single_image",
-                classification=config.classification,
-                created_at=time.time(),
-                pages=[],
-                status=OCRStatus.FAILED,
-                error=f"Zeitüberschreitung nach {timeout_s}s",
-            )

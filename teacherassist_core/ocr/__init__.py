@@ -51,6 +51,7 @@ from .critical_tokens import (
 from .gate import GRADING_SKILLS, GateDecision, evaluate_grading_gate
 from .markup import UNCLEAR_SENTINEL, ParsedMarkup, parse_markup
 from .pipeline import (
+    OCRBusy,
     PipelineConfig,
     process_document,
     process_page,
@@ -65,6 +66,7 @@ from .store import (
     ApprovalNotReady,
     ApprovalRefused,
     CLOUD_BLOCKED_ERROR_CODE,
+    DeletionCleanupFailed,
     EmptyPatchError,
     OCRJobStore,
 )
@@ -124,6 +126,7 @@ __all__ = [
     "GateDecision",
     "evaluate_grading_gate",
     "PipelineConfig",
+    "OCRBusy",
     "process_document",
     "process_page",
     "process_pages",
@@ -136,6 +139,7 @@ __all__ = [
     "ApprovalNotReady",
     "ApprovalRefused",
     "CLOUD_BLOCKED_ERROR_CODE",
+    "DeletionCleanupFailed",
     "EmptyPatchError",
     "OCRJobStore",
     "DocumentResult",

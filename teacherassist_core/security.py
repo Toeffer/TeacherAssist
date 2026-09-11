@@ -40,6 +40,25 @@ class SessionManager:
             self._sessions[session_id] = Session(csrf=csrf, touched_at=now)
         return session_id, csrf
 
+    def bootstrap(self, cookie_header: str) -> tuple[str, str, bool]:
+        """Return an existing live session for another browser tab when possible."""
+        cookies = http.cookies.SimpleCookie()
+        try:
+            cookies.load(cookie_header or "")
+            morsel = cookies.get(self.COOKIE_NAME)
+            session_id = morsel.value if morsel else ""
+        except Exception:
+            session_id = ""
+        now = time.time()
+        with self._lock:
+            self._purge(now)
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.touched_at = now
+                return session_id, session.csrf, False
+        session_id, csrf = self.create()
+        return session_id, csrf, True
+
     def validate(self, cookie_header: str, csrf_header: str) -> bool:
         cookies = http.cookies.SimpleCookie()
         try:
