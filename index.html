@@ -92,17 +92,6 @@
 <body>
   <div id="root"><main style="font-family:system-ui;max-width:38rem;margin:12vh auto;padding:2rem;color:#f0ede6"><h1>TeacherAssist wird geladen</h1><p>Der gespeicherte Arbeitsstand wird geprüft.</p></main></div>
 
-  <!-- Service Worker (PWA) -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).then(function(registration) {
-        registration.update();
-      }).catch(function() {
-        // Offline-Cache ist optional – App funktioniert trotzdem
-      });
-    }
-  </script>
-
   <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

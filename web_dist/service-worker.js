@@ -1,6 +1,6 @@
 // Generated production service worker. API traffic is always network-only.
-const CACHE = 'teacherassist-6231a6d9aa26';
-const PRE_CACHE = ["/","/assets/app-CxKFCxJi.js","/assets/components-Bzbe1xlN.js","/assets/index-D4sPrORZ.js","/assets/manifest-DJFCjNqP.json","/assets/ocr-ui-BfAqkeqZ.js","/assets/teacherassist-BuGrGrqB.ico","/assets/tweaks-panel-BPIvQDkD.js","/index.html"];
+const CACHE = 'teacherassist-afffd953a6a1';
+const PRE_CACHE = ["/","/assets/app-C5MTE9pl.js","/assets/components-CJbx__FQ.js","/assets/index-BLIWHSnC.js","/assets/manifest-C3jgv1Ik.json","/assets/ocr-ui-DIgq9hwB.js","/assets/teacherassist-BuGrGrqB.ico","/assets/tweaks-panel-DQbT_pl4.js","/index.html"];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(PRE_CACHE)));
@@ -12,12 +12,29 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
+function fetchAndStore(request) {
+  return fetch(request).then(response => {
+    if (response.ok) {
+      // Clone synchronously: once the page starts reading the body,
+      // clone() throws.
+      const copy = response.clone();
+      caches.open(CACHE).then(cache => cache.put(request, copy));
+    }
+    return response;
+  });
+}
+
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
   if (event.request.method !== 'GET') return;
-  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
-    if (response.ok) caches.open(CACHE).then(cache => cache.put(event.request, response.clone()));
-    return response;
-  })));
+  if (url.pathname.startsWith('/assets/')) {
+    // Vite content-hashes every asset name, so a cached URL is never stale.
+    event.respondWith(caches.match(event.request).then(cached => cached || fetchAndStore(event.request)));
+    return;
+  }
+  // Pages and unhashed files: network first, so an update is visible on the
+  // next load. The cache only answers while the local server is stopped.
+  event.respondWith(fetchAndStore(event.request).catch(() =>
+    caches.match(event.request).then(cached => cached || Response.error())));
 });

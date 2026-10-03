@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="LehrerAgent" />
-  <link rel="manifest" href="/assets/manifest-DJFCjNqP.json" />
+  <link rel="manifest" href="/assets/manifest-C3jgv1Ik.json" />
   <link rel="icon" href="/assets/teacherassist-BuGrGrqB.ico" sizes="any" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23d97757'/><text x='50' y='68' font-size='55' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'>📚</text></svg>" />
   <meta name="theme-color" content="#d97757" />
@@ -88,21 +88,10 @@
     /* Textarea auto-resize helper */
     textarea { overflow-y: hidden; }
   </style>
-  <script type="module" crossorigin src="/assets/index-D4sPrORZ.js"></script>
+  <script type="module" crossorigin src="/assets/index-BLIWHSnC.js"></script>
 </head>
 <body>
   <div id="root"><main style="font-family:system-ui;max-width:38rem;margin:12vh auto;padding:2rem;color:#f0ede6"><h1>TeacherAssist wird geladen</h1><p>Der gespeicherte Arbeitsstand wird geprüft.</p></main></div>
 
-  <!-- Service Worker (PWA) -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).then(function(registration) {
-        registration.update();
-      }).catch(function() {
-        // Offline-Cache ist optional – App funktioniert trotzdem
-      });
-    }
-  </script>
-
 </body>
 </html>

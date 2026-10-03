@@ -988,7 +988,7 @@ function OcrSettingsSection({ toolStatus }) {
       });
       if (!res.ok || !res.body) {
         const payload = await res.json().catch(() => null);
-        throw new Error((payload && payload.error) || `Server-Fehler ${res.status}`);
+        throw new Error(window.taApi.errorMessage(payload, `Server-Fehler ${res.status}`));
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

@@ -2228,7 +2228,7 @@ function RasterEditorView({ toolStatus }) {
       });
       const data = await r.json();
       if (data.success) { setSaved(true); setTimeout(() => setSaved(false), 2000); loadRasters(); }
-      else setError(data.error || 'Fehler beim Speichern.');
+      else setError(window.taApi.errorMessage(data, 'Fehler beim Speichern.'));
     } catch { setError('Tool-Server nicht erreichbar (start.bat läuft?).'); }
     setSaving(false);
   }
@@ -2517,7 +2517,7 @@ function MemoryEditorView({ toolStatus }) {
     try {
       const r = await taFetch(`${TOOL}/memory-read?file=${encodeURIComponent(path)}`);
       const d = await r.json();
-      if (d.error) { setError(d.error); return; }
+      if (!r.ok || d.error) { setError(window.taApi.errorMessage(d, 'Datei konnte nicht geladen werden.')); return; }
       setSelected(path);
       setContent(d.content || '');
     } catch (e) { setError(e.message); }
@@ -2534,7 +2534,7 @@ function MemoryEditorView({ toolStatus }) {
       });
       const d = await r.json();
       if (d.success) { setSaved(true); setTimeout(() => setSaved(false), 2000); loadList(); }
-      else setError(d.error || 'Fehler beim Speichern');
+      else setError(window.taApi.errorMessage(d, 'Fehler beim Speichern'));
     } catch (e) { setError(e.message); }
     setSaving(false);
   }

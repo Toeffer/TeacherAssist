@@ -329,7 +329,7 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    const message = window.taApi.errorMessage(err) || `Server-Fehler ${response.status}`;
+    const message = window.taApi.errorMessage(err, `Server-Fehler ${response.status}`);
     const error = new Error(message);
     // Lässt handleSend zwischen "OCR-Freigabe fehlt" (409 OCR_APPROVAL_REQUIRED
     // -- eigene, nicht-generische Behandlung) und anderen Fehlern unterscheiden.
@@ -992,6 +992,10 @@ function App() {
         aborted = true; // unterdrückt die generische "(Keine Antwort erhalten)"-Bubble unten
         addMessage(activeChatId, { role: 'bot', text: `🔒 ${err.message}`, ts: Date.now() });
         setOcrGateBlock({ message: err.message, jobIds: activeOcrJobIds });
+      } else if (fullText.trim()) {
+        // Keep what already arrived: an error late in the stream must not
+        // replace an answer the teacher has been reading.
+        fullText += `\n\n---\n⚠️ Die Antwort wurde unterbrochen: ${err.message}`;
       } else {
         fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
       }
@@ -1018,7 +1022,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
       const upRes = await taFetch('http://localhost:8789/upload', { method: 'POST', body: formData });
-      if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
+      if (!upRes.ok) throw new Error(window.taApi.errorMessage(await upRes.json().catch(() => ({})), 'Upload fehlgeschlagen'));
       const { saved } = await upRes.json();
       if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
@@ -1028,8 +1032,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: saved[0], source: sourceName, classification: 'public_curriculum' }),
       });
-      const data = await inRes.json();
-      if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+      const data = await inRes.json().catch(() => ({}));
+      if (!inRes.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Verarbeitung fehlgeschlagen'));
 
       setUploadPhase(null);
       setRagDocCount(n => n + data.chunks);
@@ -1072,7 +1076,7 @@ function App() {
             const formData = new FormData();
             formData.append('file', item.file);
             const upRes = await taFetch('http://localhost:8789/upload', { method: 'POST', body: formData });
-            if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
+            if (!upRes.ok) throw new Error(window.taApi.errorMessage(await upRes.json().catch(() => ({})), 'Upload fehlgeschlagen'));
             const { saved } = await upRes.json();
             if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
@@ -1081,8 +1085,8 @@ function App() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: saved[0], source: sourceName, classification: 'public_curriculum' }),
             });
-            const data = await inRes.json();
-            if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+            const data = await inRes.json().catch(() => ({}));
+            if (!inRes.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Verarbeitung fehlgeschlagen'));
 
             setRagDocCount(n => n + (data.chunks || 0));
             setBatchQueue(prev => prev.map((it, idx) => idx === pending ? { ...it, status: 'done' } : it));
@@ -1120,16 +1124,16 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, source: sourceName }),
       });
-      const dlData = await dlRes.json();
-      if (!dlRes.ok || dlData.error) throw new Error(dlData.error || 'Download fehlgeschlagen');
+      const dlData = await dlRes.json().catch(() => ({}));
+      if (!dlRes.ok || dlData.error) throw new Error(window.taApi.errorMessage(dlData, 'Download fehlgeschlagen'));
 
       const inRes = await taFetch('http://localhost:8789/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: dlData.saved[0], source: dlData.filename, classification: 'public_curriculum' }),
       });
-      const data = await inRes.json();
-      if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+      const data = await inRes.json().catch(() => ({}));
+      if (!inRes.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Verarbeitung fehlgeschlagen'));
 
       setIsTyping(false);
       setRagDocCount(n => n + data.chunks);
@@ -1183,7 +1187,7 @@ function App() {
         body: JSON.stringify({ title, content: text, format }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.error) throw new Error(data.error || 'Export fehlgeschlagen');
+      if (!res.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Export fehlgeschlagen'));
 
       await window.downloadTeacherAssistExport(data.url, data.filename);
 
@@ -1227,8 +1231,8 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
       const res = await taFetch('http://localhost:8789/restore', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Restore fehlgeschlagen');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Restore fehlgeschlagen'));
       alert(`✅ ${data.restored} Datei(en) wiederhergestellt.\n\nBitte lade die Seite neu (F5), damit alle Änderungen aktiv werden.`);
     } catch (err) {
       alert(`Restore fehlgeschlagen: ${err.message}`);
@@ -1266,9 +1270,9 @@ function App() {
           stickyPrivacyMode: summaryChat?.privacyMode || 'auto',
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       setIsTyping(false);
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(window.taApi.errorMessage(data, `Server-Fehler ${res.status}`));
       addMessage(activeChatId, {
         role: 'bot',
         text: `✅ Sitzung gespeichert!\n\n📝 **Zusammenfassung:**\n${data.summary}\n\n*(Im Memory-Editor unter "vergangene_stunden.md" einsehbar)*`,
@@ -1291,6 +1295,7 @@ function App() {
         if (type === 'provider' && data?.provider) usedProvider = data.provider;
       },
       customEndpoint,
+      customApiKey,
       customModel,
       provider,
       model,
