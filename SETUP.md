@@ -11,7 +11,7 @@ Vollständige manuelle Einrichtung auf einem neuen Rechner. Reihenfolge einhalte
 
 | Software | Version | Download |
 |---|---|---|
-| Python | 3.11+ | https://www.python.org/downloads/ |
+| Python | 3.12 oder 3.13 (die gepinnten Pakete gibt es erst ab 3.12) | https://www.python.org/downloads/ |
 | Tesseract OCR | 5.x | https://github.com/UB-Mannheim/tesseract/wiki (Windows) |
 | Ollama (optional, Pflicht für DSGVO-Skills) | aktuell | https://ollama.com/download |
 | Git | aktuell | https://git-scm.com/ |

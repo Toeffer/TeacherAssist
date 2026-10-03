@@ -27,14 +27,14 @@ python --version >nul 2>&1
 if %errorlevel% equ 0 goto python_ok
 
 echo         Nicht gefunden - installiere Python automatisch...
-winget install --id Python.Python.3.11 --source winget --scope user ^
+winget install --id Python.Python.3.12 --source winget --scope user ^
     --silent --accept-package-agreements --accept-source-agreements
 
 :: PATH fuer diese Sitzung ergaenzen
 for %%P in (
-    "%LOCALAPPDATA%\Programs\Python\Python311"
-    "%LOCALAPPDATA%\Programs\Python\Python311\Scripts"
-    "%APPDATA%\Python\Python311\Scripts"
+    "%LOCALAPPDATA%\Programs\Python\Python312"
+    "%LOCALAPPDATA%\Programs\Python\Python312\Scripts"
+    "%APPDATA%\Python\Python312\Scripts"
 ) do set "PATH=!PATH!;%%~P"
 
 python --version >nul 2>&1
@@ -55,11 +55,20 @@ if %errorlevel% neq 0 (
 :python_ok
 for /f "tokens=2 delims=. " %%v in ('python --version 2^>^&1') do set "PY_MAJOR=%%v"
 for /f "tokens=3 delims=. " %%v in ('python --version 2^>^&1') do set "PY_MINOR=%%v"
+:: tools\requirements.lock (repair.bat) und requirements-ocr.txt pinnen u. a.
+:: numpy 2.5.1 und scipy 1.18.0 -- die gibt es erst ab Python 3.12.
 if not "%PY_MAJOR%"=="3" goto python_bad_version
-if "%PY_MINOR%"=="11" goto python_version_ok
 if "%PY_MINOR%"=="12" goto python_version_ok
+if "%PY_MINOR%"=="13" goto python_version_ok
 :python_bad_version
-echo PROBLEM: TeacherAssist requires Python 3.11 or 3.12.
+echo.
+echo  PROBLEM: TeacherAssist braucht Python 3.12 oder 3.13 ^(gefunden: %PY_MAJOR%.%PY_MINOR%^).
+echo  Bitte Python 3.12 installieren, z. B. in der Eingabeaufforderung mit:
+echo    winget install --id Python.Python.3.12 --source winget --scope user
+echo  oder von https://www.python.org/downloads/ - danach install.bat in einem
+echo  neuen Fenster erneut starten.
+echo.
+pause
 exit /b 1
 :python_version_ok
 for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo         OK: %%v
