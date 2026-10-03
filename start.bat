@@ -35,8 +35,11 @@ if not exist "%~dp0index.html" (
 )
 
 :: HTTP /health pruefen (nicht nur TCP) - TCP allein erkennt Zombie-Prozesse nicht.
+:: 127.0.0.1 statt localhost: Der Server lauscht nur auf IPv4, und Windows
+:: versucht bei "localhost" zuerst ::1 - ein abgelehnter Versuch dauert dort
+:: ~2 s und verbraucht das ganze -TimeoutSec der Probe.
 echo  Pruefe Tool-Server...
-powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:%TEACHERASSIST_PORT%/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://127.0.0.1:%TEACHERASSIST_PORT%/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
     echo  Tool-Server laeuft bereits.
     goto open_browser
@@ -56,7 +59,7 @@ start "TeacherAssist Tool" /min "%PYTHON%" "%~dp0tool_server.py"
 echo  Warte auf Tool-Server...
 set "TOOL_OK="
 for /l %%I in (1,1,30) do (
-    powershell -NoProfile -Command "Start-Sleep -Seconds 1; try { $r = Invoke-WebRequest -Uri 'http://localhost:%TEACHERASSIST_PORT%/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+    powershell -NoProfile -Command "Start-Sleep -Seconds 1; try { $r = Invoke-WebRequest -Uri 'http://127.0.0.1:%TEACHERASSIST_PORT%/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
     if not errorlevel 1 (
         set "TOOL_OK=1"
         goto tool_ready

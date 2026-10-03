@@ -58,8 +58,17 @@ jobs:
         run: |
           python -m venv --system-site-packages tools\.venv
           call start.bat < NUL
-          if errorlevel 1 exit /b 1
-          powershell -NoProfile -Command "$r = Invoke-WebRequest -Uri 'http://localhost:8790/' -UseBasicParsing; if ($r.Content -notmatch 'TeacherAssist') { exit 1 }"
+          if errorlevel 1 goto diagnose
+          powershell -NoProfile -Command "$r = Invoke-WebRequest -Uri 'http://127.0.0.1:8790/' -UseBasicParsing; if ($r.Content -notmatch 'TeacherAssist') { exit 1 }"
+          exit /b %errorlevel%
+          :diagnose
+          echo ---- server log ----
+          type "%TEACHERASSIST_DATA_DIR%\logs\tool_server.log"
+          echo ---- listening sockets ----
+          netstat -ano | findstr :8790
+          echo ---- health probe timings ----
+          powershell -NoProfile -Command "foreach ($h in 'localhost', '127.0.0.1') { $sw = [Diagnostics.Stopwatch]::StartNew(); try { $s = (Invoke-WebRequest -Uri ('http://' + $h + ':8790/api/v1/health') -UseBasicParsing -TimeoutSec 10).StatusCode } catch { $s = $_.Exception.Message }; Write-Host $h $s $sw.ElapsedMilliseconds 'ms' }"
+          exit /b 1
       - name: start.bat leaves a foreign program on its port alone
         # A non-Python program holds the port: start.bat must not kill it, and
         # the server must refuse the busy port instead of sharing it.

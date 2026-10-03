@@ -1,6 +1,6 @@
 # TeacherAssist (LehrerAgent) – CLAUDE.md
 > Bauplan für Claude Code. Wird bei jeder Session automatisch geladen.
-> Letzte Aktualisierung: 2026-07-19 (v5 – teacherassist_core, Vite-Build, mobile Clients entfernt)
+> Letzte Aktualisierung: 2026-10-03 (v5 – teacherassist_core, Vite-Build; CI, ESLint, Port per `TEACHERASSIST_PORT`, Python 3.12)
 
 ---
 

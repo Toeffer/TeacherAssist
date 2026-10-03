@@ -244,7 +244,7 @@ def test_start_bat_health_probe_matches_versioned_route():
 
     assert "/health'" not in start_bat.replace("/api/v1/health'", "")
     # Both probe occurrences (the "already running" check and the startup wait loop).
-    assert start_bat.count("localhost:%TEACHERASSIST_PORT%/api/v1/health'") >= 2
+    assert start_bat.count("127.0.0.1:%TEACHERASSIST_PORT%/api/v1/health'") >= 2
     # start.bat and tool_server.py must agree on the default port.
     assert f'set "TEACHERASSIST_PORT={tool_server.DEFAULT_PORT}"' in start_bat
     assert "8789" not in start_bat.replace(f'set "TEACHERASSIST_PORT={tool_server.DEFAULT_PORT}"', "").replace("Standard 8789", "")
