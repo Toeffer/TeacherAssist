@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import { expect, test } from '@playwright/test';
 
 import { setUpApp } from './fixtures.mjs';
@@ -158,4 +160,31 @@ test('with a stored OpenRouter key, a model-less Ollama falls back and says why'
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   await expect(page.getByText('⚠ Kein Ollama-Modell · ☁️ OpenRouter Fallback')).toBeVisible();
+});
+
+test.describe('calendar export', () => {
+  test.use({ timezoneId: 'Europe/Berlin' });
+
+  test('turns a dated exam in an answer into a local-time calendar entry', async ({ page }) => {
+    await setUpApp(page, {
+      messages: [{ role: 'bot', text: 'Die Klassenarbeit am 15.10.2026 umfasst Bruchrechnung. Viel Erfolg!', ts: 1 }],
+    });
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.getByTitle('Exportieren / Drucken').click();
+    await page.getByRole('button', { name: '📅 Termin' }).click();
+
+    // Prefilled from the answer; the date's dots no longer cut the title.
+    await expect(page.locator('input[type="date"]')).toHaveValue('2026-10-15');
+    await expect(page.locator('label:text-is("Titel") + input')).toHaveValue('Klassenarbeit am 15.10.2026 umfasst Bruchrechnung');
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: /\.ics herunterladen/ }).click();
+    const file = await download;
+    const ics = await readFile(await file.path(), 'utf8');
+
+    // 08:00 must stay 08:00: it used to be written as UTC without "Z" (06:00).
+    expect(ics).toContain('DTSTART:20261015T080000\r\n');
+    expect(ics).toContain('DTEND:20261015T084500\r\n');
+    expect(ics).toMatch(/DTSTAMP:\d{8}T\d{6}Z/);
+  });
 });

@@ -293,7 +293,6 @@ function CameraModal({ onClose, onCapture }) {
   React.useEffect(() => {
     if (stage === 'capture') startCamera();
     return () => stopCamera();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage]);
 
   React.useEffect(() => () => {
@@ -374,7 +373,7 @@ function CameraModal({ onClose, onCapture }) {
         setPreviewFromBlob(blob);
         uploadAndCreateJob(blob);
         return;
-      } catch (e) {
+      } catch {
         // Fällt unten auf den Canvas-Pfad zurück.
       }
     }

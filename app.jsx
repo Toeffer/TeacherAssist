@@ -121,7 +121,7 @@ function parseNameInput(raw) {
   const text = raw.trim();
 
   // Muster: "Ich bin X, du bist Y"
-  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*(?:und\s+)?du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+))?\s*$/i);
+  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*(?:und\s+)?du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß-]+))?\s*$/i);
   if (m) {
     return {
       name: m[1].trim(),
@@ -130,7 +130,7 @@ function parseNameInput(raw) {
   }
 
   // Muster: "X, und du bist Y" oder "X – du Y"
-  const m2 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*[,–\-—]+\s*du\s*(?:bist|heißt)?\s*([a-zA-ZäöüÄÖÜß\-]+)\s*$/i);
+  const m2 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*[,–\-—]+\s*du\s*(?:bist|heißt)?\s*([a-zA-ZäöüÄÖÜß-]+)\s*$/i);
   if (m2) {
     return {
       name: m2[1].trim(),
@@ -139,7 +139,7 @@ function parseNameInput(raw) {
   }
 
   // Du-bist-Muster muss vor der "Nur ein Name"-Prüfung stehen
-  const m3 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*,?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+)\s*$/i);
+  const m3 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*,?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß-]+)\s*$/i);
   if (m3) {
     return { name: m3[1].trim(), assistant_name: m3[2].trim() };
   }
@@ -308,7 +308,17 @@ function extractKlassenStufen(text) {
 // OCR_APPROVAL_REQUIRED ab, wenn ein referenzierter Job nicht freigegeben ist
 // (oder trotz Freigabe noch kritische Unsicherheit hat). Ohne dieses Feld war
 // das Gate zwar serverseitig fertig, aber nie scharf: die Liste kam nie an.
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined, ocrJobIds = [], stickyPrivacyMode = 'auto') {
+//
+// Benannte Optionen statt 14 Positionsparametern: Ein fehlendes Argument hat
+// früher alle folgenden verschoben ("Modell testen" schickte so den
+// Provider-Namen als Modell). API-Keys werden nie mitgeschickt – der Server
+// nimmt die gespeicherten aus dem Credential Manager.
+async function callChatViaServer({
+  messages, profile = {}, onChunk = () => {}, onMeta,
+  customEndpoint = '', customModel = 'gpt-3.5-turbo',
+  providerOverride = '', modelOverride = '', ollamaModelOverride = '',
+  forceSkill = '', signal = undefined, ocrJobIds = [], stickyPrivacyMode = 'auto',
+}) {
   const response = await taFetch('/api/v1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -479,7 +489,6 @@ function App() {
   const [customApiKey, setCustomApiKey] = useState('');
   const [hasCustomApiKey, setHasCustomApiKey] = useState(Boolean(bootState.settings.hasCustomApiKey));
   const [customModel, setCustomModel] = useState(() => bootState.settings.customModel || 'gpt-3.5-turbo');
-  const [tailscaleStatus, setTailscaleStatus] = useState('unknown');
   const [showStylePopover, setShowStylePopover] = useState(false);
   const [dsgvoRoutingActive, setDsgvoRoutingActive] = useState(false);
   // Stufe 9: 409 OCR_APPROVAL_REQUIRED von /api/v1/chat -- { message, jobIds } | null.
@@ -651,12 +660,16 @@ function App() {
       const greeting = getTimeBasedGreeting(profile.name, profile.assistant_name);
       addBotMessage(greeting, 400);
     }
+    // Deliberately only on chat switch: greeting a new empty chat once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChatId]);
 
   useEffect(() => {
     if (!onboardingDone && onboardingStep > 0 && activeChat.messages.length === 0) {
       setOnboardingStep(0);
     }
+    // Deliberately only on chat switch, like the greeting above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChatId]);
 
   const addMessage = useCallback((chatId, msg) => {
@@ -748,13 +761,12 @@ function App() {
           setIsTyping(true);
           let answer = '';
           try {
-            await callChatViaServer(
-              [{ role: 'user', text }], {},
-              chunk => { answer += chunk; },
-              undefined,
-              customEndpoint, customApiKey, customModel,
-              effectiveProvider, model, ollamaModel
-            );
+            await callChatViaServer({
+              messages: [{ role: 'user', text }],
+              onChunk: chunk => { answer += chunk; },
+              customEndpoint, customModel,
+              providerOverride: effectiveProvider, modelOverride: model, ollamaModelOverride: ollamaModel,
+            });
           } catch { answer = 'Das beantworte ich gerne – lass uns aber erst das Profil abschließen!'; }
           setIsTyping(false);
           addMessage(activeChatId, { role: 'bot', text: answer || 'Gerne! Lass uns aber erst das Profil fertig einrichten.', ts: Date.now() });
@@ -959,27 +971,41 @@ function App() {
     let fullText = '';
     let aborted = false;
     try {
-      await callChatViaServer(currentMessages, profile, (chunk) => {
-        fullText += chunk;
-        setStreamingText(fullText);
-      }, (type, data) => {
-        if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
-        else if (type === 'privacy') {
-          setDsgvoRoutingActive(data.mode === 'local_required');
-          if (data.mode === 'local_required') {
-            setChats(prev => prev.map(chat => chat.id === activeChatId
-              ? { ...chat, privacyMode: 'local_required' }
-              : chat));
+      await callChatViaServer({
+        messages: currentMessages,
+        profile,
+        customEndpoint,
+        customModel,
+        providerOverride: effectiveProvider,
+        modelOverride: model,
+        ollamaModelOverride: ollamaModel,
+        forceSkill: skillId,
+        signal: controller.signal,
+        ocrJobIds: activeOcrJobIds,
+        stickyPrivacyMode: currentChat?.privacyMode || 'auto',
+        onChunk: chunk => {
+          fullText += chunk;
+          setStreamingText(fullText);
+        },
+        onMeta: (type, data) => {
+          if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
+          else if (type === 'privacy') {
+            setDsgvoRoutingActive(data.mode === 'local_required');
+            if (data.mode === 'local_required') {
+              setChats(prev => prev.map(chat => chat.id === activeChatId
+                ? { ...chat, privacyMode: 'local_required' }
+                : chat));
+            }
+          } else if (type === 'dsgvo') {
+            if (data.routing === 'dsgvo_local') {
+              setDsgvoRoutingActive(true);
+            }
+            if (data.message) {
+              addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
+            }
           }
-        } else if (type === 'dsgvo') {
-          if (data.routing === 'dsgvo_local') {
-            setDsgvoRoutingActive(true);
-          }
-          if (data.message) {
-            addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
-          }
-        }
-      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal, activeOcrJobIds, currentChat?.privacyMode || 'auto');
+        },
+      });
     } catch (err) {
       if (err && err.name === 'AbortError') {
         aborted = true;
@@ -1007,7 +1033,7 @@ function App() {
     if (!aborted) {
       addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
     }
-  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, hasApiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
+  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, hasApiKey, model, isStreaming, isTyping, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, effectiveProvider, customEndpoint, customModel]);
 
   const handleFileUpload = useCallback(async (file, track) => {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
@@ -1259,7 +1285,6 @@ function App() {
         body: JSON.stringify({
           messages: msgs,
           profile,
-          apiKey,
           providerOverride: effectiveProvider,
           modelOverride: model,
           ollamaModelOverride: ollamaModel,
@@ -1281,32 +1306,31 @@ function App() {
       setIsTyping(false);
       addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler beim Zusammenfassen: ${err.message}`, ts: Date.now() });
     }
-  }, [activeChatId, chats, profile, apiKey, effectiveProvider, model, ollamaModel, customEndpoint, customApiKey, customModel, addMessage]);
+  }, [activeChatId, chats, profile, effectiveProvider, model, ollamaModel, customEndpoint, customModel, addMessage]);
 
   const handleTestModel = useCallback(async () => {
     let text = '';
     let usedProvider = provider;
-    await callChatViaServer(
-      [{ role: 'user', text: 'Antworte auf Deutsch mit genau einem kurzen Satz: Modelltest erfolgreich.' }],
+    await callChatViaServer({
+      messages: [{ role: 'user', text: 'Antworte auf Deutsch mit genau einem kurzen Satz: Modelltest erfolgreich.' }],
       profile,
-      (chunk) => { text += chunk; },
-      (type, data) => {
+      onChunk: chunk => { text += chunk; },
+      onMeta: (type, data) => {
         if (type === 'provider' && data?.provider) usedProvider = data.provider;
       },
       customEndpoint,
-      customApiKey,
       customModel,
-      provider,
-      model,
-      ollamaModel
-    );
+      providerOverride: provider,
+      modelOverride: model,
+      ollamaModelOverride: ollamaModel,
+    });
 
     return {
       text: text.trim() || '(Keine Antwort erhalten)',
       provider: usedProvider,
       model: provider === 'ollama' ? ollamaModel : provider === 'custom' ? customModel : model,
     };
-  }, [apiKey, customApiKey, customEndpoint, customModel, model, ollamaModel, profile, provider]);
+  }, [customEndpoint, customModel, model, ollamaModel, profile, provider]);
 
   // Tastaturkürzel
   useEffect(() => {
@@ -1610,7 +1634,6 @@ function App() {
             customEndpoint={customEndpoint} onCustomEndpointChange={setCustomEndpoint}
             customApiKey={customApiKey} hasCustomApiKey={hasCustomApiKey} onCustomApiKeyChange={setCustomApiKey}
             customModel={customModel} onCustomModelChange={setCustomModel}
-            tailscaleStatus={tailscaleStatus}
             onBackup={handleBackup} onRestore={handleRestore}
             onTestModel={handleTestModel}
           />

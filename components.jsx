@@ -325,15 +325,18 @@ function openPrintWindow(text, title) {
 <body>
 <div class="toolbar">
   <span>📄 <strong>Export bereit</strong> – als PDF drucken oder speichern</span>
-          <button class="btn-print" onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
+          <button class="btn-print" type="button">🖨️ Drucken / Als PDF speichern</button>
         </div>
       <main>${body}</main>
       <div class="footer">
-        Erstellt mit TeacherAssist &bull; Exportiert am ${new Date().toLocaleDateString('de-DE')}
+        Erstellt mit TeacherAssist &bull; Exportiert am ${today}
       </div>
     </body>
     </html>`);
   win.document.close();
+  // The new window inherits the server's CSP (script-src 'self'), which
+  // blocks inline onclick handlers -- attach the handler from here instead.
+  win.document.querySelector('.btn-print')?.addEventListener('click', () => win.print());
 }
 
 /* ---------- Bot Avatar ---------- */
@@ -373,6 +376,7 @@ function TypingDots() {
 /* ---------- Chat Bubble ---------- */
 function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
   const [exportOpen, setExportOpen] = React.useState(false);
+  const [icalOpen, setIcalOpen] = React.useState(false);
 
   if (!isBot) {
     return (
@@ -449,10 +453,18 @@ function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
                   {label}
                 </button>
               ))}
+              <button onClick={() => { setExportOpen(false); setIcalOpen(true); }} title="Als Kalender-Termin (.ics) speichern" style={{
+                border: 'none', borderRadius: 6, padding: '6px 8px',
+                background: 'var(--surface-input)', color: 'var(--text-secondary)',
+                cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+              }}>
+                📅 Termin
+              </button>
             </div>
           )}
           </div>
         )}
+        {icalOpen && <IcalExportModal text={message} onClose={() => setIcalOpen(false)} />}
       </div>
     </div>
   );
@@ -755,7 +767,6 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
   const historyRef = React.useRef([]);
   const historyIdxRef = React.useRef(-1);
   const draftBeforeHistoryRef = React.useRef('');
-  const cameraSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   const dictateSupported = !!SpeechRec;
@@ -2822,8 +2833,9 @@ function IcalExportModal({ text, onClose }) {
   const today = new Date().toISOString().slice(0, 10);
 
   const guessTitle = () => {
-    const m = text.match(/(?:Klassenarbeit|Klausur|Test|Prüfung|Abgabe)[^\n.]{0,60}/i);
-    return m ? m[0].trim() : 'Termin aus TeacherAssist';
+    // Stops at a sentence end, but not at the dots inside "15.10.2026".
+    const m = text.match(/(?:^|[^\wäöüß])((?:Klassenarbeit|Klausur|Test|Prüfung|Abgabe)(?:[^\n.]|\.(?=\d)){0,60})/i);
+    return m ? m[1].trim() : 'Termin aus TeacherAssist';
   };
   const guessDate = () => {
     const m = text.match(/\b(\d{1,2})[./](\d{1,2})[./](20\d{2})\b/);
@@ -2842,7 +2854,12 @@ function IcalExportModal({ text, onClose }) {
   function download() {
     const dt    = new Date(`${date}T${startTime}:00`);
     const endDt = new Date(dt.getTime() + Math.max(5, parseInt(duration) || 45) * 60000);
+    // DTSTAMP is UTC ("Z"); DTSTART/DTEND are floating local times, which
+    // calendars show as entered. Formatting them via toISOString() (UTC)
+    // without "Z" shifted a 08:00 exam to 06:00 in German summer time.
     const fmt   = d => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+    const pad   = n => String(n).padStart(2, '0');
+    const local = d => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
     const uid   = `${Date.now()}@teacherAssist`;
     const ics   = [
       'BEGIN:VCALENDAR', 'VERSION:2.0',
@@ -2850,8 +2867,8 @@ function IcalExportModal({ text, onClose }) {
       'BEGIN:VEVENT',
       `UID:${uid}`,
       `DTSTAMP:${fmt(new Date())}Z`,
-      `DTSTART:${fmt(dt)}`,
-      `DTEND:${fmt(endDt)}`,
+      `DTSTART:${local(dt)}`,
+      `DTEND:${local(endDt)}`,
       `SUMMARY:${title.replace(/[,;\\]/g, m => '\\' + m)}`,
       `DESCRIPTION:Erstellt mit TeacherAssist`,
       'END:VEVENT', 'END:VCALENDAR',
@@ -2860,8 +2877,10 @@ function IcalExportModal({ text, onClose }) {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
-    a.download = title.slice(0, 40).replace(/[^\wäöüÄÖÜß\s]/g, '').trim() + '.ics';
+    a.download = (title.slice(0, 40).replace(/[^\wäöüÄÖÜß\s]/g, '').trim() || 'termin') + '.ics';
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(url);
     onClose();
   }
@@ -2899,20 +2918,22 @@ function IcalExportModal({ text, onClose }) {
             onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
         </div>
 
-        <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-          <div style={{ flex: 3 }}>
+        {/* Grid with shrinkable columns: in a flex row the date/time inputs'
+            intrinsic widths squeezed the duration field to nothing. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, 1fr)', gap: 10, marginBottom: 20 }}>
+          <div>
             <label style={ls}>Datum</label>
             <input type="date" value={date} onChange={e => setDate(e.target.value)} style={is}
               onFocus={e => e.target.style.borderColor = 'var(--accent)'}
               onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
           </div>
-          <div style={{ flex: 2 }}>
+          <div>
             <label style={ls}>Uhrzeit</label>
             <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} style={is}
               onFocus={e => e.target.style.borderColor = 'var(--accent)'}
               onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
           </div>
-          <div style={{ flex: 2 }}>
+          <div>
             <label style={ls}>Dauer (Min.)</label>
             <input type="number" value={duration} onChange={e => setDuration(e.target.value)}
               min="5" max="480" style={is}
