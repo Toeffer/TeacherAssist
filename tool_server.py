@@ -942,8 +942,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, message, status=400):
-        self._json({"error": {"code": code, "message": message}}, status)
+    def _error(self, code, message, status=400, **extra):
+        self._json({"error": {"code": code, "message": message, **extra}}, status)
 
     def _body(self, max_bytes=MAX_JSON_BYTES):
         try:
@@ -1272,7 +1272,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             try:
                 settings["_verifiedLocalOllamaModel"] = require_verified_local_ollama(settings)
             except LocalModelRequired as exc:
-                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+                # The reasons let the UI say *why* a local model is needed;
+                # without them a false positive looked like a broken setup.
+                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409, reasons=list(decision.reasons))
                 return ""
 
         self.send_response(200)
@@ -2382,7 +2384,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             try:
                 model = require_verified_local_ollama(settings)
             except LocalModelRequired as exc:
-                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409, reasons=list(decision.reasons))
                 return
             endpoint = "http://127.0.0.1:11434/v1/chat/completions"
             headers = {"Content-Type": "application/json"}

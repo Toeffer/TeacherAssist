@@ -635,3 +635,20 @@ def test_status_distinguishes_ollama_offline_from_running_without_models(
     assert body["ollamaRunning"] is running
     assert body["capabilities"]["ollama"] is usable
     assert body["ollamaModels"] == models
+
+
+def test_local_model_required_names_the_reasons(isolated_server):
+    """Without Ollama, a prompt classified as personal is refused with 409;
+    the reasons let the UI explain why instead of looking broken."""
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(
+        port, "POST", "/api/v1/chat", headers,
+        json.dumps({"messages": [{"role": "user", "text": "Schreib ein Feedback für Max"}]}),
+    )
+
+    assert status == 409
+    error = json.loads(payload)["error"]
+    assert error["code"] == "LOCAL_MODEL_REQUIRED"
+    assert "personal_data:person_name" in error["reasons"]

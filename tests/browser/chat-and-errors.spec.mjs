@@ -188,3 +188,50 @@ test.describe('calendar export', () => {
     expect(ics).toMatch(/DTSTAMP:\d{8}T\d{6}Z/);
   });
 });
+
+test('a chat that went local says why and offers a new chat', async ({ page }) => {
+  await setUpApp(page);
+  await page.route('**/api/v1/chat', route => route.fulfill({
+    contentType: 'text/event-stream',
+    body: sse(
+      { type: 'privacy', mode: 'local_required', reasons: ['personal_data:person_name', 'sensitive_skill:zeugnis_formulieren'] },
+      { type: 'chunk', text: 'Lokale Antwort.' },
+      { type: 'done' },
+    ),
+  }));
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const input = page.getByPlaceholder('Nachricht eingeben…');
+  await input.fill('Zeugnistext für Max');
+  await input.press('Enter');
+
+  const banner = page.getByTestId('local-mode-banner');
+  await expect(banner).toContainText('Dieser Chat läuft nur lokal');
+  await expect(banner).toContainText('möglicher Personenname');
+  await expect(banner).toContainText('Datenschutz-Skill „Zeugnis formulieren“');
+
+  await banner.getByRole('button', { name: 'Neuer Chat' }).click();
+  await expect(page.getByTestId('local-mode-banner')).toHaveCount(0);
+});
+
+test('a refused local-only request names the reason', async ({ page }) => {
+  await setUpApp(page);
+  await page.route('**/api/v1/chat', route => route.fulfill({
+    status: 409,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: {
+      code: 'LOCAL_MODEL_REQUIRED',
+      message: 'Dieses Material braucht ein lokales Modell. Ollama ist nicht verfügbar.',
+      reasons: ['personal_data:person_name'],
+    } }),
+  }));
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const input = page.getByPlaceholder('Nachricht eingeben…');
+  await input.fill('Feedback für Max');
+  await input.press('Enter');
+
+  await expect(page.getByText('Dieses Material braucht ein lokales Modell.', { exact: false })).toBeVisible();
+  await expect(page.getByText(/Grund:.*möglicher Personenname/)).toBeVisible();
+  await expect(page.getByText(/Fehler bei der Anfrage/)).toHaveCount(0);
+});

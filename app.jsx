@@ -301,6 +301,33 @@ function extractKlassenStufen(text) {
   return out;
 }
 
+/* ---------- Gründe für den lokalen Modus (teacherassist_core/privacy.py) ---------- */
+const SENSITIVE_SKILL_LABELS = {
+  schuelerarbeit_bewerten: 'Schülerarbeit bewerten',
+  zeugnis_formulieren: 'Zeugnis formulieren',
+  foerderplan_erstellen: 'Förderplan erstellen',
+  lerntagebuch_feedback: 'Lerntagebuch-Feedback',
+  klassenstatistik: 'Klassenstatistik',
+};
+const PRIVACY_REASON_LABELS = {
+  user_requested_local: 'lokaler Modus angefordert',
+  document_not_public: 'nicht-öffentliches Dokument im Kontext',
+  student_submission: 'Schülerarbeit (Texterkennung) im Kontext',
+  'personal_data:email': 'E-Mail-Adresse',
+  'personal_data:phone': 'Telefonnummer',
+  'personal_data:birth_date': 'Geburtsdatum',
+  'personal_data:student_context': 'schülerbezogene Begriffe (z. B. „SuS", „Zeugnis")',
+  'personal_data:person_name': 'möglicher Personenname',
+  'personal_data:student_identifier': 'Schülerkennung (z. B. SuS-01)',
+};
+function privacyReasonLabels(reasons) {
+  return [...new Set((reasons || [])
+    .filter(reason => reason !== 'chat_already_local')
+    .map(reason => reason.startsWith('sensitive_skill:')
+      ? `Datenschutz-Skill „${SENSITIVE_SKILL_LABELS[reason.slice(16)] || reason.slice(16)}“`
+      : PRIVACY_REASON_LABELS[reason] || reason))];
+}
+
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
 // `ocrJobIds` (Stufe 9): die OCR-Job-IDs, die der aktive Chat bisher referenziert
 // hat. Der Server (tool_server.py:_stream_chat_payload) prüft sie gegen
@@ -344,6 +371,7 @@ async function callChatViaServer({
     // Lässt handleSend zwischen "OCR-Freigabe fehlt" (409 OCR_APPROVAL_REQUIRED
     // -- eigene, nicht-generische Behandlung) und anderen Fehlern unterscheiden.
     error.code = (err && err.error && err.error.code) || null;
+    error.reasons = (err && err.error && err.error.reasons) || [];
     throw error;
   }
 
@@ -992,8 +1020,14 @@ function App() {
           else if (type === 'privacy') {
             setDsgvoRoutingActive(data.mode === 'local_required');
             if (data.mode === 'local_required') {
+              // Kept per chat, so the banner can still say why after a reload.
+              const reasons = (data.reasons || []).filter(reason => reason !== 'chat_already_local');
               setChats(prev => prev.map(chat => chat.id === activeChatId
-                ? { ...chat, privacyMode: 'local_required' }
+                ? {
+                    ...chat,
+                    privacyMode: 'local_required',
+                    privacyReasons: [...new Set([...(chat.privacyReasons || []), ...reasons])],
+                  }
                 : chat));
             }
           } else if (type === 'dsgvo') {
@@ -1017,6 +1051,11 @@ function App() {
         aborted = true; // unterdrückt die generische "(Keine Antwort erhalten)"-Bubble unten
         addMessage(activeChatId, { role: 'bot', text: `🔒 ${err.message}`, ts: Date.now() });
         setOcrGateBlock({ message: err.message, jobIds: activeOcrJobIds });
+      } else if (err && err.code === 'LOCAL_MODEL_REQUIRED') {
+        const labels = privacyReasonLabels(err.reasons);
+        fullText = `🔒 ${err.message}` +
+          (labels.length ? `\n\n**Grund:** ${labels.join(', ')}.` : '') +
+          '\n\nStarte Ollama, oder stelle allgemeine Fragen ohne Schülerbezug in einem neuen Chat.';
       } else if (fullText.trim()) {
         // Keep what already arrived: an error late in the stream must not
         // replace an answer the teacher has been reading.
@@ -1545,6 +1584,30 @@ function App() {
             queue={batchQueue}
             onDismiss={() => setBatchQueue([])}
           />
+          {/* Only worth saying with a cloud provider: with Ollama everything is local anyway. */}
+          {activeChat?.privacyMode === 'local_required' && provider !== 'ollama' && (() => {
+            const labels = privacyReasonLabels(activeChat.privacyReasons);
+            return (
+              <div data-testid="local-mode-banner" style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                padding: '8px 16px', background: 'rgba(42,157,92,0.08)',
+                borderTop: '1px solid rgba(42,157,92,0.25)', fontSize: 12.5,
+                color: 'var(--text-secondary)', flexShrink: 0, lineHeight: 1.5,
+              }}>
+                <span style={{ flex: 1, minWidth: 220 }}>
+                  🔒 <strong>Dieser Chat läuft nur lokal</strong>
+                  {labels.length ? ` – erkannt: ${labels.join(', ')}.` : ' – es wurden personenbezogene Inhalte erkannt.'}
+                  {' '}Allgemeine Planung ohne Schülerbezug geht in einem neuen Chat auch mit dem Cloud-Modell.
+                </span>
+                <button onClick={handleNewChat} style={{
+                  padding: '5px 12px', borderRadius: 8, border: '1.5px solid #2a9d5c',
+                  background: 'transparent', color: '#2a9d5c', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}>
+                  Neuer Chat
+                </button>
+              </div>
+            );
+          })()}
           {ocrGateBlock && (
             <div style={{
               display: 'flex', flexDirection: 'column', gap: 8,
