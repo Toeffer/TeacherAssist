@@ -555,3 +555,83 @@ def test_save_raster_rejects_malformed_fields_with_a_response(isolated_server):
     )
 
     assert status == 400
+
+
+@pytest.mark.parametrize("path", ["/api/v1/chat", "/api/v1/session-summary"])
+def test_non_object_messages_are_rejected_with_400(isolated_server, path):
+    """A string or null entry in messages used to raise AttributeError and
+    drop the connection."""
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(port, "POST", path, headers, json.dumps({"messages": ["hallo", None]}))
+
+    assert status == 400
+    assert json.loads(payload)["error"]["code"] == "INVALID_MESSAGES"
+
+
+def test_memory_write_with_invalid_json_is_a_400(isolated_server):
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, _ = _call(port, "POST", "/api/v1/memory-write", headers, "{kein json")
+
+    assert status == 400
+
+
+class _TagsResponse:
+    def __init__(self, payload):
+        self._payload = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        return self._payload
+
+
+@pytest.mark.parametrize(
+    "tags, running, usable, models",
+    [
+        (None, False, False, []),
+        ({"models": []}, True, False, []),
+        (
+            {"models": [{"name": "gemma3:4b"}, {"name": "gpt-oss:120b-cloud"}, {"model": "qwen3-vl:8b"}]},
+            True,
+            True,
+            [
+                {"name": "gemma3:4b", "cloud": False},
+                {"name": "gpt-oss:120b-cloud", "cloud": True},
+                {"name": "qwen3-vl:8b", "cloud": False},
+            ],
+        ),
+    ],
+)
+def test_status_distinguishes_ollama_offline_from_running_without_models(
+    isolated_server, monkeypatch, tags, running, usable, models
+):
+    """Running without a model needs "ollama pull", not "ollama serve"; the
+    UI also needs the installed models for its model picker."""
+    import urllib.error
+    import urllib.request
+
+    def fake_urlopen(request, *args, **kwargs):
+        if tags is None:
+            raise urllib.error.URLError("connection refused")
+        return _TagsResponse(tags)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(tool_server, "_ollama_last_check", 0)
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(port, "GET", "/api/v1/status", headers)
+
+    assert status == 200
+    body = json.loads(payload)
+    assert body["ollamaRunning"] is running
+    assert body["capabilities"]["ollama"] is usable
+    assert body["ollamaModels"] == models

@@ -2,35 +2,18 @@
 """
 TeacherAssist Tool-Server  –  Port 8789
 =========================================
-Stellt lokale Endpunkte bereit:
-  GET  /health               – Statuscheck
-  GET  /collections          – Anzahl gespeicherter Abschnitte in ChromaDB
-  GET  /search?q=...         – Semantische Lehrplan-Suche (RAG)
-  GET  /settings             – Gespeicherte Einstellungen abrufen
-  GET  /backup               – Memory-Verzeichnis als ZIP herunterladen
-  GET  /list-raster          – Bewertungsraster auflisten
-  GET  /memory-list          – Alle .md-Dateien unter memory/
-  GET  /memory-read?file=... – Einzelne Memory-Datei lesen
-  GET  /memory-versions?file=... – Backup-Versionen einer Datei
-
-  POST /chat                 – LLM-Chat mit Streaming (NEU: Proxy + DSGVO-Filter + Skill-Router)
-  POST /upload               – PDF-Datei speichern (multipart)
-  POST /ingest               – PDF verarbeiten + in ChromaDB speichern
-  POST /clear                – Gesamte Wissensdatenbank leeren
-  POST /download-url         – Lehrplan per URL herunterladen
-  POST /settings             – Einstellungen speichern
-  POST /save-raster          – Bewertungsraster speichern
-  POST /restore              – Backup wiederherstellen (ZIP)
-  POST /memory-write         – Memory-Datei schreiben
-  POST /memory-restore-version – Backup-Version wiederherstellen
-  POST /ocr-image            – Bild per OCR in Text umwandeln
-  POST /session-summary      – Chat-Verlauf zusammenfassen und in vergangene_stunden.md speichern
+Der einzige Prozess der App: liefert das gebaute Frontend (web_dist/) und alle
+/api/v1/*-Endpunkte aus. Die Routentabelle steht in CLAUDE.md
+("HTTP-API-Referenz"); maßgeblich ist der Routing-Block in
+ToolHandler.do_GET / do_POST / do_PATCH / do_DELETE.
 
 Sicherheit:
-  - API-Key NUR serverseitig in settings.json
-  - DSGVO-Filter prüft jede Nachricht VOR API-Versand
-  - Schülerdaten → automatisch Ollama (lokal) statt Cloud-API
-  - Skill-Router lädt passende skill.md ohne OpenClaw
+  - Jede /api/v1/-Route außer health/bootstrap verlangt Session-Cookie und
+    CSRF-Token; Host- und Origin-Prüfung blockieren fremde Seiten.
+  - API-Keys liegen im Windows Credential Manager (teacherassist_core.runtime),
+    nie in settings.json und nie in einer HTTP-Antwort.
+  - decide_privacy() prüft jede Anfrage serverseitig; personenbezogene Inhalte
+    gehen nur an ein verifiziert lokales Ollama-Modell, ohne Cloud-Fallback.
 """
 
 import http.server
@@ -45,7 +28,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unicodedata
@@ -78,8 +60,6 @@ from teacherassist_core.ocr import (
 )
 from teacherassist_core.privacy import (
     DOCUMENT_CLASSIFICATIONS,
-    SENSITIVE_SKILLS,
-    anonymize_text,
     decide_privacy,
     findings_for,
     is_trusted_loopback_endpoint,
@@ -100,7 +80,7 @@ from teacherassist_core.security import (
 )
 from teacherassist_core.skills import SkillRegistry
 from teacherassist_core.storage import EncryptedStateStore, PersistenceUnavailable, StateConflict
-from teacherassist_core.ollama_locality import LocalModelRequired, assert_local_ollama_model
+from teacherassist_core.ollama_locality import LocalModelRequired, assert_local_ollama_model, looks_like_cloud_model
 
 # Hardened runtime services are kept separate from the HTTP adapter.
 
@@ -204,6 +184,17 @@ def referenced_ocr_classifications(data, jobs):
     return job_ids, [
         jobs[job_id].classification if job_id in jobs else "unknown" for job_id in job_ids
     ]
+
+def requested_privacy_mode(data):
+    """Explicit per-request privacy mode. Every route accepts both spellings:
+    a route that read only one of them let an API client's "local_required"
+    apply to that answer without marking the chat local for later messages."""
+    return data.get("privacy_mode", data.get("privacyMode", "auto"))
+
+
+def valid_message_list(messages):
+    """A chat history the handlers can read: a list of message objects."""
+    return isinstance(messages, list) and all(isinstance(message, dict) for message in messages)
 
 def memory_zip_destination(name):
     """Return a safe restore destination below memory/, or None for ignored entries."""
@@ -341,10 +332,6 @@ def load_settings():
     settings["customApiKey"] = CREDENTIALS.get(CredentialStore.CUSTOM)
     return settings
 
-def get_api_key():
-    """Read the OpenRouter key without exposing it through the HTTP API."""
-    return CREDENTIALS.get(CredentialStore.OPENROUTER)
-
 # ---------------------------------------------------------------------------
 # DSGVO-Filter (serverseitig – nicht umgehbar)
 # ---------------------------------------------------------------------------
@@ -360,32 +347,8 @@ def detect_personal_data(text):
     return [{"type": labels.get(name, name), "auto": True} for name in sorted(findings_for(text))]
 
 # ---------------------------------------------------------------------------
-# Skill-Router (lädt passende skill.md ohne OpenClaw)
+# Memory-Kontext (nur für lokal erzwungene Gespräche)
 # ---------------------------------------------------------------------------
-_skill_index_cache = None
-
-def load_skill_index():
-    global _skill_index_cache
-    if _skill_index_cache is not None:
-        return _skill_index_cache
-    try:
-        if SKILLS_INDEX.exists():
-            _skill_index_cache = json.loads(SKILLS_INDEX.read_text("utf-8"))
-        else:
-            _skill_index_cache = []
-    except Exception:
-        _skill_index_cache = []
-    return _skill_index_cache
-
-def find_matching_skill(user_text):
-    """Return a legacy-shaped record from the validated registry."""
-    skill = SKILL_REGISTRY.match(user_text)
-    return {"name": skill.skill_id, "folder": skill.folder} if skill else None
-
-def load_skill_content(folder_name):
-    skill = SKILL_REGISTRY.get(folder_name)
-    return skill.content if skill else ""
-
 def load_memory_context():
     """Lädt lehrerprofil.md + begleiter_gedaechtnis.md als Kontext."""
     parts = []
@@ -599,50 +562,48 @@ def search_rag(query, limit=4):
 # Ollama-Status-Cache
 # ---------------------------------------------------------------------------
 _ollama_lock = threading.Lock()
-_ollama_online = False
+_ollama_state = {"running": False, "models": []}
 _ollama_last_check = 0
 
-def check_ollama():
-    global _ollama_online, _ollama_last_check
+def ollama_state():
+    """What /api/tags reports, cached for 10 s.
+
+    {"running": bool, "models": [{"name": str, "cloud": bool}]}. "running"
+    without models is its own state: the teacher then needs "ollama pull",
+    not "ollama serve"."""
+    global _ollama_state, _ollama_last_check
     now = time.time()
     with _ollama_lock:
         if now - _ollama_last_check < 10:
-            return _ollama_online
-    online = False
+            return {**_ollama_state, "models": list(_ollama_state["models"])}
+    state = {"running": False, "models": []}
     try:
         # 127.0.0.1 like every other Ollama call here: on Windows "localhost"
         # resolves to ::1 first, while Ollama only listens on IPv4 by default.
         req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read())
-            online = bool(data.get("models"))
+        rows = data.get("models") if isinstance(data, dict) else None
+        names = sorted({
+            row.get("name") or row.get("model")
+            for row in rows or []
+            if isinstance(row, dict) and isinstance(row.get("name") or row.get("model"), str)
+        })
+        state = {
+            "running": True,
+            "models": [{"name": name, "cloud": looks_like_cloud_model(name)} for name in names],
+        }
     except Exception:
-        online = False
+        pass
     with _ollama_lock:
-        _ollama_online = online
+        _ollama_state = state
         _ollama_last_check = now
-        return _ollama_online
+        return {**state, "models": list(state["models"])}
 
-# ---------------------------------------------------------------------------
-# DSGVO-Modell-Routing – Skill-basierte Erzwingung lokaler Modelle
-# ---------------------------------------------------------------------------
-DSGVO_PFLICHT_LOKAL = [
-    "schuelerarbeit_bewerten",   # Schülerarbeiten enthalten ggf. Namen
-    "zeugnis_formulieren",       # Schülerbezogene Bewertungen
-    "foerderplan_erstellen",     # Individuelle Förderdaten
-    "lerntagebuch_feedback",     # SuS-Reflexionen
-    "klassenstatistik",          # Aggregierte Schülerdaten
-]
-
-def route_model(skill_name: str, user_preferred_model: str) -> str:
-    """
-    Gibt das tatsächlich zu verwendende Modell zurück.
-    Bei DSGVO-pflichtigen Skills wird IMMER auf Ollama geroutet,
-    unabhängig von der Nutzerpräferenz.
-    """
-    if skill_name and skill_name in DSGVO_PFLICHT_LOKAL:
-        return "ollama"  # Lokales Modell erzwingen
-    return user_preferred_model  # Nutzerwahl respektieren
+def check_ollama():
+    """True when Ollama answers and has at least one model installed."""
+    state = ollama_state()
+    return state["running"] and bool(state["models"])
 
 # ---------------------------------------------------------------------------
 # LLM-Call (Streaming) – serverseitiger Proxy
@@ -927,8 +888,9 @@ def _stream_ollama_pull(wfile, model):
             _send_sse(wfile, {"type": "error", "message": f"ollama pull fehlgeschlagen (code {proc.returncode})"})
     except FileNotFoundError:
         _send_sse(wfile, {"type": "error", "message": "Ollama ist nicht installiert. Bitte von ollama.com/download herunterladen."})
-    except Exception as e:
-        _send_sse(wfile, {"type": "error", "message": str(e)})
+    except Exception:
+        logger.exception("ollama pull failed model=%s", model)
+        _send_sse(wfile, {"type": "error", "message": "Der Modell-Download ist fehlgeschlagen. Details stehen im Server-Log."})
 
 # ---------------------------------------------------------------------------
 # HTTP-Handler
@@ -1140,12 +1102,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _status(self):
         settings = SETTINGS_STORE.load()
+        ollama = ollama_state()
         self._json({
             "capabilities": {
                 **capability_status(),
-                "ollama": check_ollama(),
+                "ollama": ollama["running"] and bool(ollama["models"]),
                 **ocr_capability_status(settings),
             },
+            "ollamaRunning": ollama["running"],
+            "ollamaModels": ollama["models"],
             "credentials": CREDENTIALS.status(),
             "ocrEngines": [status.to_dict() for status in available_engines(settings)],
         })
@@ -1260,8 +1225,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _stream_chat_payload(self, data, persisted_chat=None):
         messages = data.get("messages", [])
-        if not isinstance(messages, list):
-            self._error("INVALID_MESSAGES", "messages muss eine Liste sein.", 400)
+        if not valid_message_list(messages):
+            self._error("INVALID_MESSAGES", "messages muss eine Liste von Nachrichten-Objekten sein.", 400)
             return ""
         profile = data.get("profile", {})
         settings = apply_request_overrides(load_settings(), data)
@@ -1287,7 +1252,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             messages=messages,
             profile=profile,
             skill_id=skill_id,
-            requested_mode=data.get("privacy_mode", data.get("privacyMode", "auto")),
+            requested_mode=requested_privacy_mode(data),
             sticky_mode=(persisted_chat or {}).get("privacyMode", data.get("stickyPrivacyMode", "auto")),
             document_classifications=[*rag_classifications, *ocr_classifications],
             rag_context=rag_context,
@@ -1442,7 +1407,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             messages=chat["messages"],
             profile=STATE_STORE.get_profile(),
             skill_id=skill_record.skill_id if skill_record else None,
-            requested_mode=data.get("privacy_mode", "auto"),
+            requested_mode=requested_privacy_mode(data),
             sticky_mode=chat.get("privacyMode", "auto"),
             document_classifications=ocr_classifications,
         )
@@ -1636,8 +1601,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             path.write_text(body, encoding="utf-8")
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except OSError:
+            logger.exception("Export write failed")
+            self._error("EXPORT_FAILED", "Die Exportdatei konnte nicht gespeichert werden.", 500)
             return
 
         self._json({"success": True, "filename": filename, "url": f"/api/v1/exports/{filename}"})
@@ -1899,8 +1865,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             if ids:
                 col.delete(ids=ids)
             self._json({"success": True, "deleted": len(ids)})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Clearing the knowledge base failed")
+            self._error("CLEAR_FAILED", "Die Wissensdatenbank konnte nicht geleert werden.", 500)
 
     def _list_raster(self):
         raster_dir = MEMORY_DIR / "bewertungsraster"
@@ -2071,31 +2038,38 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"error": "Datei nicht gefunden"}, 404)
                 return
             self._json({"content": target.read_text(encoding="utf-8"), "path": file_path})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Memory read failed")
+            self._error("MEMORY_READ_FAILED", "Die Datei konnte nicht gelesen werden.", 500)
 
     def _write_memory_file(self):
         try:
             data = self._read_json()
-            file_path = data.get("path", "")
-            content   = data.get("content", "")
-            if not isinstance(file_path, str) or not file_path.strip().endswith(".md"):
-                self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
-                return
-            if not isinstance(content, str):
-                self._json({"error": "Inhalt muss Text sein"}, 400)
-                return
-            file_path = file_path.strip()
-            target = memory_markdown_path(file_path)
-            if target is None:
-                self._json({"error": "Zugriff verweigert"}, 403)
-                return
+        except ValueError:
+            self._json({"error": "Ungültige Anfrage"}, 400)
+            return
+        file_path = data.get("path", "")
+        content   = data.get("content", "")
+        if not isinstance(file_path, str) or not file_path.strip().endswith(".md"):
+            self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
+            return
+        if not isinstance(content, str):
+            self._json({"error": "Inhalt muss Text sein"}, 400)
+            return
+        file_path = file_path.strip()
+        target = memory_markdown_path(file_path)
+        if target is None:
+            self._json({"error": "Zugriff verweigert"}, 403)
+            return
+        try:
             target.parent.mkdir(parents=True, exist_ok=True)
             self._rotate_backups(target)
             target.write_text(content, encoding="utf-8")
-            self._json({"success": True, "path": file_path})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except OSError:
+            logger.exception("Memory write failed")
+            self._error("MEMORY_WRITE_FAILED", "Die Datei konnte nicht gespeichert werden.", 500)
+            return
+        self._json({"success": True, "path": file_path})
 
     @staticmethod
     def _rotate_backups(filepath):
@@ -2127,37 +2101,44 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                         "size": stat.st_size,
                     })
             self._json({"versions": versions})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Listing memory versions failed")
+            self._error("MEMORY_VERSIONS_FAILED", "Die Versionen konnten nicht gelesen werden.", 500)
 
     def _restore_version(self):
         try:
             data = self._read_json()
-            file_path = data.get("path", "")
-            try:
-                version = int(data.get("version", 0))
-            except (TypeError, ValueError):
-                version = 0
-            if not isinstance(file_path, str) or not file_path.strip().endswith(".md") or version not in (1, 2, 3):
-                self._json({"error": "Ungültige Anfrage"}, 400)
-                return
-            target = memory_markdown_path(file_path)
-            if target is None:
-                self._json({"error": "Zugriff verweigert"}, 403)
-                return
-            bak = Path(str(target) + f'.bak{version}')
-            if not bak.exists():
-                self._json({"error": "Version nicht gefunden"}, 404)
-                return
+        except ValueError:
+            self._json({"error": "Ungültige Anfrage"}, 400)
+            return
+        file_path = data.get("path", "")
+        try:
+            version = int(data.get("version", 0))
+        except (TypeError, ValueError):
+            version = 0
+        if not isinstance(file_path, str) or not file_path.strip().endswith(".md") or version not in (1, 2, 3):
+            self._json({"error": "Ungültige Anfrage"}, 400)
+            return
+        target = memory_markdown_path(file_path)
+        if target is None:
+            self._json({"error": "Zugriff verweigert"}, 403)
+            return
+        bak = Path(str(target) + f'.bak{version}')
+        if not bak.exists():
+            self._json({"error": "Version nicht gefunden"}, 404)
+            return
+        try:
             # Read before rotating: _rotate_backups() shifts .bak1 -> .bak2 ->
             # .bak3, which overwrote the chosen version before it was copied
             # (restoring version 1 silently restored the current content).
             restored = bak.read_bytes()
             self._rotate_backups(target)
             target.write_bytes(restored)
-            self._json({"success": True, "content": restored.decode("utf-8")})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except OSError:
+            logger.exception("Memory version restore failed")
+            self._error("MEMORY_RESTORE_FAILED", "Die Version konnte nicht wiederhergestellt werden.", 500)
+            return
+        self._json({"success": True, "content": restored.decode("utf-8", errors="replace")})
 
     def _ocr_image(self):
         """Legacy-Endpunkt: "lies dieses Foto in mein Chat-Eingabefeld" --
@@ -2351,8 +2332,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             _send_sse(wfile, {"type": "status", "message": f"Lade Modell {model_id} herunter …"})
             snapshot_download(model_id, tqdm_class=_ProgressTqdm)
             _send_sse(wfile, {"type": "done", "success": True, "model": model_id})
-        except Exception as e:
-            _send_sse(wfile, {"type": "error", "message": str(e)})
+        except Exception:
+            logger.exception("OCR model download failed model=%s", model_id)
+            _send_sse(wfile, {"type": "error", "message": "Der Modell-Download ist fehlgeschlagen. Bitte Internetverbindung prüfen; Details stehen im Server-Log."})
 
     def _shutdown(self):
         self._json({"success": True, "message": "TeacherAssist wird beendet."})
@@ -2374,6 +2356,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _summarize_messages(self, messages, sticky_mode="auto", request_data=None):
         request_data = request_data or {}
+        if not valid_message_list(messages):
+            self._error("INVALID_MESSAGES", "messages muss eine Liste von Nachrichten-Objekten sein.", 400)
+            return
         user_texts = [
             message.get("text", message.get("content", "")).strip()
             for message in messages if message.get("role") == "user"
@@ -2388,7 +2373,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         decision = decide_privacy(
             messages=messages,
             profile=request_data.get("profile", {}),
-            requested_mode=request_data.get("privacy_mode", "auto"),
+            requested_mode=requested_privacy_mode(request_data),
             sticky_mode=sticky_mode,
             document_classifications=ocr_classifications,
         )

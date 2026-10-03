@@ -5,7 +5,7 @@ import urllib.error
 import pytest
 
 import tool_server
-from teacherassist_core.privacy import PrivacyDecision, decide_privacy
+from teacherassist_core.privacy import PrivacyDecision, anonymize_text, decide_privacy
 
 try:
     import chromadb  # noqa: F401
@@ -44,7 +44,7 @@ def test_personal_data_detection_and_anonymization():
     text = "Kontakt: max@example.de, Tel. 030 1234567, geboren am 01.02.2010"
 
     findings = tool_server.detect_personal_data(text)
-    anonymized = tool_server.anonymize_text(text)
+    anonymized = anonymize_text(text)
 
     assert {item["type"] for item in findings} >= {"E-Mail-Adresse", "Telefonnummer", "Geburtsdatum"}
     assert "max@example.de" not in anonymized
@@ -275,3 +275,12 @@ def test_memory_markdown_path_accepts_nested_markdown():
     target = tool_server.memory_markdown_path(" bewertungsraster/mathe_7_brueche.md ")
 
     assert target == (tool_server.MEMORY_DIR / "bewertungsraster" / "mathe_7_brueche.md").resolve()
+
+
+@pytest.mark.parametrize("key", ["privacy_mode", "privacyMode"])
+def test_both_privacy_mode_spellings_are_honoured(key):
+    """/chats/{id}/messages read only privacy_mode while the streaming code
+    read both, so privacyMode applied to one answer without marking the chat
+    local for the next message."""
+    assert tool_server.requested_privacy_mode({key: "local_required"}) == "local_required"
+    assert tool_server.requested_privacy_mode({}) == "auto"
