@@ -3,7 +3,7 @@
 Student Store für TeacherAssist – DSGVO-konformer, lokal verschlüsselter
 Speicher für Schülerdaten.
 
-Architektur:
+Architektur (unter dem Laufzeit-Datenverzeichnis, siehe RuntimePaths):
     memory/students/
         .vault.json            Klartext: KDF-Params + Verifier-Ciphertext
         index.enc              Fernet-Blob: Liste {id, alias, klasse, vorname, nachname}
@@ -76,7 +76,12 @@ def _vault_root() -> Path:
     if _root_override is not None:
         root = _root_override
     else:
-        root = Path(__file__).resolve().parents[1] / "memory" / "students"
+        # Runtime data dir (%LOCALAPPDATA%\TeacherAssist), never the git
+        # checkout: student records must not end up next to tracked files.
+        from teacherassist_core.runtime import RuntimePaths
+
+        repo_root = Path(__file__).resolve().parents[1]
+        root = RuntimePaths.from_environment(repo_root).memory / "students"
     root.mkdir(parents=True, exist_ok=True)
     (root / "records").mkdir(parents=True, exist_ok=True)
     return root

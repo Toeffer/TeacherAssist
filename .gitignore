@@ -17,6 +17,7 @@ settings.json
 
 # ─── Persönliche / Runtime Memory-Dateien ────────────────────────────────────
 memory/onboarding_complete.md
+memory/students/
 memory/bewertungsraster/*.md
 !memory/bewertungsraster/README.md
 
@@ -61,6 +62,8 @@ desktop.ini
 
 # Local frontend build and migration test data
 node_modules/
+test-results/
+playwright-report/
 .test-runtime*/
 
 # ─── AI-Tooling Zwischendateien (Patches/Generatoren, bereits angewendet) ─────

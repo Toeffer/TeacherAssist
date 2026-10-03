@@ -91,8 +91,10 @@ def test_htr_never_downloads_from_status(monkeypatch):
     def _boom(*args, **kwargs):
         raise AssertionError("status() darf keinen Download/from_pretrained ausloesen")
 
-    import huggingface_hub
-    import transformers
+    # Optionaler HTR-Stack (tools/requirements-ocr.txt): ohne ihn gibt es
+    # nichts zu patchen, statt mit ModuleNotFoundError zu scheitern.
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    transformers = pytest.importorskip("transformers")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", _boom)
     monkeypatch.setattr(transformers.TrOCRProcessor, "from_pretrained", classmethod(_boom))
@@ -421,6 +423,8 @@ def test_htr_recognize_builds_candidate_from_stubbed_model(monkeypatch):
     einen korrekten OCRCandidate baut: tokens befuellt, confidence aus den
     (gestubbten) Generation-Scores abgeleitet statt hartkodiert, markers
     leer."""
+    # Die Stubs erzeugen echte torch-Tensoren (optionaler HTR-Stack).
+    pytest.importorskip("torch")
     from PIL import Image
 
     # importlib.import_module() statt dotted-attribute-Import -- siehe

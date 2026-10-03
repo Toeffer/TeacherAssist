@@ -132,6 +132,7 @@ Regressionstest: `tests/test_http_api.py::test_new_ocr_settings_survive_round_tr
 | Export | `python-docx`, `docx2pdf`, `reportlab` | Bewertungen/Wortgutachten als DOCX/PDF |
 | LLM-Provider | OpenRouter (Cloud) / Ollama (lokal, `:11434`) / Custom-Endpoint | Modellwahl in den Einstellungen |
 | Tests | `pytest` | `tests/*.py`, Venv unter `tools/.venv` |
+| Browser-Tests | Playwright | `tests/browser/*.spec.mjs` (`npm run test:browser`, gemocktes Backend über `tests/browser/fixtures.mjs`) |
 
 **Kein Anthropic-API-Key-Feld.** Provider sind OpenRouter, Ollama oder ein
 selbst konfigurierter Custom-Endpoint (OpenAI-kompatibel).
@@ -218,7 +219,7 @@ und blockiert Cross-Site-Requests (`Sec-Fetch-Site: cross-site`).
 
 | Methode | Pfad | Zweck |
 |---------|------|-------|
-| GET | `/`, `/index.html`, `/app.jsx`, `/components.jsx`, `/tweaks-panel.jsx`, `/api-client.js`, `/manifest.json`, `/service-worker.js`, `/favicon.ico`, `/teacherassist.ico`, `/assets/*` | Statische Frontend-Dateien (bevorzugt aus `web_dist/`) |
+| GET | `/`, `/index.html`, `/app.jsx`, `/components.jsx`, `/tweaks-panel.jsx`, `/api-client.js`, `/manifest.json`, `/service-worker.js`, `/favicon.ico`, `/teacherassist.ico`, `/assets/*` | Statische Frontend-Dateien (bevorzugt aus `web_dist/`; `/assets/*` ausschließlich aus `web_dist/assets/`, ohne Repo-Root-Fallback) |
 | GET | `/api/v1/health` | Status-Check (öffentlich) |
 | GET | `/api/v1/bootstrap` | Session/CSRF erstellen, Settings/Capabilities/Skills/State liefern (öffentlich) |
 | GET | `/api/v1/settings` | Öffentliche Settings (ohne Secrets) |
@@ -423,6 +424,16 @@ ESM-Komponenten ist offene technische Schuld, aber keine akute Baustelle.
   Handler als Vorlage.
 - Neue HTTP-Handler: JSON-Body immer über `self._read_json()` lesen (liefert
   einheitliche `ValueError`/`RequestTooLarge`-Fehlerbehandlung).
+- Memory-Editor-Endpunkte (`memory-read`/`-write`/`-versions`/`-restore-version`)
+  lösen Pfade nur über `memory_markdown_path()` auf: nur `.md`, nur unter
+  `<root>/memory/`, nie im Schülertresor `students/`.
+- `_storage_error()` gibt nach einem bereits gesendeten Fehler `STORAGE_FAILED`
+  zurück, nicht `None` – `get_chat()` liefert für unbekannte Chats legitim `None`,
+  und dieser Fall braucht eine eigene 404-Antwort.
+- Fehler im Frontend immer über `window.taApi.errorMessage(payload, fallback)`
+  anzeigen, nie `new Error(data.error)`/`setError(data.error)`: Der Server
+  liefert `{error: {code, message}}`, ein Objekt ergibt „[object Object]" bzw.
+  bringt React zum Absturz.
 
 ---
 
@@ -447,6 +458,10 @@ ESM-Komponenten ist offene technische Schuld, aber keine akute Baustelle.
   werden – der Server bevorzugt `web_dist/` gegenüber den Repo-Root-Quellen.
 - Vite 8 verlangt Node.js ≥ 20.19 oder ≥ 22.12; ältere 20.x-Patch-Versionen bauen
   mit einer Warnung, aber funktionieren.
+- Kein Inline-`<script>` in `index.html`: Die CSP des Servers (`script-src 'self'`)
+  blockiert es. Der Service Worker wird deshalb aus `src/main.jsx` registriert
+  (nur im Production-Build); Seiten lädt er network-first, gehashte `/assets/`
+  cache-first.
 
 **Secrets**
 - Ohne `keyring`-Backend (z. B. Windows Credential Manager nicht verfügbar)
