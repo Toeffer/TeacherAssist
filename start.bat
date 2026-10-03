@@ -71,7 +71,7 @@ for /l %%I in (1,1,30) do (
 :: beim Einlesen eingesetzt, und eine ")" im Benutzernamen beendete den Block.
 if defined TOOL_OK goto open_browser
 echo.
-echo  PROBLEM: Tool-Server antwortet nicht auf http://localhost:%TEACHERASSIST_PORT%/api/v1/health
+echo  PROBLEM: Tool-Server antwortet nicht auf http://127.0.0.1:%TEACHERASSIST_PORT%/api/v1/health
 echo  Log pruefen: %LOG_FILE%
 echo.
 pause

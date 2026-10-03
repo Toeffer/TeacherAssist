@@ -85,8 +85,12 @@ jobs:
           $code = $LASTEXITCODE
           if ($listener.HasExited) { throw 'start.bat killed a program that is not TeacherAssist' }
           if ($code -eq 0) { throw 'start.bat reported success although the port is taken' }
-          Write-Host "start.bat failed as expected (exit $code); the foreign listener is still running."
+          $log = Join-Path $env:TEACHERASSIST_DATA_DIR 'logs\tool_server.log'
+          if (-not (Select-String -Path $log -Pattern 'Bind fehlgeschlagen' -Quiet)) { throw 'the server did not refuse the busy port' }
+          Write-Host "start.bat failed as expected (exit $code), the server refused the busy port, and the foreign listener is still running."
           Stop-Process -Id $listener.Id -Force
+          # The pwsh wrapper exits with $LASTEXITCODE, which is start.bat's expected 1.
+          exit 0
 
   frontend:
     name: lint, build, browser tests
