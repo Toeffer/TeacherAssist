@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -15,38 +16,72 @@ from .security import validate_remote_url
 MAX_REMOTE_PDF_BYTES = 50 * 1024 * 1024
 
 
-def extract_pdf_text(path: Path) -> str:
-    """Extract text with pypdf and OCR sparse/scanned pages with PDFium."""
+# Scanned curriculum PDFs are OCR'd page by page inside the ingest request
+# (~1-3 s per page); without a limit a 200-page scan blocked for minutes with
+# no feedback. The response says how many pages were read.
+MAX_OCR_PAGES = 50
+
+
+@dataclass(frozen=True)
+class PdfText:
+    text: str
+    total_pages: int = 0
+    ocr_pages: int = 0  # pages read by OCR because the PDF had no text layer
+
+    @property
+    def ocr_truncated(self) -> bool:
+        return 0 < self.ocr_pages < self.total_pages
+
+
+def read_pdf_text(path: Path, *, max_ocr_pages: int = MAX_OCR_PAGES) -> PdfText:
+    """Extract text with pypdf; OCR scanned PDFs (no text layer) with PDFium
+    and Tesseract, at most ``max_ocr_pages`` pages."""
     text_parts: list[str] = []
+    total_pages = 0
     try:
         from pypdf import PdfReader
 
         reader = PdfReader(str(path))
+        total_pages = len(reader.pages)
         text_parts = [(page.extract_text() or "").strip() for page in reader.pages]
     except Exception:
         text_parts = []
     combined = "\n\n".join(part for part in text_parts if part).strip()
     if len(combined) >= 100:
-        return combined
+        return PdfText(combined, total_pages=total_pages)
 
     try:
         import pypdfium2 as pdfium
         import pytesseract
 
         document = pdfium.PdfDocument(str(path))
-        ocr_parts: list[str] = []
-        for index in range(len(document)):
-            page = document[index]
-            bitmap = page.render(scale=2.0)
-            image = bitmap.to_pil()
-            ocr_parts.append(pytesseract.image_to_string(image, lang="deu").strip())
-            image.close()
-            page.close()
-        document.close()
+        try:
+            total_pages = len(document)
+            ocr_parts: list[str] = []
+            ocr_pages = min(total_pages, max_ocr_pages)
+            for index in range(ocr_pages):
+                page = document[index]
+                try:
+                    image = page.render(scale=2.0).to_pil()
+                    try:
+                        ocr_parts.append(pytesseract.image_to_string(image, lang="deu").strip())
+                    finally:
+                        image.close()
+                finally:
+                    page.close()
+        finally:
+            document.close()
         ocr = "\n\n".join(part for part in ocr_parts if part).strip()
-        return ocr or combined
+        if ocr:
+            return PdfText(ocr, total_pages=total_pages, ocr_pages=ocr_pages)
+        return PdfText(combined, total_pages=total_pages)
     except Exception:
-        return combined
+        return PdfText(combined, total_pages=total_pages)
+
+
+def extract_pdf_text(path: Path) -> str:
+    """Extract text with pypdf and OCR sparse/scanned pages with PDFium."""
+    return read_pdf_text(path).text
 
 
 def iter_pdf_pages(
@@ -146,7 +181,7 @@ def download_pdf(
         with os.fdopen(fd, "wb") as target, active_opener.open(request, timeout=30) as response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             if content_type not in {"application/pdf", "application/octet-stream"}:
-                raise ValueError("Remote resource is not a PDF")
+                raise ValueError("Unter der Adresse liegt keine PDF-Datei.")
             while True:
                 chunk = response.read(64 * 1024)
                 if not chunk:
@@ -155,12 +190,12 @@ def download_pdf(
                     first = chunk[:8]
                 total += len(chunk)
                 if total > MAX_REMOTE_PDF_BYTES:
-                    raise ValueError("Remote PDF exceeds 50 MB")
+                    raise ValueError("Die PDF ist größer als 50 MB.")
                 target.write(chunk)
             target.flush()
             os.fsync(target.fileno())
         if not first.startswith(b"%PDF"):
-            raise ValueError("Remote resource has no PDF signature")
+            raise ValueError("Die heruntergeladene Datei ist keine gültige PDF.")
         destination = destination_dir / f"document-{os.urandom(12).hex()}.pdf"
         os.replace(temp_name, destination)
         return destination

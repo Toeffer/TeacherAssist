@@ -132,7 +132,15 @@
     bootstrap,
     fetch: apiFetch,
     getBootstrap: () => bootstrapData,
-    errorMessage: payload => payload?.error?.message || payload?.error || 'Unbekannter Fehler',
+    // Server errors come as {error: {code, message}} or, from older routes,
+    // {error: "text"}. Always return a string: an object passed to
+    // new Error() shows "[object Object]", and as a React child it crashes.
+    errorMessage: (payload, fallback = 'Unbekannter Fehler') => {
+      const error = payload?.error;
+      if (typeof error === 'string' && error) return error;
+      if (typeof error?.message === 'string' && error.message) return error.message;
+      return fallback;
+    },
   };
   window.taFetch = apiFetch;
 })();

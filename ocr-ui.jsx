@@ -293,7 +293,6 @@ function CameraModal({ onClose, onCapture }) {
   React.useEffect(() => {
     if (stage === 'capture') startCamera();
     return () => stopCamera();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage]);
 
   React.useEffect(() => () => {
@@ -374,7 +373,7 @@ function CameraModal({ onClose, onCapture }) {
         setPreviewFromBlob(blob);
         uploadAndCreateJob(blob);
         return;
-      } catch (e) {
+      } catch {
         // Fällt unten auf den Canvas-Pfad zurück.
       }
     }
@@ -988,7 +987,7 @@ function OcrSettingsSection({ toolStatus }) {
       });
       if (!res.ok || !res.body) {
         const payload = await res.json().catch(() => null);
-        throw new Error((payload && payload.error) || `Server-Fehler ${res.status}`);
+        throw new Error(window.taApi.errorMessage(payload, `Server-Fehler ${res.status}`));
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

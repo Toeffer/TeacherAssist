@@ -11,7 +11,7 @@ Vollständige manuelle Einrichtung auf einem neuen Rechner. Reihenfolge einhalte
 
 | Software | Version | Download |
 |---|---|---|
-| Python | 3.11+ | https://www.python.org/downloads/ |
+| Python | 3.12 oder 3.13 (die gepinnten Pakete gibt es erst ab 3.12) | https://www.python.org/downloads/ |
 | Tesseract OCR | 5.x | https://github.com/UB-Mannheim/tesseract/wiki (Windows) |
 | Ollama (optional, Pflicht für DSGVO-Skills) | aktuell | https://ollama.com/download |
 | Git | aktuell | https://git-scm.com/ |
@@ -153,7 +153,8 @@ aktuell gehaltene Übersicht.
 |---|---|
 | `Python-venv nicht gefunden` (beim Start) | `install.bat` ausführen — legt `tools\.venv` an |
 | Browser zeigt „Tool-Server offline" | `%LOCALAPPDATA%\TeacherAssist\logs\tool_server.log` prüfen, `start.bat` neu starten |
-| Port 8789 belegt, `/api/v1/health` timeoutet | Stale Prozess — `start.bat` räumt selbst auf |
+| Port 8789 belegt, `/api/v1/health` timeoutet | Hängende TeacherAssist-Instanz — `start.bat` beendet sie selbst (nur Python-Prozesse; andere Programme werden nicht beendet) |
+| Port 8789 dauerhaft von einem anderen Programm belegt | Anderen Port setzen, z. B. `setx TEACHERASSIST_PORT 8790`, neues Fenster öffnen, `start.bat` starten (Server und `start.bat` lesen beide diese Variable) |
 | `tesseract is not installed` | Tesseract installieren + PATH setzen |
 | `chromadb`/`sentence_transformers` ImportError | `tools\.venv\Scripts\pip install -r tools\requirements.txt` |
 | DSGVO-Skill schlägt mit „Ollama nicht verfügbar" fehl | Ollama installieren + `ollama serve` läuft? |

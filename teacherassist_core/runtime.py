@@ -253,14 +253,14 @@ class SettingsStore:
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(patch, dict):
-            raise ValueError("Settings patch must be an object")
+            raise ValueError("Die Einstellungen müssen ein JSON-Objekt sein.")
         with self._lock:
             current = self.load()
             for key in SETTINGS_KEYS:
                 if key in patch:
                     current[key] = patch[key]
             if current.get("provider") not in {"openrouter", "ollama", "custom"}:
-                raise ValueError("Unsupported provider")
+                raise ValueError("Unbekannter KI-Anbieter.")
             self._sanitize_ocr_settings(current)
 
             if isinstance(patch.get("apiKey"), str) and patch["apiKey"].strip():

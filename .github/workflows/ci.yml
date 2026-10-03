@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the primary target (install.bat/start.bat).
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # install.bat installs 3.12; the pinned numpy/scipy need >= 3.12.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/requirements*.txt
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          # Pinned versions from requirements.txt (kept equal to the lock by
+          # tests/test_requirements_consistency.py). chromadb and
+          # sentence-transformers (which pulls in torch) are left out to keep
+          # CI fast; the tests that need them skip without them. numpy,
+          # huggingface_hub and pytest come transitively in a real install,
+          # so their versions are taken from the lock.
+          grep -viE '^(chromadb|sentence-transformers)==' tools/requirements.txt > ci-requirements.txt
+          grep -iE '^(numpy|huggingface[-_]hub|pytest)==' tools/requirements.lock >> ci-requirements.txt
+          cat ci-requirements.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r ci-requirements.txt
+      - name: pytest
+        run: python -m pytest -q -rs
+        env:
+          TEACHERASSIST_DATA_DIR: ${{ runner.temp }}/teacherassist-data
+      - name: Smoke-test start.bat on a non-default port
+        # Runs the real launcher: venv check, health probe, server start and
+        # wait loop. The venv reuses the packages installed above.
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          NOBROWSER: "1"
+          TEACHERASSIST_PORT: "8790"
+          TEACHERASSIST_DATA_DIR: ${{ runner.temp }}\teacherassist-smoke
+        run: |
+          python -m venv --system-site-packages tools\.venv
+          call start.bat < NUL
+          if errorlevel 1 goto diagnose
+          powershell -NoProfile -Command "$r = Invoke-WebRequest -Uri 'http://127.0.0.1:8790/' -UseBasicParsing; if ($r.Content -notmatch 'TeacherAssist') { exit 1 }"
+          exit /b %errorlevel%
+          :diagnose
+          echo ---- server log ----
+          type "%TEACHERASSIST_DATA_DIR%\logs\tool_server.log"
+          echo ---- listening sockets ----
+          netstat -ano | findstr :8790
+          echo ---- health probe timings ----
+          powershell -NoProfile -Command "foreach ($h in 'localhost', '127.0.0.1') { $sw = [Diagnostics.Stopwatch]::StartNew(); try { $s = (Invoke-WebRequest -Uri ('http://' + $h + ':8790/api/v1/health') -UseBasicParsing -TimeoutSec 10).StatusCode } catch { $s = $_.Exception.Message }; Write-Host $h $s $sw.ElapsedMilliseconds 'ms' }"
+          exit /b 1
+      - name: start.bat leaves a foreign program on its port alone
+        # A non-Python program holds the port: start.bat must not kill it, and
+        # the server must refuse the busy port instead of sharing it.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NOBROWSER: "1"
+          TEACHERASSIST_PORT: "8791"
+          TEACHERASSIST_DATA_DIR: ${{ runner.temp }}\teacherassist-foreign
+        run: |
+          $listener = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '$l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8791); $l.Start(); Start-Sleep -Seconds 900'
+          Start-Sleep -Seconds 5
+          cmd /c "start.bat < NUL"
+          $code = $LASTEXITCODE
+          if ($listener.HasExited) { throw 'start.bat killed a program that is not TeacherAssist' }
+          if ($code -eq 0) { throw 'start.bat reported success although the port is taken' }
+          $log = Join-Path $env:TEACHERASSIST_DATA_DIR 'logs\tool_server.log'
+          if (-not (Select-String -Path $log -Pattern 'Bind fehlgeschlagen' -Quiet)) { throw 'the server did not refuse the busy port' }
+          Write-Host "start.bat failed as expected (exit $code), the server refused the busy port, and the foreign listener is still running."
+          Stop-Process -Id $listener.Id -Force
+          # The pwsh wrapper exits with $LASTEXITCODE, which is start.bat's expected 1.
+          exit 0
+
+  frontend:
+    name: lint, build, browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          # Vite 8 needs Node >= 20.19 or >= 22.12.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - name: Build
+        # Must succeed; whether the committed web_dist/ is current is
+        # checked by tests/test_web_dist_freshness.py in the pytest job.
+        run: npm run build
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:browser
+        env:
+          CI: "1"

@@ -10,7 +10,7 @@ class LocalModelRequired(RuntimeError):
     pass
 
 
-def _looks_remote(model: str) -> bool:
+def looks_like_cloud_model(model: str) -> bool:
     normalized = (model or "").strip().lower()
     return normalized.endswith(":cloud") or normalized.endswith("-cloud")
 
@@ -47,7 +47,7 @@ def assert_local_ollama_model(model: str, *, endpoint: str = "http://127.0.0.1:1
     model = (model or "").strip()
     if not model:
         raise LocalModelRequired("Kein lokales Ollama-Modell ausgewählt.")
-    if _looks_remote(model):
+    if looks_like_cloud_model(model):
         raise LocalModelRequired(f"Das Modell „{model}“ ist ein Ollama-Cloud-Modell.")
     request = urllib.request.Request(
         endpoint.rstrip("/") + "/api/show",
@@ -65,8 +65,8 @@ def assert_local_ollama_model(model: str, *, endpoint: str = "http://127.0.0.1:1
     if not isinstance(metadata, dict):
         raise LocalModelRequired(f"Das lokale Modell „{model}“ konnte nicht verifiziert werden.")
     if _identifies_upstream(metadata):
-        raise LocalModelRequired(f"Model {model} is cloud-backed and cannot process sensitive material.")
+        raise LocalModelRequired(f"Das Modell „{model}“ läuft über einen Cloud-Dienst und darf keine personenbezogenen Daten verarbeiten.")
     remote_model = str(metadata.get("remote_model") or metadata.get("remoteModel") or "")
     remote_host = str(metadata.get("remote_host") or "")
-    if remote_model or remote_host or _looks_remote(remote_model):
+    if remote_model or remote_host or looks_like_cloud_model(remote_model):
         raise LocalModelRequired(f"Das Modell „{model}“ wird über Ollama Cloud ausgeführt.")

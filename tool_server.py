@@ -2,35 +2,18 @@
 """
 TeacherAssist Tool-Server  –  Port 8789
 =========================================
-Stellt lokale Endpunkte bereit:
-  GET  /health               – Statuscheck
-  GET  /collections          – Anzahl gespeicherter Abschnitte in ChromaDB
-  GET  /search?q=...         – Semantische Lehrplan-Suche (RAG)
-  GET  /settings             – Gespeicherte Einstellungen abrufen
-  GET  /backup               – Memory-Verzeichnis als ZIP herunterladen
-  GET  /list-raster          – Bewertungsraster auflisten
-  GET  /memory-list          – Alle .md-Dateien unter memory/
-  GET  /memory-read?file=... – Einzelne Memory-Datei lesen
-  GET  /memory-versions?file=... – Backup-Versionen einer Datei
-
-  POST /chat                 – LLM-Chat mit Streaming (NEU: Proxy + DSGVO-Filter + Skill-Router)
-  POST /upload               – PDF-Datei speichern (multipart)
-  POST /ingest               – PDF verarbeiten + in ChromaDB speichern
-  POST /clear                – Gesamte Wissensdatenbank leeren
-  POST /download-url         – Lehrplan per URL herunterladen
-  POST /settings             – Einstellungen speichern
-  POST /save-raster          – Bewertungsraster speichern
-  POST /restore              – Backup wiederherstellen (ZIP)
-  POST /memory-write         – Memory-Datei schreiben
-  POST /memory-restore-version – Backup-Version wiederherstellen
-  POST /ocr-image            – Bild per OCR in Text umwandeln
-  POST /session-summary      – Chat-Verlauf zusammenfassen und in vergangene_stunden.md speichern
+Der einzige Prozess der App: liefert das gebaute Frontend (web_dist/) und alle
+/api/v1/*-Endpunkte aus. Die Routentabelle steht in CLAUDE.md
+("HTTP-API-Referenz"); maßgeblich ist der Routing-Block in
+ToolHandler.do_GET / do_POST / do_PATCH / do_DELETE.
 
 Sicherheit:
-  - API-Key NUR serverseitig in settings.json
-  - DSGVO-Filter prüft jede Nachricht VOR API-Versand
-  - Schülerdaten → automatisch Ollama (lokal) statt Cloud-API
-  - Skill-Router lädt passende skill.md ohne OpenClaw
+  - Jede /api/v1/-Route außer health/bootstrap verlangt Session-Cookie und
+    CSRF-Token; Host- und Origin-Prüfung blockieren fremde Seiten.
+  - API-Keys liegen im Windows Credential Manager (teacherassist_core.runtime),
+    nie in settings.json und nie in einer HTTP-Antwort.
+  - decide_privacy() prüft jede Anfrage serverseitig; personenbezogene Inhalte
+    gehen nur an ein verifiziert lokales Ollama-Modell, ohne Cloud-Fallback.
 """
 
 import http.server
@@ -42,20 +25,22 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
+import unicodedata
+import urllib.error
 import urllib.request
 import uuid
 import zipfile
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, quote, unquote
 
 from teacherassist_core.documents import download_pdf as secure_download_pdf
-from teacherassist_core.documents import extract_pdf_text as secure_extract_pdf_text
+from teacherassist_core.documents import read_pdf_text
 from teacherassist_core.ocr import (
     ApprovalNotReady,
     ApprovalRefused,
@@ -75,8 +60,6 @@ from teacherassist_core.ocr import (
 )
 from teacherassist_core.privacy import (
     DOCUMENT_CLASSIFICATIONS,
-    SENSITIVE_SKILLS,
-    anonymize_text,
     decide_privacy,
     findings_for,
     is_trusted_loopback_endpoint,
@@ -97,7 +80,7 @@ from teacherassist_core.security import (
 )
 from teacherassist_core.skills import SkillRegistry
 from teacherassist_core.storage import EncryptedStateStore, PersistenceUnavailable, StateConflict
-from teacherassist_core.ollama_locality import LocalModelRequired, assert_local_ollama_model
+from teacherassist_core.ollama_locality import LocalModelRequired, assert_local_ollama_model, looks_like_cloud_model
 
 # Hardened runtime services are kept separate from the HTTP adapter.
 
@@ -138,6 +121,10 @@ OCR_JOB_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})$")
 OCR_PAGE_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/pages/(\d{1,4})$")
 OCR_REGION_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/regions/([A-Za-z0-9_-]{1,64})$")
 OCR_APPROVE_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/approve$")
+# Model names reach "ollama pull" as a subprocess argument and HF downloads as
+# a repo id. The first character must not be "-" or ".": "-x" would be parsed
+# as a command-line option, "../x" is a path rather than a model name.
+MODEL_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,99}")
 
 logger = logging.getLogger("tool_server")
 if not logger.handlers:
@@ -198,6 +185,31 @@ def referenced_ocr_classifications(data, jobs):
         jobs[job_id].classification if job_id in jobs else "unknown" for job_id in job_ids
     ]
 
+DEFAULT_PORT = 8789
+
+
+def server_port(environ=os.environ):
+    """Port from TEACHERASSIST_PORT (start.bat reads the same variable), so a
+    machine where 8789 is taken can still run TeacherAssist."""
+    raw = (environ.get("TEACHERASSIST_PORT") or "").strip()
+    if not raw:
+        return DEFAULT_PORT
+    if not raw.isdigit() or not 1024 <= int(raw) <= 65535:
+        raise ValueError(f"TEACHERASSIST_PORT muss eine Zahl zwischen 1024 und 65535 sein, nicht {raw!r}.")
+    return int(raw)
+
+
+def requested_privacy_mode(data):
+    """Explicit per-request privacy mode. Every route accepts both spellings:
+    a route that read only one of them let an API client's "local_required"
+    apply to that answer without marking the chat local for later messages."""
+    return data.get("privacy_mode", data.get("privacyMode", "auto"))
+
+
+def valid_message_list(messages):
+    """A chat history the handlers can read: a list of message objects."""
+    return isinstance(messages, list) and all(isinstance(message, dict) for message in messages)
+
 def memory_zip_destination(name):
     """Return a safe restore destination below memory/, or None for ignored entries."""
     norm = name.replace("\\", "/").lstrip("/")
@@ -218,12 +230,47 @@ def memory_zip_destination(name):
         raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
     return dest, "memory/" + rel
 
+def memory_markdown_path(file_path):
+    """Resolve a client-supplied memory path for the memory editor endpoints.
+
+    Returns None unless it names a .md file inside MEMORY_DIR outside the
+    encrypted student vault (memory/students/, also excluded from backups)."""
+    if not isinstance(file_path, str):
+        return None
+    file_path = file_path.strip()
+    if not file_path.endswith(".md"):
+        return None
+    root = MEMORY_DIR.resolve()
+    target = (root / file_path).resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError:
+        return None
+    # casefold: Windows paths are case-insensitive, "Students" is the vault too.
+    if relative.parts and relative.parts[0].casefold() == "students":
+        return None
+    return target
+
 def safe_export_name(title, fmt):
     base = (title or "teacherassist-export").strip().lower()
     base = re.sub(r"[^\wäöüÄÖÜß-]+", "_", base, flags=re.I)
     base = re.sub(r"_+", "_", base).strip("_")[:60] or "teacherassist-export"
     stamp = time.strftime("%Y%m%d_%H%M%S")
     return f"{stamp}_{base}.{fmt}"
+
+def content_disposition(filename):
+    """Attachment header that survives any Unicode filename.
+
+    http.server encodes headers as Latin-1, so a Greek or Japanese export
+    title used to raise inside send_header() after the 200 status line had
+    gone out. Browsers prefer the RFC 6266 filename* form; the plain
+    filename is an ASCII fallback."""
+    fallback = filename
+    for umlaut, replacement in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue"), ("ß", "ss")):
+        fallback = fallback.replace(umlaut, replacement)
+    fallback = unicodedata.normalize("NFKD", fallback).encode("ascii", "ignore").decode("ascii")
+    fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", fallback).strip("_") or "teacherassist-export"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 def markdown_to_export_html(content, title="TeacherAssist Export"):
     text = html.escape(content or "")
@@ -282,6 +329,10 @@ STATIC_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
     ".ico": "image/x-icon",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
     ".md": "text/markdown; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
 }
@@ -294,10 +345,6 @@ def load_settings():
     settings["apiKey"] = CREDENTIALS.get(CredentialStore.OPENROUTER)
     settings["customApiKey"] = CREDENTIALS.get(CredentialStore.CUSTOM)
     return settings
-
-def get_api_key():
-    """Read the OpenRouter key without exposing it through the HTTP API."""
-    return CREDENTIALS.get(CredentialStore.OPENROUTER)
 
 # ---------------------------------------------------------------------------
 # DSGVO-Filter (serverseitig – nicht umgehbar)
@@ -314,32 +361,8 @@ def detect_personal_data(text):
     return [{"type": labels.get(name, name), "auto": True} for name in sorted(findings_for(text))]
 
 # ---------------------------------------------------------------------------
-# Skill-Router (lädt passende skill.md ohne OpenClaw)
+# Memory-Kontext (nur für lokal erzwungene Gespräche)
 # ---------------------------------------------------------------------------
-_skill_index_cache = None
-
-def load_skill_index():
-    global _skill_index_cache
-    if _skill_index_cache is not None:
-        return _skill_index_cache
-    try:
-        if SKILLS_INDEX.exists():
-            _skill_index_cache = json.loads(SKILLS_INDEX.read_text("utf-8"))
-        else:
-            _skill_index_cache = []
-    except Exception:
-        _skill_index_cache = []
-    return _skill_index_cache
-
-def find_matching_skill(user_text):
-    """Return a legacy-shaped record from the validated registry."""
-    skill = SKILL_REGISTRY.match(user_text)
-    return {"name": skill.skill_id, "folder": skill.folder} if skill else None
-
-def load_skill_content(folder_name):
-    skill = SKILL_REGISTRY.get(folder_name)
-    return skill.content if skill else ""
-
 def load_memory_context():
     """Lädt lehrerprofil.md + begleiter_gedaechtnis.md als Kontext."""
     parts = []
@@ -441,9 +464,6 @@ def get_collection():
 # ---------------------------------------------------------------------------
 # PDF-Hilfsfunktionen
 # ---------------------------------------------------------------------------
-def extract_pdf_text(path):
-    return secure_extract_pdf_text(Path(path))
-
 def chunk_text(text, max_chars=900, overlap=150):
     chunks, start = [], 0
     while start < len(text):
@@ -553,52 +573,108 @@ def search_rag(query, limit=4):
 # Ollama-Status-Cache
 # ---------------------------------------------------------------------------
 _ollama_lock = threading.Lock()
-_ollama_online = False
+_ollama_state = {"running": False, "models": []}
 _ollama_last_check = 0
 
-def check_ollama():
-    global _ollama_online, _ollama_last_check
+def ollama_state():
+    """What /api/tags reports, cached for 10 s.
+
+    {"running": bool, "models": [{"name": str, "cloud": bool}]}. "running"
+    without models is its own state: the teacher then needs "ollama pull",
+    not "ollama serve"."""
+    global _ollama_state, _ollama_last_check
     now = time.time()
     with _ollama_lock:
         if now - _ollama_last_check < 10:
-            return _ollama_online
-    online = False
+            return {**_ollama_state, "models": list(_ollama_state["models"])}
+    state = {"running": False, "models": []}
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        # 127.0.0.1 like every other Ollama call here: on Windows "localhost"
+        # resolves to ::1 first, while Ollama only listens on IPv4 by default.
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read())
-            online = bool(data.get("models"))
+        rows = data.get("models") if isinstance(data, dict) else None
+        names = sorted({
+            row.get("name") or row.get("model")
+            for row in rows or []
+            if isinstance(row, dict) and isinstance(row.get("name") or row.get("model"), str)
+        })
+        state = {
+            "running": True,
+            "models": [{"name": name, "cloud": looks_like_cloud_model(name)} for name in names],
+        }
     except Exception:
-        online = False
+        pass
     with _ollama_lock:
-        _ollama_online = online
+        _ollama_state = state
         _ollama_last_check = now
-        return _ollama_online
+        return {**state, "models": list(state["models"])}
 
-# ---------------------------------------------------------------------------
-# DSGVO-Modell-Routing – Skill-basierte Erzwingung lokaler Modelle
-# ---------------------------------------------------------------------------
-DSGVO_PFLICHT_LOKAL = [
-    "schuelerarbeit_bewerten",   # Schülerarbeiten enthalten ggf. Namen
-    "zeugnis_formulieren",       # Schülerbezogene Bewertungen
-    "foerderplan_erstellen",     # Individuelle Förderdaten
-    "lerntagebuch_feedback",     # SuS-Reflexionen
-    "klassenstatistik",          # Aggregierte Schülerdaten
-]
-
-def route_model(skill_name: str, user_preferred_model: str) -> str:
-    """
-    Gibt das tatsächlich zu verwendende Modell zurück.
-    Bei DSGVO-pflichtigen Skills wird IMMER auf Ollama geroutet,
-    unabhängig von der Nutzerpräferenz.
-    """
-    if skill_name and skill_name in DSGVO_PFLICHT_LOKAL:
-        return "ollama"  # Lokales Modell erzwingen
-    return user_preferred_model  # Nutzerwahl respektieren
+def check_ollama():
+    """True when Ollama answers and has at least one model installed."""
+    state = ollama_state()
+    return state["running"] and bool(state["models"])
 
 # ---------------------------------------------------------------------------
 # LLM-Call (Streaming) – serverseitiger Proxy
 # ---------------------------------------------------------------------------
+class ProviderStreamError(RuntimeError):
+    """The provider reported an error inside an otherwise successful stream."""
+
+
+def provider_error_message(exc, provider, model="", default="Der Modellaufruf ist fehlgeschlagen."):
+    """Translate a failed provider call into an actionable German message.
+
+    HTTP error bodies stay in the server log. A mid-stream error message is
+    passed through (truncated) because it is the provider's only explanation."""
+    label = {"ollama": "Ollama", "custom": "Der Custom-Endpoint"}.get(provider, "OpenRouter")
+    if isinstance(exc, ProviderStreamError):
+        detail = str(exc).strip()
+        return f"{label} hat die Antwort mit einem Fehler abgebrochen" + (f": {detail}" if detail else ".")
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        if code in (401, 403):
+            return f"{label} hat den API-Key abgelehnt. Bitte den Schlüssel in den Einstellungen prüfen."
+        if code == 402:
+            return f"Das Guthaben bei {label} ist aufgebraucht. Bitte beim Anbieter aufladen."
+        if code == 404:
+            return f"Das Modell „{model}“ wurde bei {label} nicht gefunden. Bitte den Modellnamen in den Einstellungen prüfen."
+        if code == 429:
+            return f"{label} meldet zu viele Anfragen. Bitte kurz warten und erneut versuchen."
+        if code in (408, 504):
+            return f"{label} hat nicht rechtzeitig geantwortet. Bitte erneut versuchen."
+        if 400 <= code < 500:
+            return f"{label} hat die Anfrage abgelehnt (HTTP {code}). Bitte Modell und Einstellungen prüfen."
+        return f"{label} ist gerade gestört (HTTP {code}). Bitte später erneut versuchen."
+    if isinstance(exc, (TimeoutError, socket.timeout)) or isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)):
+        return f"{label} hat nicht rechtzeitig geantwortet. Bitte erneut versuchen."
+    if isinstance(exc, urllib.error.URLError):
+        if provider == "ollama":
+            return "Ollama ist nicht erreichbar. Bitte prüfen, ob Ollama läuft."
+        return f"{label} ist nicht erreichbar. Bitte Internetverbindung bzw. Endpoint prüfen."
+    return default
+
+
+def _stream_delta_text(parsed):
+    """Content of one OpenAI-style stream chunk, tolerating chunks without
+    choices (OpenRouter's trailing usage chunk, Azure's prompt-filter chunk)."""
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    delta = choices[0].get("delta")
+    content = delta.get("content") if isinstance(delta, dict) else None
+    return content if isinstance(content, str) else ""
+
+
+def _stream_error_detail(parsed):
+    error = parsed.get("error")
+    if not error:
+        return None
+    message = error.get("message") if isinstance(error, dict) else error
+    return str(message or "")[:200]
+
+
 def stream_llm(
     messages,
     profile,
@@ -739,9 +815,10 @@ def stream_llm(
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
                     line = line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data: "):
+                    # The SSE spec makes the space after "data:" optional.
+                    if not line.startswith("data:"):
                         continue
-                    raw = line[6:].strip()
+                    raw = line[5:].strip()
                     if raw == "[DONE]":
                         _send_sse(wfile, {"type": "done"})
                         done_sent = True
@@ -750,15 +827,24 @@ def stream_llm(
                         parsed = json.loads(raw)
                     except ValueError:
                         continue
-                    content = parsed.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if not isinstance(parsed, dict):
+                        continue
+                    error_detail = _stream_error_detail(parsed)
+                    if error_detail is not None:
+                        raise ProviderStreamError(error_detail)
+                    content = _stream_delta_text(parsed)
                     if content:
                         full_text.append(content)
                         _send_sse(wfile, {"type": "chunk", "text": content})
                     if parsed.get("usage"):
                         _send_sse(wfile, {"type": "usage", "usage": parsed["usage"]})
-    except Exception:
+    except Exception as exc:
         logger.exception("Provider request failed provider=%s", effective_provider)
-        _send_sse(wfile, {"type": "error", "code": "PROVIDER_ERROR", "message": "Der Modellaufruf ist fehlgeschlagen."})
+        _send_sse(wfile, {
+            "type": "error",
+            "code": "PROVIDER_ERROR",
+            "message": provider_error_message(exc, effective_provider, body.get("model", "")),
+        })
     finally:
         if not done_sent:
             _send_sse(wfile, {"type": "done"})
@@ -813,14 +899,20 @@ def _stream_ollama_pull(wfile, model):
             _send_sse(wfile, {"type": "error", "message": f"ollama pull fehlgeschlagen (code {proc.returncode})"})
     except FileNotFoundError:
         _send_sse(wfile, {"type": "error", "message": "Ollama ist nicht installiert. Bitte von ollama.com/download herunterladen."})
-    except Exception as e:
-        _send_sse(wfile, {"type": "error", "message": str(e)})
+    except Exception:
+        logger.exception("ollama pull failed model=%s", model)
+        _send_sse(wfile, {"type": "error", "message": "Der Modell-Download ist fehlgeschlagen. Details stehen im Server-Log."})
 
 # ---------------------------------------------------------------------------
 # HTTP-Handler
 # ---------------------------------------------------------------------------
 class RequestTooLarge(ValueError):
     pass
+
+
+# Returned by ToolHandler._storage_error() after it has already sent an error
+# response, so callers can tell that apart from a legitimate None result.
+STORAGE_FAILED = object()
 
 
 class ToolHandler(http.server.BaseHTTPRequestHandler):
@@ -861,8 +953,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, message, status=400):
-        self._json({"error": {"code": code, "message": message}}, status)
+    def _error(self, code, message, status=400, **extra):
+        self._json({"error": {"code": code, "message": message, **extra}}, status)
 
     def _body(self, max_bytes=MAX_JSON_BYTES):
         try:
@@ -911,6 +1003,33 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _dist_asset(self, relative):
+        """Serve a hashed Vite build asset from web_dist/assets/ only.
+
+        Unlike _static() there is deliberately no repo-root fallback: with
+        one, a raw request for /assets/../tool_server.py (browsers normalise
+        dot segments, raw HTTP clients do not) resolved inside BASE_DIR and
+        served any file in the checkout, including a legacy settings.json."""
+        assets_root = (BASE_DIR / "web_dist" / "assets").resolve()
+        path = (assets_root / relative).resolve()
+        try:
+            path.relative_to(assets_root)
+        except ValueError:
+            self.send_error(404)
+            return
+        if not path.is_file():
+            self.send_error(404)
+            return
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        # Vite puts a content hash in every asset filename, so a changed file
+        # always gets a new URL and the old one can be cached indefinitely.
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         route = parsed.path
@@ -919,7 +1038,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         if route in STATIC_FILES:
             self._static(STATIC_FILES[route])
         elif route.startswith("/assets/"):
-            self._static(route.lstrip("/"))
+            self._dist_asset(route[len("/assets/"):])
         elif route == "/api/v1/health":
             self._json({"status": "ok", "version": "2.0"})
         elif route == "/api/v1/bootstrap":
@@ -994,12 +1113,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _status(self):
         settings = SETTINGS_STORE.load()
+        ollama = ollama_state()
         self._json({
             "capabilities": {
                 **capability_status(),
-                "ollama": check_ollama(),
+                "ollama": ollama["running"] and bool(ollama["models"]),
                 **ocr_capability_status(settings),
             },
+            "ollamaRunning": ollama["running"],
+            "ollamaModels": ollama["models"],
             "credentials": CREDENTIALS.status(),
             "ocrEngines": [status.to_dict() for status in available_engines(settings)],
         })
@@ -1114,8 +1236,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _stream_chat_payload(self, data, persisted_chat=None):
         messages = data.get("messages", [])
-        if not isinstance(messages, list):
-            self._error("INVALID_MESSAGES", "messages muss eine Liste sein.", 400)
+        if not valid_message_list(messages):
+            self._error("INVALID_MESSAGES", "messages muss eine Liste von Nachrichten-Objekten sein.", 400)
             return ""
         profile = data.get("profile", {})
         settings = apply_request_overrides(load_settings(), data)
@@ -1141,7 +1263,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             messages=messages,
             profile=profile,
             skill_id=skill_id,
-            requested_mode=data.get("privacy_mode", data.get("privacyMode", "auto")),
+            requested_mode=requested_privacy_mode(data),
             sticky_mode=(persisted_chat or {}).get("privacyMode", data.get("stickyPrivacyMode", "auto")),
             document_classifications=[*rag_classifications, *ocr_classifications],
             rag_context=rag_context,
@@ -1161,7 +1283,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             try:
                 settings["_verifiedLocalOllamaModel"] = require_verified_local_ollama(settings)
             except LocalModelRequired as exc:
-                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+                # The reasons let the UI say *why* a local model is needed;
+                # without them a false positive looked like a broken setup.
+                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409, reasons=list(decision.reasons))
                 return ""
 
         self.send_response(200)
@@ -1183,6 +1307,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         )
 
     def _storage_error(self, action):
+        """Run a state-store action; on failure send the error response and
+        return STORAGE_FAILED. Callers must compare against that sentinel,
+        not against None: get_chat() legitimately returns None for an
+        unknown chat, and that case still needs its own 404 response."""
         try:
             return action()
         except StateConflict as exc:
@@ -1199,7 +1327,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except RuntimeError:
             logger.exception("Encrypted state operation failed")
             self._error("PERSISTENCE_ERROR", "Verschlüsselte Speicherung ist fehlgeschlagen.", 500)
-        return None
+        except ValueError:
+            self._error("INVALID_STATE", "Ungültige Daten.", 400)
+        return STORAGE_FAILED
 
     def _replace_state(self):
         try:
@@ -1211,7 +1341,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data.get("profile", {}), data.get("chats", []),
             expected_revision=data.get("expectedRevision"),
         ))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"state": result})
 
     def _import_browser_state(self):
@@ -1224,12 +1354,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data.get("profile", {}), data.get("chats", []),
             expected_revision=data.get("expectedRevision"),
         ))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json(result)
 
     def _list_chats(self):
         result = self._storage_error(STATE_STORE.list_chats)
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"chats": result})
 
     def _create_chat(self):
@@ -1237,19 +1367,27 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data = self._read_json()
         except ValueError:
             data = {}
-        result = self._storage_error(lambda: STATE_STORE.create_chat(data.get("title", "Neuer Chat"), data.get("messages")))
-        if result is not None:
+        title = data.get("title")
+        messages = data.get("messages")
+        result = self._storage_error(lambda: STATE_STORE.create_chat(
+            title if isinstance(title, str) else "Neuer Chat",
+            messages if isinstance(messages, list) else None,
+        ))
+        if result is not STORAGE_FAILED:
             self._json(result, 201)
 
     def _get_chat(self, chat_id):
         result = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
-        if result is None:
+        if result is STORAGE_FAILED:
             return
-        self._json(result) if result else self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+        if result is None:
+            self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+            return
+        self._json(result)
 
     def _delete_chat(self, chat_id):
         result = self._storage_error(lambda: STATE_STORE.delete_chat(chat_id))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"success": bool(result)})
 
     def _chat_message(self, chat_id):
@@ -1259,9 +1397,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("INVALID_REQUEST", "Ungültige Chat-Anfrage.", 400)
             return
         chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
-        if not chat:
-            if chat is not None:
-                self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+        if chat is STORAGE_FAILED:
+            return
+        if chat is None:
+            self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
             return
         content = data.get("content", "")
         if not isinstance(content, str) or not content.strip():
@@ -1281,21 +1420,27 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             messages=chat["messages"],
             profile=STATE_STORE.get_profile(),
             skill_id=skill_record.skill_id if skill_record else None,
-            requested_mode=data.get("privacy_mode", "auto"),
+            requested_mode=requested_privacy_mode(data),
             sticky_mode=chat.get("privacyMode", "auto"),
             document_classifications=ocr_classifications,
         )
         if decision.local_required:
             chat["privacyMode"] = "local_required"
-        self._storage_error(lambda: STATE_STORE.save_chat(chat))
+        if self._storage_error(lambda: STATE_STORE.save_chat(chat)) is STORAGE_FAILED:
+            return
         answer = self._stream_chat_payload({**payload, "profile": STATE_STORE.get_profile()}, chat)
         if answer:
             chat["messages"].append({"role": "bot", "text": answer, "ts": int(time.time() * 1000)})
-            self._storage_error(lambda: STATE_STORE.save_chat(chat))
+            # The SSE response is already complete, so a failure here can no
+            # longer become an HTTP error response; log it instead.
+            try:
+                STATE_STORE.save_chat(chat)
+            except Exception:
+                logger.exception("Saving the assistant answer failed chat=%s", chat.get("id"))
 
     def _get_profile(self):
         result = self._storage_error(STATE_STORE.get_profile)
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"profile": result})
 
     def _set_profile(self):
@@ -1306,17 +1451,21 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("INVALID_JSON", "Ungültiges Profil.", 400)
             return
         result = self._storage_error(lambda: STATE_STORE.set_profile(profile))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"profile": result})
 
     def _chat_summary(self, chat_id):
         chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
-        if chat:
-            self._summarize_messages(
-                chat.get("messages", []),
-                chat.get("privacyMode", "auto"),
-                {"ocrJobIds": chat.get("ocrJobIds", []), "profile": STATE_STORE.get_profile()},
-            )
+        if chat is STORAGE_FAILED:
+            return
+        if chat is None:
+            self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+            return
+        self._summarize_messages(
+            chat.get("messages", []),
+            chat.get("privacyMode", "auto"),
+            {"ocrJobIds": chat.get("ocrJobIds", []), "profile": STATE_STORE.get_profile()},
+        )
 
     # ---- Bestehende Endpunkte (unverändert) ---------------------------------
     def _upload(self):
@@ -1368,9 +1517,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("NOT_FOUND", "Upload wurde nicht gefunden.", 404)
             return
         try:
-            text = extract_pdf_text(path_obj)
+            pdf = read_pdf_text(path_obj)
+            text = pdf.text
             if not text.strip():
-                self._error("PDF_TEXT_EMPTY", "Aus der PDF konnte kein Text extrahiert werden.", 422)
+                self._error(
+                    "PDF_TEXT_EMPTY",
+                    "Aus der PDF konnte kein Text gelesen werden. Gescannte PDFs brauchen die "
+                    "Texterkennung Tesseract (wird von install.bat installiert).",
+                    422,
+                )
                 return
             chunks = chunk_text(text)
             if not chunks:
@@ -1391,6 +1546,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 "classification": classification,
                 "chunks": len(chunks),
                 "words": len(text.split()),
+                "totalPages": pdf.total_pages,
+                "ocrPages": pdf.ocr_pages,
+                "ocrTruncated": pdf.ocr_truncated,
             })
         except Exception:
             logger.exception("Document ingestion failed")
@@ -1446,12 +1604,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         fmt = (data.get("format") or "").strip().lower()
         if fmt not in {"md", "txt", "html"}:
-            self._json({"error": "Format muss md, txt oder html sein"}, 400)
+            self._error("INVALID_FORMAT", "Format muss md, txt oder html sein.", 400)
             return
 
         content = (data.get("content") or "").strip()
         if not content:
-            self._json({"error": "Kein Inhalt zum Exportieren"}, 400)
+            self._error("EMPTY_CONTENT", "Kein Inhalt zum Exportieren.", 400)
             return
 
         title = (data.get("title") or "TeacherAssist Export").strip()
@@ -1465,8 +1623,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             path.write_text(body, encoding="utf-8")
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except OSError:
+            logger.exception("Export write failed")
+            self._error("EXPORT_FAILED", "Die Exportdatei konnte nicht gespeichert werden.", 500)
             return
 
         self._json({"success": True, "filename": filename, "url": f"/api/v1/exports/{filename}"})
@@ -1490,7 +1649,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Content-Disposition", content_disposition(path.name))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1727,8 +1887,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             if ids:
                 col.delete(ids=ids)
             self._json({"success": True, "deleted": len(ids)})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Clearing the knowledge base failed")
+            self._error("CLEAR_FAILED", "Die Wissensdatenbank konnte nicht geleert werden.", 500)
 
     def _list_raster(self):
         raster_dir = MEMORY_DIR / "bewertungsraster"
@@ -1757,12 +1918,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
-        content = data.get("content", "").strip()
-        fach    = data.get("fach", "").strip()
-        klasse  = data.get("klasse", "").strip()
-        thema   = data.get("thema", "").strip()
+        content, fach, klasse, thema = (
+            value.strip() if isinstance(value, str) else ""
+            for value in (data.get(key) for key in ("content", "fach", "klasse", "thema"))
+        )
         if not (fach and klasse and thema):
-            self._json({"error": "fach, klasse und thema erforderlich"}, 400)
+            self._error("MISSING_FIELDS", "Fach, Klasse und Thema sind erforderlich.", 400)
             return
         slug = f"{fach}_{klasse}_{thema}".lower()
         slug = re.sub(r"[^\w]", "_", slug)
@@ -1891,39 +2052,46 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _read_memory_file(self, file_path):
         try:
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
-                self._json({"error": "Zugriff verweigert"}, 403)
+            target = memory_markdown_path(file_path)
+            if target is None:
+                self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
                 return
-            if not target.exists():
-                self._json({"error": "Datei nicht gefunden"}, 404)
+            if not target.is_file():
+                self._error("NOT_FOUND", "Datei nicht gefunden.", 404)
                 return
             self._json({"content": target.read_text(encoding="utf-8"), "path": file_path})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Memory read failed")
+            self._error("MEMORY_READ_FAILED", "Die Datei konnte nicht gelesen werden.", 500)
 
     def _write_memory_file(self):
         try:
-            data = json.loads(self._body().decode("utf-8"))
-            file_path = data.get("path", "").strip()
-            content   = data.get("content", "")
-            if not file_path.endswith(".md"):
-                self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
-                return
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
-                self._json({"error": "Zugriff verweigert"}, 403)
-                return
+            data = self._read_json()
+        except ValueError:
+            self._error("INVALID_REQUEST", "Ungültige Anfrage.", 400)
+            return
+        file_path = data.get("path", "")
+        content   = data.get("content", "")
+        if not isinstance(file_path, str) or not file_path.strip().endswith(".md"):
+            self._error("INVALID_PATH", "Nur .md-Dateien erlaubt.", 400)
+            return
+        if not isinstance(content, str):
+            self._error("INVALID_CONTENT", "Inhalt muss Text sein.", 400)
+            return
+        file_path = file_path.strip()
+        target = memory_markdown_path(file_path)
+        if target is None:
+            self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
+            return
+        try:
             target.parent.mkdir(parents=True, exist_ok=True)
             self._rotate_backups(target)
             target.write_text(content, encoding="utf-8")
-            self._json({"success": True, "path": file_path})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except OSError:
+            logger.exception("Memory write failed")
+            self._error("MEMORY_WRITE_FAILED", "Die Datei konnte nicht gespeichert werden.", 500)
+            return
+        self._json({"success": True, "path": file_path})
 
     @staticmethod
     def _rotate_backups(filepath):
@@ -1939,11 +2107,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _list_versions(self, file_path):
         import datetime
         try:
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
-                self._json({"error": "Zugriff verweigert"}, 403)
+            target = memory_markdown_path(file_path)
+            if target is None:
+                self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
                 return
             versions = []
             for i in range(1, 4):
@@ -1957,32 +2123,44 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                         "size": stat.st_size,
                     })
             self._json({"versions": versions})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("Listing memory versions failed")
+            self._error("MEMORY_VERSIONS_FAILED", "Die Versionen konnten nicht gelesen werden.", 500)
 
     def _restore_version(self):
         try:
-            data = json.loads(self._body().decode("utf-8"))
-            file_path = data.get("path", "").strip()
+            data = self._read_json()
+        except ValueError:
+            self._error("INVALID_REQUEST", "Ungültige Anfrage.", 400)
+            return
+        file_path = data.get("path", "")
+        try:
             version = int(data.get("version", 0))
-            if not file_path.endswith(".md") or version not in (1, 2, 3):
-                self._json({"error": "Ungültige Anfrage"}, 400)
-                return
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
-                self._json({"error": "Zugriff verweigert"}, 403)
-                return
-            bak = Path(str(target) + f'.bak{version}')
-            if not bak.exists():
-                self._json({"error": "Version nicht gefunden"}, 404)
-                return
+        except (TypeError, ValueError):
+            version = 0
+        if not isinstance(file_path, str) or not file_path.strip().endswith(".md") or version not in (1, 2, 3):
+            self._error("INVALID_REQUEST", "Ungültige Anfrage.", 400)
+            return
+        target = memory_markdown_path(file_path)
+        if target is None:
+            self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
+            return
+        bak = Path(str(target) + f'.bak{version}')
+        if not bak.exists():
+            self._error("NOT_FOUND", "Version nicht gefunden.", 404)
+            return
+        try:
+            # Read before rotating: _rotate_backups() shifts .bak1 -> .bak2 ->
+            # .bak3, which overwrote the chosen version before it was copied
+            # (restoring version 1 silently restored the current content).
+            restored = bak.read_bytes()
             self._rotate_backups(target)
-            shutil.copy2(str(bak), str(target))
-            self._json({"success": True, "content": target.read_text(encoding="utf-8")})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+            target.write_bytes(restored)
+        except OSError:
+            logger.exception("Memory version restore failed")
+            self._error("MEMORY_RESTORE_FAILED", "Die Version konnte nicht wiederhergestellt werden.", 500)
+            return
+        self._json({"success": True, "content": restored.decode("utf-8", errors="replace")})
 
     def _ocr_image(self):
         """Legacy-Endpunkt: "lies dieses Foto in mein Chat-Eingabefeld" --
@@ -2075,16 +2253,16 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _ollama_pull(self):
         """Lädt ein Ollama-Modell herunter und streamt den Fortschritt per SSE."""
         try:
-            data = json.loads(self._body().decode("utf-8"))
-        except Exception:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            data = self._read_json()
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
-        model = data.get("model", "").strip()
+        model = str(data.get("model") or "").strip()
         if not model:
-            self._json({"error": "Kein Modellname angegeben"}, 400)
+            self._error("MODEL_REQUIRED", "Kein Modellname angegeben.", 400)
             return
-        if not re.match(r'^[a-zA-Z0-9_./:@-]{1,100}$', model):
-            self._json({"error": "Ungültiger Modellname"}, 400)
+        if not MODEL_NAME_RE.fullmatch(model):
+            self._error("INVALID_MODEL", "Ungültiger Modellname.", 400)
             return
 
         self.send_response(200)
@@ -2111,14 +2289,14 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         angestossen werden.
         """
         try:
-            data = json.loads(self._body().decode("utf-8"))
-        except Exception:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            data = self._read_json()
+        except ValueError:
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
-        engine_name = (data.get("engine") or "").strip()
+        engine_name = str(data.get("engine") or "").strip()
         factory = ENGINE_FACTORIES.get(engine_name)
         if factory is None:
-            self._json({"error": "Unbekannte OCR-Engine"}, 400)
+            self._error("UNKNOWN_ENGINE", "Unbekannte OCR-Engine.", 400)
             return
 
         settings = load_settings()
@@ -2129,8 +2307,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # "ollama pull" -- ein Subprozessaufruf) -- daher dieselbe strenge
         # Pruefung wie bei _ollama_pull's Modellnamen, statt der
         # Konfiguration blind zu vertrauen.
-        if not re.match(r'^[a-zA-Z0-9_./:@-]{1,100}$', model_id):
-            self._json({"error": "Ungültige Modell-ID"}, 400)
+        if not MODEL_NAME_RE.fullmatch(model_id):
+            self._error("INVALID_MODEL", "Ungültige Modell-ID.", 400)
             return
 
         self.send_response(200)
@@ -2176,8 +2354,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             _send_sse(wfile, {"type": "status", "message": f"Lade Modell {model_id} herunter …"})
             snapshot_download(model_id, tqdm_class=_ProgressTqdm)
             _send_sse(wfile, {"type": "done", "success": True, "model": model_id})
-        except Exception as e:
-            _send_sse(wfile, {"type": "error", "message": str(e)})
+        except Exception:
+            logger.exception("OCR model download failed model=%s", model_id)
+            _send_sse(wfile, {"type": "error", "message": "Der Modell-Download ist fehlgeschlagen. Bitte Internetverbindung prüfen; Details stehen im Server-Log."})
 
     def _shutdown(self):
         self._json({"success": True, "message": "TeacherAssist wird beendet."})
@@ -2199,6 +2378,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _summarize_messages(self, messages, sticky_mode="auto", request_data=None):
         request_data = request_data or {}
+        if not valid_message_list(messages):
+            self._error("INVALID_MESSAGES", "messages muss eine Liste von Nachrichten-Objekten sein.", 400)
+            return
         user_texts = [
             message.get("text", message.get("content", "")).strip()
             for message in messages if message.get("role") == "user"
@@ -2213,7 +2395,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         decision = decide_privacy(
             messages=messages,
             profile=request_data.get("profile", {}),
-            requested_mode=request_data.get("privacy_mode", "auto"),
+            requested_mode=requested_privacy_mode(request_data),
             sticky_mode=sticky_mode,
             document_classifications=ocr_classifications,
         )
@@ -2222,7 +2404,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             try:
                 model = require_verified_local_ollama(settings)
             except LocalModelRequired as exc:
-                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409)
+                self._error("LOCAL_MODEL_REQUIRED", str(exc), 409, reasons=list(decision.reasons))
                 return
             endpoint = "http://127.0.0.1:11434/v1/chat/completions"
             headers = {"Content-Type": "application/json"}
@@ -2263,16 +2445,23 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             + "\n".join(f"- {text}" for text in user_texts[-20:])
         )
         body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
+        summary_provider = "ollama" if decision.local_required else (settings.get("provider") or "openrouter")
         try:
             request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(request, timeout=60) as response:
                 result = json.loads(response.read())
-            summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            choices = result.get("choices") if isinstance(result, dict) else None
+            first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            message = first.get("message") if isinstance(first.get("message"), dict) else {}
+            summary = str(message.get("content") or "").strip()
             if not summary:
                 raise ValueError("empty summary")
-        except Exception:
+        except Exception as exc:
             logger.exception("Session summary provider request failed")
-            self._error("SUMMARY_FAILED", "Zusammenfassung konnte nicht erstellt werden.", 502)
+            reason = provider_error_message(
+                exc, summary_provider, model, default="Zusammenfassung konnte nicht erstellt werden."
+            )
+            self._error("SUMMARY_FAILED", reason, 502)
             return
         timestamp = time.strftime("%d.%m.%Y %H:%M")
         target = MEMORY_DIR / "vergangene_stunden.md"
@@ -2291,6 +2480,13 @@ class _QuietThreadingHTTPServer(http.server.ThreadingHTTPServer):
     """Unterdrueckt das laute stderr-Traceback bei harmlosen Client-Disconnects
     (WinError 10053 / 10054 / Broken Pipe). Browser, der das Tab schliesst
     waehrend Server gerade /health beantwortet, ist kein Server-Fehler."""
+
+    # http.server sets SO_REUSEADDR. On Windows that lets a second socket bind
+    # a port another process is still listening on, after which it is
+    # undefined which one receives connections -- a hung earlier instance (or
+    # another program) could keep answering. Fail with "port in use" instead.
+    # Elsewhere it only allows rebinding a port in TIME_WAIT, which we keep.
+    allow_reuse_address = sys.platform != "win32"
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
@@ -2306,7 +2502,12 @@ if __name__ == "__main__":
         print(msg, flush=True)
         logger.warning(msg)
 
-    port = 8789
+    try:
+        port = server_port()
+    except ValueError as exc:
+        print(f"PROBLEM: {exc}", flush=True)
+        logger.error("%s", exc)
+        sys.exit(1)
     migration = SETTINGS_STORE.migrate_legacy(LEGACY_SETTINGS_FILE)
     purged_ocr_jobs = OCR_JOBS.purge_expired(SETTINGS_STORE.load().get("ocrRetentionDays", 7))
     logger.info(

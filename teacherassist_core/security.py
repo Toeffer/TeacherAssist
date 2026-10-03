@@ -116,20 +116,20 @@ def validate_remote_url(
     if allow_http_for_tests:
         allowed_schemes.add("http")
     if parsed.scheme.lower() not in allowed_schemes or not parsed.hostname:
-        raise ValueError("Only HTTPS URLs are permitted")
+        raise ValueError("Nur HTTPS-Adressen sind erlaubt.")
     if parsed.username or parsed.password:
-        raise ValueError("Credentials in URLs are not permitted")
+        raise ValueError("Zugangsdaten in der Adresse sind nicht erlaubt.")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     if port not in {80, 443}:
-        raise ValueError("Unsupported URL port")
+        raise ValueError("Dieser Port wird nicht unterstützt.")
     try:
         addresses = resolver(parsed.hostname, port, type=socket.SOCK_STREAM)
     except OSError as exc:
-        raise ValueError("URL host could not be resolved") from exc
+        raise ValueError("Der Server der Adresse wurde nicht gefunden.") from exc
     if not addresses:
-        raise ValueError("URL host did not resolve")
+        raise ValueError("Der Server der Adresse wurde nicht gefunden.")
     for address in addresses:
         ip = ipaddress.ip_address(address[4][0])
         if not ip.is_global:
-            raise ValueError("Private, loopback, link-local, and reserved destinations are blocked")
+            raise ValueError("Lokale und private Netzwerkadressen sind gesperrt.")
     return url

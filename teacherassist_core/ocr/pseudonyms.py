@@ -185,9 +185,10 @@ class PseudonymMap:
         """Schlaegt Namenskandidaten vor -- ersetzt NICHTS.
 
         Quellen: Treffer von ``NAME_FIELD_RE``, die erste nicht-leere Zeile
-        des Texts, sowie Treffer von ``privacy.PERSONAL_PATTERNS``' Muster
-        ``person_name``. Reihenfolge und Duplikate werden dedupliziert,
-        Reihenfolge des ersten Auftretens bleibt erhalten."""
+        des Texts, sowie Treffer von ``privacy.person_name_matches()`` (das
+        ``person_name``-Muster ohne reine Schul-Substantive wie "für
+        Klasse"). Reihenfolge und Duplikate werden dedupliziert, Reihenfolge
+        des ersten Auftretens bleibt erhalten."""
         candidates: list[str] = []
         seen: set[str] = set()
 
@@ -206,8 +207,7 @@ class PseudonymMap:
                 add(stripped)
                 break
 
-        person_name_pattern = dict(privacy.PERSONAL_PATTERNS)["person_name"]
-        for match in person_name_pattern.finditer(text):
+        for match in privacy.person_name_matches(text):
             add(_PERSON_NAME_TRIGGER_RE.sub("", match.group(0)))
 
         return tuple(candidates)

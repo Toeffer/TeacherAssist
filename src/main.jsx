@@ -9,6 +9,11 @@ window.React = React;
 window.ReactDOM = ReactDOM;
 
 function filenameFromDisposition(value) {
+  // Prefer the RFC 6266 UTF-8 form; the plain filename is an ASCII fallback.
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value || '');
+  if (encoded) {
+    try { return decodeURIComponent(encoded[1]); } catch {}
+  }
   const match = /filename="?([^";]+)"?/i.exec(value || '');
   return match ? match[1] : 'teacherassist-export';
 }
@@ -64,12 +69,32 @@ window.SanitizedMarkdown = function SanitizedMarkdown({ children }) {
   );
 };
 
+function registerServiceWorker() {
+  // Registered here rather than by an inline <script>: the server's CSP
+  // (script-src 'self') blocks inline scripts. Dev builds skip it so Vite's
+  // module reloading and Playwright's request routing are never intercepted.
+  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' })
+    .then(registration => registration.update())
+    .catch(() => {}); // the offline cache is optional
+}
+
 async function start() {
+  registerServiceWorker();
   try {
     await window.taApi.bootstrap();
   } catch (error) {
+    // fetch() rejects with a TypeError when nothing answers on the port.
+    const serverDown = error instanceof TypeError;
+    const title = serverDown
+      ? 'Der TeacherAssist-Server läuft nicht'
+      : 'Gespeicherte Daten konnten nicht geladen werden';
+    const detail = serverDown
+      ? 'Bitte TeacherAssist über die Desktop-Verknüpfung bzw. start.bat starten und dann erneut versuchen.'
+      : 'TeacherAssist wurde nicht geöffnet, damit keine Daten überschrieben werden.';
     const root = document.getElementById('root');
-    root.innerHTML = '<main style="font-family:system-ui;max-width:38rem;margin:12vh auto;padding:2rem"><h1>Gespeicherte Daten konnten nicht geladen werden</h1><p>TeacherAssist wurde nicht geöffnet, damit keine Daten überschrieben werden.</p><button id="retry-bootstrap">Erneut versuchen</button></main>';
+    // Light text: <body> is dark, and index.html resets every margin to 0.
+    root.innerHTML = `<main style="font-family:system-ui;max-width:38rem;margin:12vh auto;padding:2rem;color:#f0ede6"><h1 style="margin-bottom:0.75rem">${title}</h1><p style="margin-bottom:1.5rem;line-height:1.5">${detail}</p><button id="retry-bootstrap" style="padding:0.6rem 1.2rem;border:none;border-radius:8px;background:#d97757;color:#fff;font-size:1rem;cursor:pointer">Erneut versuchen</button></main>`;
     document.getElementById('retry-bootstrap').addEventListener('click', () => window.location.reload());
     return;
   }

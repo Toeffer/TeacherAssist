@@ -325,15 +325,18 @@ function openPrintWindow(text, title) {
 <body>
 <div class="toolbar">
   <span>📄 <strong>Export bereit</strong> – als PDF drucken oder speichern</span>
-          <button class="btn-print" onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
+          <button class="btn-print" type="button">🖨️ Drucken / Als PDF speichern</button>
         </div>
       <main>${body}</main>
       <div class="footer">
-        Erstellt mit TeacherAssist &bull; Exportiert am ${new Date().toLocaleDateString('de-DE')}
+        Erstellt mit TeacherAssist &bull; Exportiert am ${today}
       </div>
     </body>
     </html>`);
   win.document.close();
+  // The new window inherits the server's CSP (script-src 'self'), which
+  // blocks inline onclick handlers -- attach the handler from here instead.
+  win.document.querySelector('.btn-print')?.addEventListener('click', () => win.print());
 }
 
 /* ---------- Bot Avatar ---------- */
@@ -373,6 +376,7 @@ function TypingDots() {
 /* ---------- Chat Bubble ---------- */
 function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
   const [exportOpen, setExportOpen] = React.useState(false);
+  const [icalOpen, setIcalOpen] = React.useState(false);
 
   if (!isBot) {
     return (
@@ -449,10 +453,18 @@ function ChatBubble({ message, isBot, isTyping, onExport, assistantName }) {
                   {label}
                 </button>
               ))}
+              <button onClick={() => { setExportOpen(false); setIcalOpen(true); }} title="Als Kalender-Termin (.ics) speichern" style={{
+                border: 'none', borderRadius: 6, padding: '6px 8px',
+                background: 'var(--surface-input)', color: 'var(--text-secondary)',
+                cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+              }}>
+                📅 Termin
+              </button>
             </div>
           )}
           </div>
         )}
+        {icalOpen && <IcalExportModal text={message} onClose={() => setIcalOpen(false)} />}
       </div>
     </div>
   );
@@ -755,7 +767,6 @@ function ChatInput({ value, onChange, onSend, placeholder, disabled, onFileUploa
   const historyRef = React.useRef([]);
   const historyIdxRef = React.useRef(-1);
   const draftBeforeHistoryRef = React.useRef('');
-  const cameraSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   const dictateSupported = !!SpeechRec;
@@ -1322,6 +1333,7 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
     if (!onTestModel) return 'Modelltest nicht verfügbar';
     if (toolStatus !== 'online') return 'Tool-Server offline';
     if (provider === 'openrouter' && !hasApiKey && !apiKey) return 'API-Key fehlt';
+    if (provider === 'ollama' && ollamaStatus === 'no_models') return 'Kein Ollama-Modell installiert';
     if (provider === 'ollama' && ollamaStatus !== 'online') return 'Ollama offline';
     if (provider === 'custom' && !customEndpoint.trim()) return 'Custom-Endpoint fehlt';
     if (!selectedModelName) return 'Modell fehlt';
@@ -1408,10 +1420,12 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
             <div style={{
               width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-              background: ollamaStatus === 'online' ? '#2a9d5c' : ollamaStatus === 'offline' ? 'var(--danger)' : 'var(--text-tertiary)',
+              background: ollamaStatus === 'online' ? '#2a9d5c' : ollamaStatus === 'no_models' ? '#d9a036' : ollamaStatus === 'offline' ? 'var(--danger)' : 'var(--text-tertiary)',
             }}></div>
             <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
-              {ollamaStatus === 'online' ? 'Ollama aktiv' : ollamaStatus === 'offline' ? 'Ollama nicht erreichbar' : 'Ollama wird geprüft…'}
+              {ollamaStatus === 'online' ? 'Ollama aktiv'
+                : ollamaStatus === 'no_models' ? 'Ollama läuft – noch kein Modell installiert'
+                : ollamaStatus === 'offline' ? 'Ollama nicht erreichbar' : 'Ollama wird geprüft…'}
             </div>
           </div>
           {ollamaStatus === 'offline' && (
@@ -1423,22 +1437,39 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
               <code style={{ fontFamily: 'monospace', fontSize: 12, display: 'inline-block', marginTop: 4 }}>ollama serve</code>
             </div>
           )}
+          {ollamaStatus === 'no_models' && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8, background: 'var(--bg)',
+              fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.65,
+            }}>
+              Ollama läuft, aber es ist noch kein Modell installiert. Lade das eingestellte Modell in der Eingabeaufforderung:<br />
+              <code style={{ fontFamily: 'monospace', fontSize: 12, display: 'inline-block', marginTop: 4 }}>ollama pull {ollamaModel || 'gemma3:4b'}</code>
+            </div>
+          )}
           {ollamaStatus === 'online' && (
             <>
               <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 8 }}>Installiertes Modell</div>
-              {ollamaModels.length > 0 ? (
-                <select value={ollamaModel} onChange={e => onOllamaModelChange(e.target.value)} style={{
-                  width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 12,
-                  border: '1.5px solid var(--border)', background: 'var(--surface-input)',
-                  color: 'var(--text-primary)', fontSize: 14, outline: 'none',
-                  fontFamily: 'inherit', cursor: 'pointer',
-                }}>
-                  {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              ) : (
-                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 12 }}>
-                  Kein Modell gefunden. Lade eines:<br />
-                  <code style={{ fontFamily: 'monospace', fontSize: 12 }}>ollama pull gemma4:e4b</code>
+              <select value={ollamaModel} onChange={e => onOllamaModelChange(e.target.value)} style={{
+                width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 12,
+                border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+                color: 'var(--text-primary)', fontSize: 14, outline: 'none',
+                fontFamily: 'inherit', cursor: 'pointer',
+              }}>
+                {/* Keep the configured model selectable even when it is not
+                    installed, so the select never silently shows another one. */}
+                {ollamaModel && !ollamaModels.some(m => m.name === ollamaModel) && (
+                  <option value={ollamaModel}>{ollamaModel} (nicht installiert)</option>
+                )}
+                {ollamaModels.map(m => (
+                  <option key={m.name} value={m.name}>
+                    {m.cloud ? `${m.name} (Cloud – nicht für Schülerdaten)` : m.name}
+                  </option>
+                ))}
+              </select>
+              {ollamaModel && !ollamaModels.some(m => m.name === ollamaModel) && (
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 12 }}>
+                  Das eingestellte Modell ist nicht installiert:{' '}
+                  <code style={{ fontFamily: 'monospace', fontSize: 12 }}>ollama pull {ollamaModel}</code>
                 </div>
               )}
             </>
@@ -1500,12 +1531,6 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
           <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span>OpenRouter API-Key</span>
             {!hasApiKey && !apiKey && <span style={{ color: 'var(--accent)', fontWeight: 400, fontSize: 13 }}>– Pflichtfeld</span>}
-            {openrouterStatus === 'offline' && (
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }}></span>
-                nicht erreichbar
-              </span>
-            )}
             {openrouterStatus === 'online' && (hasApiKey || apiKey) && (
               <span style={{ marginLeft: 'auto', fontSize: 12, color: '#2a9d5c', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#2a9d5c', display: 'inline-block' }}></span>
@@ -2228,7 +2253,7 @@ function RasterEditorView({ toolStatus }) {
       });
       const data = await r.json();
       if (data.success) { setSaved(true); setTimeout(() => setSaved(false), 2000); loadRasters(); }
-      else setError(data.error || 'Fehler beim Speichern.');
+      else setError(window.taApi.errorMessage(data, 'Fehler beim Speichern.'));
     } catch { setError('Tool-Server nicht erreichbar (start.bat läuft?).'); }
     setSaving(false);
   }
@@ -2517,7 +2542,7 @@ function MemoryEditorView({ toolStatus }) {
     try {
       const r = await taFetch(`${TOOL}/memory-read?file=${encodeURIComponent(path)}`);
       const d = await r.json();
-      if (d.error) { setError(d.error); return; }
+      if (!r.ok || d.error) { setError(window.taApi.errorMessage(d, 'Datei konnte nicht geladen werden.')); return; }
       setSelected(path);
       setContent(d.content || '');
     } catch (e) { setError(e.message); }
@@ -2534,7 +2559,7 @@ function MemoryEditorView({ toolStatus }) {
       });
       const d = await r.json();
       if (d.success) { setSaved(true); setTimeout(() => setSaved(false), 2000); loadList(); }
-      else setError(d.error || 'Fehler beim Speichern');
+      else setError(window.taApi.errorMessage(d, 'Fehler beim Speichern'));
     } catch (e) { setError(e.message); }
     setSaving(false);
   }
@@ -2802,8 +2827,9 @@ function IcalExportModal({ text, onClose }) {
   const today = new Date().toISOString().slice(0, 10);
 
   const guessTitle = () => {
-    const m = text.match(/(?:Klassenarbeit|Klausur|Test|Prüfung|Abgabe)[^\n.]{0,60}/i);
-    return m ? m[0].trim() : 'Termin aus TeacherAssist';
+    // Stops at a sentence end, but not at the dots inside "15.10.2026".
+    const m = text.match(/(?:^|[^\wäöüß])((?:Klassenarbeit|Klausur|Test|Prüfung|Abgabe)(?:[^\n.]|\.(?=\d)){0,60})/i);
+    return m ? m[1].trim() : 'Termin aus TeacherAssist';
   };
   const guessDate = () => {
     const m = text.match(/\b(\d{1,2})[./](\d{1,2})[./](20\d{2})\b/);
@@ -2822,7 +2848,12 @@ function IcalExportModal({ text, onClose }) {
   function download() {
     const dt    = new Date(`${date}T${startTime}:00`);
     const endDt = new Date(dt.getTime() + Math.max(5, parseInt(duration) || 45) * 60000);
+    // DTSTAMP is UTC ("Z"); DTSTART/DTEND are floating local times, which
+    // calendars show as entered. Formatting them via toISOString() (UTC)
+    // without "Z" shifted a 08:00 exam to 06:00 in German summer time.
     const fmt   = d => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+    const pad   = n => String(n).padStart(2, '0');
+    const local = d => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
     const uid   = `${Date.now()}@teacherAssist`;
     const ics   = [
       'BEGIN:VCALENDAR', 'VERSION:2.0',
@@ -2830,8 +2861,8 @@ function IcalExportModal({ text, onClose }) {
       'BEGIN:VEVENT',
       `UID:${uid}`,
       `DTSTAMP:${fmt(new Date())}Z`,
-      `DTSTART:${fmt(dt)}`,
-      `DTEND:${fmt(endDt)}`,
+      `DTSTART:${local(dt)}`,
+      `DTEND:${local(endDt)}`,
       `SUMMARY:${title.replace(/[,;\\]/g, m => '\\' + m)}`,
       `DESCRIPTION:Erstellt mit TeacherAssist`,
       'END:VEVENT', 'END:VCALENDAR',
@@ -2840,8 +2871,10 @@ function IcalExportModal({ text, onClose }) {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
-    a.download = title.slice(0, 40).replace(/[^\wäöüÄÖÜß\s]/g, '').trim() + '.ics';
+    a.download = (title.slice(0, 40).replace(/[^\wäöüÄÖÜß\s]/g, '').trim() || 'termin') + '.ics';
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(url);
     onClose();
   }
@@ -2879,20 +2912,22 @@ function IcalExportModal({ text, onClose }) {
             onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
         </div>
 
-        <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-          <div style={{ flex: 3 }}>
+        {/* Grid with shrinkable columns: in a flex row the date/time inputs'
+            intrinsic widths squeezed the duration field to nothing. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, 1fr)', gap: 10, marginBottom: 20 }}>
+          <div>
             <label style={ls}>Datum</label>
             <input type="date" value={date} onChange={e => setDate(e.target.value)} style={is}
               onFocus={e => e.target.style.borderColor = 'var(--accent)'}
               onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
           </div>
-          <div style={{ flex: 2 }}>
+          <div>
             <label style={ls}>Uhrzeit</label>
             <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} style={is}
               onFocus={e => e.target.style.borderColor = 'var(--accent)'}
               onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
           </div>
-          <div style={{ flex: 2 }}>
+          <div>
             <label style={ls}>Dauer (Min.)</label>
             <input type="number" value={duration} onChange={e => setDuration(e.target.value)}
               min="5" max="480" style={is}

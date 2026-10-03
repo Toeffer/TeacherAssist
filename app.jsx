@@ -121,7 +121,7 @@ function parseNameInput(raw) {
   const text = raw.trim();
 
   // Muster: "Ich bin X, du bist Y"
-  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*(?:und\s+)?du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+))?\s*$/i);
+  const m = text.match(/ich\s*(?:bin|heiße)\s+([a-zA-ZäöüÄÖÜß\-\s]+?)(?:\s*,?\s*(?:und\s+)?du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß-]+))?\s*$/i);
   if (m) {
     return {
       name: m[1].trim(),
@@ -130,7 +130,7 @@ function parseNameInput(raw) {
   }
 
   // Muster: "X, und du bist Y" oder "X – du Y"
-  const m2 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*[,–\-—]+\s*du\s*(?:bist|heißt)?\s*([a-zA-ZäöüÄÖÜß\-]+)\s*$/i);
+  const m2 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*[,–\-—]+\s*du\s*(?:bist|heißt)?\s*([a-zA-ZäöüÄÖÜß-]+)\s*$/i);
   if (m2) {
     return {
       name: m2[1].trim(),
@@ -139,7 +139,7 @@ function parseNameInput(raw) {
   }
 
   // Du-bist-Muster muss vor der "Nur ein Name"-Prüfung stehen
-  const m3 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*,?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß\-]+)\s*$/i);
+  const m3 = text.match(/^([a-zA-ZäöüÄÖÜß\-\s]+?)\s*,?\s*du\s*(?:bist|heißt)\s+([a-zA-ZäöüÄÖÜß-]+)\s*$/i);
   if (m3) {
     return { name: m3[1].trim(), assistant_name: m3[2].trim() };
   }
@@ -301,6 +301,42 @@ function extractKlassenStufen(text) {
   return out;
 }
 
+/* ---------- Gründe für den lokalen Modus (teacherassist_core/privacy.py) ---------- */
+const SENSITIVE_SKILL_LABELS = {
+  schuelerarbeit_bewerten: 'Schülerarbeit bewerten',
+  zeugnis_formulieren: 'Zeugnis formulieren',
+  foerderplan_erstellen: 'Förderplan erstellen',
+  lerntagebuch_feedback: 'Lerntagebuch-Feedback',
+  klassenstatistik: 'Klassenstatistik',
+};
+const PRIVACY_REASON_LABELS = {
+  user_requested_local: 'lokaler Modus angefordert',
+  document_not_public: 'nicht-öffentliches Dokument im Kontext',
+  student_submission: 'Schülerarbeit (Texterkennung) im Kontext',
+  'personal_data:email': 'E-Mail-Adresse',
+  'personal_data:phone': 'Telefonnummer',
+  'personal_data:birth_date': 'Geburtsdatum',
+  'personal_data:student_context': 'schülerbezogene Begriffe (z. B. „SuS", „Zeugnis")',
+  'personal_data:person_name': 'möglicher Personenname',
+  'personal_data:student_identifier': 'Schülerkennung (z. B. SuS-01)',
+};
+function privacyReasonLabels(reasons) {
+  return [...new Set((reasons || [])
+    .filter(reason => reason !== 'chat_already_local')
+    .map(reason => reason.startsWith('sensitive_skill:')
+      ? `Datenschutz-Skill „${SENSITIVE_SKILL_LABELS[reason.slice(16)] || reason.slice(16)}“`
+      : PRIVACY_REASON_LABELS[reason] || reason))];
+}
+
+/* ---------- Hinweis für gescannte PDFs (tool_server.py:_ingest) ---------- */
+// Die Texterkennung liest höchstens MAX_OCR_PAGES Seiten (documents.py).
+function ingestOcrNote(data) {
+  if (!data?.ocrPages) return '';
+  return data.ocrTruncated
+    ? `\n\n📷 Gescannte PDF: Per Texterkennung wurden nur die ersten ${data.ocrPages} von ${data.totalPages} Seiten eingelesen. Für den Rest bitte eine PDF mit Textebene verwenden (z. B. vom Bildungsserver).`
+    : `\n\n📷 Gescannte PDF: ${data.ocrPages} Seiten per Texterkennung eingelesen – Texterkennung kann Fehler enthalten.`;
+}
+
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
 // `ocrJobIds` (Stufe 9): die OCR-Job-IDs, die der aktive Chat bisher referenziert
 // hat. Der Server (tool_server.py:_stream_chat_payload) prüft sie gegen
@@ -308,7 +344,17 @@ function extractKlassenStufen(text) {
 // OCR_APPROVAL_REQUIRED ab, wenn ein referenzierter Job nicht freigegeben ist
 // (oder trotz Freigabe noch kritische Unsicherheit hat). Ohne dieses Feld war
 // das Gate zwar serverseitig fertig, aber nie scharf: die Liste kam nie an.
-async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpoint = '', customApiKey = '', customModel = 'gpt-3.5-turbo', providerOverride = '', modelOverride = '', ollamaModelOverride = '', forceSkill = '', signal = undefined, ocrJobIds = [], stickyPrivacyMode = 'auto') {
+//
+// Benannte Optionen statt 14 Positionsparametern: Ein fehlendes Argument hat
+// früher alle folgenden verschoben ("Modell testen" schickte so den
+// Provider-Namen als Modell). API-Keys werden nie mitgeschickt – der Server
+// nimmt die gespeicherten aus dem Credential Manager.
+async function callChatViaServer({
+  messages, profile = {}, onChunk = () => {}, onMeta,
+  customEndpoint = '', customModel = 'gpt-3.5-turbo',
+  providerOverride = '', modelOverride = '', ollamaModelOverride = '',
+  forceSkill = '', signal = undefined, ocrJobIds = [], stickyPrivacyMode = 'auto',
+}) {
   const response = await taFetch('/api/v1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -329,11 +375,12 @@ async function callChatViaServer(messages, profile, onChunk, onMeta, customEndpo
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    const message = window.taApi.errorMessage(err) || `Server-Fehler ${response.status}`;
+    const message = window.taApi.errorMessage(err, `Server-Fehler ${response.status}`);
     const error = new Error(message);
     // Lässt handleSend zwischen "OCR-Freigabe fehlt" (409 OCR_APPROVAL_REQUIRED
     // -- eigene, nicht-generische Behandlung) und anderen Fehlern unterscheiden.
     error.code = (err && err.error && err.error.code) || null;
+    error.reasons = (err && err.error && err.error.reasons) || [];
     throw error;
   }
 
@@ -459,12 +506,6 @@ function App() {
   const [stateRevision, setStateRevision] = useState(bootState.stateRevision);
   const [stateSaveError, setStateSaveError] = useState(null);
   const [stateConflict, setStateConflict] = useState(null);
-  /*
-    // ocrJobIds (Stufe 9): pro Chat, damit sie beim Chat-Wechsel nicht
-    // vermischt werden; ältere persistierte Chats ohne dieses Feld
-    // bekommen hier defensiv eine leere Liste.
-    return initial.map(c => ({ ocrJobIds: [], ...c }));
-  */
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [streamingText, setStreamingText] = useState('');
@@ -485,7 +526,6 @@ function App() {
   const [customApiKey, setCustomApiKey] = useState('');
   const [hasCustomApiKey, setHasCustomApiKey] = useState(Boolean(bootState.settings.hasCustomApiKey));
   const [customModel, setCustomModel] = useState(() => bootState.settings.customModel || 'gpt-3.5-turbo');
-  const [tailscaleStatus, setTailscaleStatus] = useState('unknown');
   const [showStylePopover, setShowStylePopover] = useState(false);
   const [dsgvoRoutingActive, setDsgvoRoutingActive] = useState(false);
   // Stufe 9: 409 OCR_APPROVAL_REQUIRED von /api/v1/chat -- { message, jobIds } | null.
@@ -506,8 +546,7 @@ function App() {
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
 
   const effectiveProvider = useMemo(() => {
-    if (provider === 'openrouter' && openrouterStatus === 'offline' && ollamaStatus === 'online') return 'ollama';
-    if (provider === 'ollama' && ollamaStatus === 'offline' && (hasApiKey || apiKey) && openrouterStatus === 'online') return 'openrouter';
+    if (provider === 'ollama' && (ollamaStatus === 'offline' || ollamaStatus === 'no_models') && (hasApiKey || apiKey) && openrouterStatus === 'online') return 'openrouter';
     return provider;
   }, [provider, openrouterStatus, ollamaStatus, hasApiKey, apiKey]);
   const isFallbackActive = effectiveProvider !== provider;
@@ -620,7 +659,10 @@ function App() {
         setToolStatus('online');
         setHasApiKey(Boolean(status.credentials?.hasApiKey));
         setHasCustomApiKey(Boolean(status.credentials?.hasCustomApiKey));
-        setOllamaStatus(status.capabilities?.ollama ? 'online' : 'offline');
+        // 'no_models': Ollama answers but has nothing installed yet -- the
+        // teacher needs "ollama pull", not "ollama serve".
+        setOllamaStatus(status.capabilities?.ollama ? 'online' : status.ollamaRunning ? 'no_models' : 'offline');
+        setOllamaModels(Array.isArray(status.ollamaModels) ? status.ollamaModels : []);
         setOpenrouterStatus(status.credentials?.hasApiKey ? 'online' : 'unknown');
         const col = await taFetch('/api/v1/collections').then(r => r.json()).catch(() => ({}));
         if (!cancelled) setRagDocCount(col.chunks || 0);
@@ -654,12 +696,16 @@ function App() {
       const greeting = getTimeBasedGreeting(profile.name, profile.assistant_name);
       addBotMessage(greeting, 400);
     }
+    // Deliberately only on chat switch: greeting a new empty chat once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChatId]);
 
   useEffect(() => {
     if (!onboardingDone && onboardingStep > 0 && activeChat.messages.length === 0) {
       setOnboardingStep(0);
     }
+    // Deliberately only on chat switch, like the greeting above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChatId]);
 
   const addMessage = useCallback((chatId, msg) => {
@@ -747,17 +793,16 @@ function App() {
         if (faqAnswer) {
           addBotMessage(faqAnswer, 700);
           setTimeout(() => addBotMessage(`Zurück zur Einrichtung:\n${step.bot}`, 1500), 1800);
-        } else if (provider === 'ollama' ? ollamaStatus === 'online' : !!apiKey) {
+        } else if (provider === 'ollama' ? ollamaStatus === 'online' : (hasApiKey || !!apiKey)) {
           setIsTyping(true);
           let answer = '';
           try {
-            await callChatViaServer(
-              [{ role: 'user', text }], {},
-              chunk => { answer += chunk; },
-              undefined,
-              customEndpoint, customApiKey, customModel,
-              effectiveProvider, model, ollamaModel
-            );
+            await callChatViaServer({
+              messages: [{ role: 'user', text }],
+              onChunk: chunk => { answer += chunk; },
+              customEndpoint, customModel,
+              providerOverride: effectiveProvider, modelOverride: model, ollamaModelOverride: ollamaModel,
+            });
           } catch { answer = 'Das beantworte ich gerne – lass uns aber erst das Profil abschließen!'; }
           setIsTyping(false);
           addMessage(activeChatId, { role: 'bot', text: answer || 'Gerne! Lass uns aber erst das Profil fertig einrichten.', ts: Date.now() });
@@ -868,7 +913,7 @@ function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(window.taApi.errorMessage(await res.json().catch(() => ({})), `Server-Fehler ${res.status}`));
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -927,7 +972,9 @@ function App() {
       setTimeout(() => {
         addMessage(activeChatId, {
           role: 'bot',
-          text: '⚠️ Ollama ist nicht erreichbar.\n\nStelle sicher, dass Ollama läuft – suche das Ollama-Symbol in der Taskleiste oder starte in der Eingabeaufforderung:\n`ollama serve`',
+          text: ollamaStatus === 'no_models'
+            ? `⚠️ Ollama läuft, aber es ist noch kein Modell installiert.\n\nLade das eingestellte Modell in der Eingabeaufforderung:\n\`ollama pull ${ollamaModel || 'gemma3:4b'}\``
+            : '⚠️ Ollama ist nicht erreichbar.\n\nStelle sicher, dass Ollama läuft – suche das Ollama-Symbol in der Taskleiste oder starte in der Eingabeaufforderung:\n`ollama serve`',
           ts: Date.now(),
         });
         setCurrentView('settings');
@@ -960,27 +1007,47 @@ function App() {
     let fullText = '';
     let aborted = false;
     try {
-      await callChatViaServer(currentMessages, profile, (chunk) => {
-        fullText += chunk;
-        setStreamingText(fullText);
-      }, (type, data) => {
-        if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
-        else if (type === 'privacy') {
-          setDsgvoRoutingActive(data.mode === 'local_required');
-          if (data.mode === 'local_required') {
-            setChats(prev => prev.map(chat => chat.id === activeChatId
-              ? { ...chat, privacyMode: 'local_required' }
-              : chat));
+      await callChatViaServer({
+        messages: currentMessages,
+        profile,
+        customEndpoint,
+        customModel,
+        providerOverride: effectiveProvider,
+        modelOverride: model,
+        ollamaModelOverride: ollamaModel,
+        forceSkill: skillId,
+        signal: controller.signal,
+        ocrJobIds: activeOcrJobIds,
+        stickyPrivacyMode: currentChat?.privacyMode || 'auto',
+        onChunk: chunk => {
+          fullText += chunk;
+          setStreamingText(fullText);
+        },
+        onMeta: (type, data) => {
+          if (type === 'usage') setSessionTokens(n => n + (data.total_tokens || 0));
+          else if (type === 'privacy') {
+            setDsgvoRoutingActive(data.mode === 'local_required');
+            if (data.mode === 'local_required') {
+              // Kept per chat, so the banner can still say why after a reload.
+              const reasons = (data.reasons || []).filter(reason => reason !== 'chat_already_local');
+              setChats(prev => prev.map(chat => chat.id === activeChatId
+                ? {
+                    ...chat,
+                    privacyMode: 'local_required',
+                    privacyReasons: [...new Set([...(chat.privacyReasons || []), ...reasons])],
+                  }
+                : chat));
+            }
+          } else if (type === 'dsgvo') {
+            if (data.routing === 'dsgvo_local') {
+              setDsgvoRoutingActive(true);
+            }
+            if (data.message) {
+              addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
+            }
           }
-        } else if (type === 'dsgvo') {
-          if (data.routing === 'dsgvo_local') {
-            setDsgvoRoutingActive(true);
-          }
-          if (data.message) {
-            addMessage(activeChatId, { role: 'bot', text: `🔒 ${data.message}`, ts: Date.now() });
-          }
-        }
-      }, customEndpoint, customApiKey, customModel, effectiveProvider, model, ollamaModel, skillId, controller.signal, activeOcrJobIds, currentChat?.privacyMode || 'auto');
+        },
+      });
     } catch (err) {
       if (err && err.name === 'AbortError') {
         aborted = true;
@@ -992,6 +1059,15 @@ function App() {
         aborted = true; // unterdrückt die generische "(Keine Antwort erhalten)"-Bubble unten
         addMessage(activeChatId, { role: 'bot', text: `🔒 ${err.message}`, ts: Date.now() });
         setOcrGateBlock({ message: err.message, jobIds: activeOcrJobIds });
+      } else if (err && err.code === 'LOCAL_MODEL_REQUIRED') {
+        const labels = privacyReasonLabels(err.reasons);
+        fullText = `🔒 ${err.message}` +
+          (labels.length ? `\n\n**Grund:** ${labels.join(', ')}.` : '') +
+          '\n\nStarte Ollama, oder stelle allgemeine Fragen ohne Schülerbezug in einem neuen Chat.';
+      } else if (fullText.trim()) {
+        // Keep what already arrived: an error late in the stream must not
+        // replace an answer the teacher has been reading.
+        fullText += `\n\n---\n⚠️ Die Antwort wurde unterbrochen: ${err.message}`;
       } else {
         fullText = `⚠️ Fehler bei der Anfrage: ${err.message}\n\nBitte prüfe deine Verbindung und die Einstellungen.`;
       }
@@ -1004,7 +1080,7 @@ function App() {
     if (!aborted) {
       addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
     }
-  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
+  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, hasApiKey, model, isStreaming, isTyping, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, effectiveProvider, customEndpoint, customModel]);
 
   const handleFileUpload = useCallback(async (file, track) => {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
@@ -1018,7 +1094,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
       const upRes = await taFetch('http://localhost:8789/upload', { method: 'POST', body: formData });
-      if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
+      if (!upRes.ok) throw new Error(window.taApi.errorMessage(await upRes.json().catch(() => ({})), 'Upload fehlgeschlagen'));
       const { saved } = await upRes.json();
       if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
@@ -1028,14 +1104,14 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: saved[0], source: sourceName, classification: 'public_curriculum' }),
       });
-      const data = await inRes.json();
-      if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+      const data = await inRes.json().catch(() => ({}));
+      if (!inRes.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Verarbeitung fehlgeschlagen'));
 
       setUploadPhase(null);
       setRagDocCount(n => n + data.chunks);
       addMessage(activeChatId, {
         role: 'bot',
-        text: `✅ **${sourceName}** wurde eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen – ich finde automatisch den passenden Kontext.`,
+        text: `✅ **${sourceName}** wurde eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter${ingestOcrNote(data)}\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen – ich finde automatisch den passenden Kontext.`,
         ts: Date.now(),
       });
     } catch (err) {
@@ -1072,7 +1148,7 @@ function App() {
             const formData = new FormData();
             formData.append('file', item.file);
             const upRes = await taFetch('http://localhost:8789/upload', { method: 'POST', body: formData });
-            if (!upRes.ok) throw new Error('Upload fehlgeschlagen');
+            if (!upRes.ok) throw new Error(window.taApi.errorMessage(await upRes.json().catch(() => ({})), 'Upload fehlgeschlagen'));
             const { saved } = await upRes.json();
             if (!saved?.length) throw new Error('Keine Datei gespeichert');
 
@@ -1081,8 +1157,8 @@ function App() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: saved[0], source: sourceName, classification: 'public_curriculum' }),
             });
-            const data = await inRes.json();
-            if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+            const data = await inRes.json().catch(() => ({}));
+            if (!inRes.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Verarbeitung fehlgeschlagen'));
 
             setRagDocCount(n => n + (data.chunks || 0));
             setBatchQueue(prev => prev.map((it, idx) => idx === pending ? { ...it, status: 'done' } : it));
@@ -1120,22 +1196,22 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, source: sourceName }),
       });
-      const dlData = await dlRes.json();
-      if (!dlRes.ok || dlData.error) throw new Error(dlData.error || 'Download fehlgeschlagen');
+      const dlData = await dlRes.json().catch(() => ({}));
+      if (!dlRes.ok || dlData.error) throw new Error(window.taApi.errorMessage(dlData, 'Download fehlgeschlagen'));
 
       const inRes = await taFetch('http://localhost:8789/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: dlData.saved[0], source: dlData.filename, classification: 'public_curriculum' }),
       });
-      const data = await inRes.json();
-      if (!inRes.ok || data.error) throw new Error(data.error || 'Verarbeitung fehlgeschlagen');
+      const data = await inRes.json().catch(() => ({}));
+      if (!inRes.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Verarbeitung fehlgeschlagen'));
 
       setIsTyping(false);
       setRagDocCount(n => n + data.chunks);
       addMessage(activeChatId, {
         role: 'bot',
-        text: `✅ **${dlData.filename}** heruntergeladen und eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen.`,
+        text: `✅ **${dlData.filename}** heruntergeladen und eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter${ingestOcrNote(data)}\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen.`,
         ts: Date.now(),
       });
     } catch (err) {
@@ -1183,7 +1259,7 @@ function App() {
         body: JSON.stringify({ title, content: text, format }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.error) throw new Error(data.error || 'Export fehlgeschlagen');
+      if (!res.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Export fehlgeschlagen'));
 
       await window.downloadTeacherAssistExport(data.url, data.filename);
 
@@ -1227,8 +1303,8 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
       const res = await taFetch('http://localhost:8789/restore', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Restore fehlgeschlagen');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(window.taApi.errorMessage(data, 'Restore fehlgeschlagen'));
       alert(`✅ ${data.restored} Datei(en) wiederhergestellt.\n\nBitte lade die Seite neu (F5), damit alle Änderungen aktiv werden.`);
     } catch (err) {
       alert(`Restore fehlgeschlagen: ${err.message}`);
@@ -1256,7 +1332,6 @@ function App() {
         body: JSON.stringify({
           messages: msgs,
           profile,
-          apiKey,
           providerOverride: effectiveProvider,
           modelOverride: model,
           ollamaModelOverride: ollamaModel,
@@ -1266,9 +1341,9 @@ function App() {
           stickyPrivacyMode: summaryChat?.privacyMode || 'auto',
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       setIsTyping(false);
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(window.taApi.errorMessage(data, `Server-Fehler ${res.status}`));
       addMessage(activeChatId, {
         role: 'bot',
         text: `✅ Sitzung gespeichert!\n\n📝 **Zusammenfassung:**\n${data.summary}\n\n*(Im Memory-Editor unter "vergangene_stunden.md" einsehbar)*`,
@@ -1278,31 +1353,31 @@ function App() {
       setIsTyping(false);
       addMessage(activeChatId, { role: 'bot', text: `⚠️ Fehler beim Zusammenfassen: ${err.message}`, ts: Date.now() });
     }
-  }, [activeChatId, chats, profile, apiKey, effectiveProvider, model, ollamaModel, customEndpoint, customApiKey, customModel, addMessage]);
+  }, [activeChatId, chats, profile, effectiveProvider, model, ollamaModel, customEndpoint, customModel, addMessage]);
 
   const handleTestModel = useCallback(async () => {
     let text = '';
     let usedProvider = provider;
-    await callChatViaServer(
-      [{ role: 'user', text: 'Antworte auf Deutsch mit genau einem kurzen Satz: Modelltest erfolgreich.' }],
+    await callChatViaServer({
+      messages: [{ role: 'user', text: 'Antworte auf Deutsch mit genau einem kurzen Satz: Modelltest erfolgreich.' }],
       profile,
-      (chunk) => { text += chunk; },
-      (type, data) => {
+      onChunk: chunk => { text += chunk; },
+      onMeta: (type, data) => {
         if (type === 'provider' && data?.provider) usedProvider = data.provider;
       },
       customEndpoint,
       customModel,
-      provider,
-      model,
-      ollamaModel
-    );
+      providerOverride: provider,
+      modelOverride: model,
+      ollamaModelOverride: ollamaModel,
+    });
 
     return {
       text: text.trim() || '(Keine Antwort erhalten)',
       provider: usedProvider,
       model: provider === 'ollama' ? ollamaModel : provider === 'custom' ? customModel : model,
     };
-  }, [apiKey, customApiKey, customEndpoint, customModel, model, ollamaModel, profile, provider]);
+  }, [customEndpoint, customModel, model, ollamaModel, profile, provider]);
 
   // Tastaturkürzel
   useEffect(() => {
@@ -1419,19 +1494,19 @@ function App() {
           <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>{profile.assistant_name || 'Mila'}</div>
           {(() => {
             const namePrefix = (profile.assistant_name || 'Mila');
-            const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : provider === 'custom' ? !!customEndpoint : !!apiKey);
+            // The key lives in the Credential Manager (hasApiKey); apiKey is only
+            // the not-yet-saved input and is cleared after saving.
+            const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : provider === 'custom' ? !!customEndpoint : (hasApiKey || !!apiKey));
             const label = isStreaming ? namePrefix + ' · antwortet…' : isTyping ? namePrefix + ' · schreibt…'
               : isDsgvoRouting
                 ? '🔒 Lokales Modell (DSGVO)'
                 : isFallbackActive
-                  ? (provider === 'openrouter'
-                      ? '⚠ OpenRouter offline · 🔒 Ollama Fallback'
-                      : '⚠ Ollama offline · ☁️ OpenRouter Fallback')
+                  ? (ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline') + ' · ☁️ OpenRouter Fallback'
                   : provider === 'ollama'
-                    ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : '⚠ Ollama offline'
+                    ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline'
                     : provider === 'custom'
                       ? customEndpoint ? namePrefix + ' · Eigener Dienst' : '⚠ Custom-Endpoint fehlt'
-                    : apiKey ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
+                    : (hasApiKey || apiKey) ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
             const dsgvoColor = '#d97706';
             const color = isDsgvoRouting ? dsgvoColor
               : isStreaming || isTyping ? 'var(--text-tertiary)'
@@ -1515,6 +1590,30 @@ function App() {
             queue={batchQueue}
             onDismiss={() => setBatchQueue([])}
           />
+          {/* Only worth saying with a cloud provider: with Ollama everything is local anyway. */}
+          {activeChat?.privacyMode === 'local_required' && provider !== 'ollama' && (() => {
+            const labels = privacyReasonLabels(activeChat.privacyReasons);
+            return (
+              <div data-testid="local-mode-banner" style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                padding: '8px 16px', background: 'rgba(42,157,92,0.08)',
+                borderTop: '1px solid rgba(42,157,92,0.25)', fontSize: 12.5,
+                color: 'var(--text-secondary)', flexShrink: 0, lineHeight: 1.5,
+              }}>
+                <span style={{ flex: 1, minWidth: 220 }}>
+                  🔒 <strong>Dieser Chat läuft nur lokal</strong>
+                  {labels.length ? ` – erkannt: ${labels.join(', ')}.` : ' – es wurden personenbezogene Inhalte erkannt.'}
+                  {' '}Allgemeine Planung ohne Schülerbezug geht in einem neuen Chat auch mit dem Cloud-Modell.
+                </span>
+                <button onClick={handleNewChat} style={{
+                  padding: '5px 12px', borderRadius: 8, border: '1.5px solid #2a9d5c',
+                  background: 'transparent', color: '#2a9d5c', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}>
+                  Neuer Chat
+                </button>
+              </div>
+            );
+          })()}
           {ocrGateBlock && (
             <div style={{
               display: 'flex', flexDirection: 'column', gap: 8,
@@ -1604,7 +1703,6 @@ function App() {
             customEndpoint={customEndpoint} onCustomEndpointChange={setCustomEndpoint}
             customApiKey={customApiKey} hasCustomApiKey={hasCustomApiKey} onCustomApiKeyChange={setCustomApiKey}
             customModel={customModel} onCustomModelChange={setCustomModel}
-            tailscaleStatus={tailscaleStatus}
             onBackup={handleBackup} onRestore={handleRestore}
             onTestModel={handleTestModel}
           />

@@ -8,9 +8,11 @@ teacherassist_core/security.py: SessionManager, valid_host, valid_browser_source
 and in route-name drift between tool_server.py and start.bat's health probe.
 """
 
+import contextlib
 import http.client
 import json
 import logging
+import socket
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -240,10 +242,12 @@ def test_start_bat_health_probe_matches_versioned_route():
     the startup health check. Fail loudly if that divergence ever comes back."""
     start_bat = (REPO_ROOT / "start.bat").read_text(encoding="utf-8")
 
-    assert "localhost:8789/health'" not in start_bat
-    assert "localhost:8789/api/v1/health" in start_bat
+    assert "/health'" not in start_bat.replace("/api/v1/health'", "")
     # Both probe occurrences (the "already running" check and the startup wait loop).
-    assert start_bat.count("localhost:8789/api/v1/health") >= 2
+    assert start_bat.count("127.0.0.1:%TEACHERASSIST_PORT%/api/v1/health'") >= 2
+    # start.bat and tool_server.py must agree on the default port.
+    assert f'set "TEACHERASSIST_PORT={tool_server.DEFAULT_PORT}"' in start_bat
+    assert "8789" not in start_bat.replace(f'set "TEACHERASSIST_PORT={tool_server.DEFAULT_PORT}"', "").replace("Standard 8789", "")
 
 
 def test_tool_server_still_defines_the_versioned_health_route():
@@ -377,3 +381,290 @@ def test_static_files_serves_ocr_ui_and_camera_modal_moved_out_of_components():
     assert "function CameraModal(" in ocr_ui_source
     assert "CameraModal" in ocr_ui_source and "window" in ocr_ui_source
     assert "Object.assign(window" in ocr_ui_source
+
+
+def _authenticated_session(port):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", "/api/v1/bootstrap", headers={"Host": f"localhost:{port}"})
+        response = conn.getresponse()
+        csrf_token = json.loads(response.read())["csrfToken"]
+        cookie_value = response.getheader("Set-Cookie").split(";", 1)[0]
+    finally:
+        conn.close()
+    return {
+        "Host": f"localhost:{port}",
+        "Cookie": cookie_value,
+        "X-CSRF-Token": csrf_token,
+        "Content-Type": "application/json",
+    }
+
+
+def _call(port, method, path, headers, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "method, suffix, body",
+    [
+        ("GET", "", None),
+        ("POST", "/messages", json.dumps({"content": "Hallo"})),
+        ("POST", "/summary", "{}"),
+    ],
+)
+def test_unknown_chat_returns_404_instead_of_closing_the_connection(isolated_server, method, suffix, body):
+    """get_chat() returns None for an unknown id, and _storage_error() used to
+    return None after a storage failure as well. The handlers treated both
+    the same way and returned without writing any response, so the browser
+    saw a dropped connection instead of a 404."""
+    port = isolated_server
+    headers = _authenticated_session(port)
+    path = f"/api/v1/chats/00000000-0000-4000-8000-000000000000{suffix}"
+
+    status, payload = _call(port, method, path, headers, body)
+
+    assert status == 404
+    assert json.loads(payload)["error"]["code"] == "NOT_FOUND"
+
+
+def test_invalid_state_replacement_is_rejected_with_400(isolated_server):
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(
+        port, "PATCH", "/api/v1/state", headers,
+        json.dumps({"profile": {}, "chats": "not-a-list", "expectedRevision": 0}),
+    )
+
+    assert status == 400
+    assert json.loads(payload)["error"]["code"] == "INVALID_STATE"
+
+
+def test_assets_route_cannot_escape_web_dist_assets(isolated_server):
+    """Browsers normalise "/assets/../x", but raw HTTP clients do not. The
+    route used to fall back to the repository root, so this served the
+    server's own source (and would have served a legacy settings.json)."""
+    port = isolated_server
+    with socket_connection(port) as sock:
+        sock.sendall(f"GET /assets/../tool_server.py HTTP/1.0\r\nHost: localhost:{port}\r\n\r\n".encode())
+        response = receive_all(sock)
+
+    status_line = response.split(b"\r\n", 1)[0]
+    assert b" 404 " in status_line
+    assert b"TeacherAssist Tool-Server" not in response
+
+
+def test_hashed_assets_are_served_with_immutable_caching(isolated_server):
+    asset = next((REPO_ROOT / "web_dist" / "assets").glob("index-*.js"), None)
+    if asset is None:
+        pytest.skip("web_dist/ is not built")
+    port = isolated_server
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request("GET", f"/assets/{asset.name}", headers={"Host": f"localhost:{port}"})
+        response = conn.getresponse()
+        body = response.read()
+        assert response.status == 200
+        assert response.getheader("Content-Type").startswith("text/javascript")
+        assert "immutable" in response.getheader("Cache-Control")
+        assert body == asset.read_bytes()
+    finally:
+        conn.close()
+
+
+@contextlib.contextmanager
+def socket_connection(port):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    try:
+        yield sock
+    finally:
+        sock.close()
+
+
+def receive_all(sock):
+    chunks = []
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def test_memory_endpoints_only_expose_markdown_inside_memory(isolated_server):
+    port = isolated_server
+    headers = _authenticated_session(port)
+    memory_dir = tool_server.MEMORY_DIR
+    (memory_dir / "notiz.md").write_text("# Notiz", encoding="utf-8")
+    (memory_dir / "geheim.json").write_text("{}", encoding="utf-8")
+    (memory_dir.parent / "outside.md").write_text("draussen", encoding="utf-8")
+
+    status, payload = _call(port, "GET", "/api/v1/memory-read?file=notiz.md", headers)
+    assert status == 200 and json.loads(payload)["content"] == "# Notiz"
+
+    for file_path in ("geheim.json", "../outside.md", "../settings.json", ""):
+        status, _ = _call(port, "GET", f"/api/v1/memory-read?file={file_path}", headers)
+        assert status == 403, file_path
+
+    status, _ = _call(port, "GET", "/api/v1/memory-read?file=fehlt.md", headers)
+    assert status == 404
+
+    status, _ = _call(
+        port, "POST", "/api/v1/memory-write", headers,
+        json.dumps({"path": "../outside.md", "content": "überschrieben"}),
+    )
+    assert status == 403
+    assert (memory_dir.parent / "outside.md").read_text(encoding="utf-8") == "draussen"
+
+
+def test_memory_write_keeps_three_backup_versions_and_restores_them(isolated_server):
+    port = isolated_server
+    headers = _authenticated_session(port)
+    for text in ("v1", "v2", "v3", "v4"):
+        status, _ = _call(port, "POST", "/api/v1/memory-write", headers, json.dumps({"path": "plan.md", "content": text}))
+        assert status == 200
+
+    status, payload = _call(port, "GET", "/api/v1/memory-versions?file=plan.md", headers)
+    assert status == 200
+    assert [row["version"] for row in json.loads(payload)["versions"]] == [1, 2, 3]
+
+    # .bak1 = v3, .bak2 = v2, .bak3 = v1. Restoring used to rotate first,
+    # which overwrote the chosen backup before it was copied.
+    status, payload = _call(port, "POST", "/api/v1/memory-restore-version", headers, json.dumps({"path": "plan.md", "version": "3"}))
+    assert status == 200
+    assert json.loads(payload)["content"] == "v1"
+    assert (tool_server.MEMORY_DIR / "plan.md").read_text(encoding="utf-8") == "v1"
+
+    status, payload = _call(port, "POST", "/api/v1/memory-restore-version", headers, json.dumps({"path": "plan.md", "version": 1}))
+    assert status == 200
+    assert json.loads(payload)["content"] == "v4", "version 1 is the state before the previous restore"
+
+
+def test_save_raster_rejects_malformed_fields_with_a_response(isolated_server):
+    """A non-string field used to raise AttributeError and drop the connection."""
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(
+        port, "POST", "/api/v1/save-raster", headers,
+        json.dumps({"fach": ["Mathe"], "klasse": None, "thema": 7, "content": "x"}),
+    )
+
+    assert status == 400
+
+
+@pytest.mark.parametrize("path", ["/api/v1/chat", "/api/v1/session-summary"])
+def test_non_object_messages_are_rejected_with_400(isolated_server, path):
+    """A string or null entry in messages used to raise AttributeError and
+    drop the connection."""
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(port, "POST", path, headers, json.dumps({"messages": ["hallo", None]}))
+
+    assert status == 400
+    assert json.loads(payload)["error"]["code"] == "INVALID_MESSAGES"
+
+
+def test_memory_write_with_invalid_json_is_a_400(isolated_server):
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, _ = _call(port, "POST", "/api/v1/memory-write", headers, "{kein json")
+
+    assert status == 400
+
+
+class _TagsResponse:
+    def __init__(self, payload):
+        self._payload = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        return self._payload
+
+
+@pytest.mark.parametrize(
+    "tags, running, usable, models",
+    [
+        (None, False, False, []),
+        ({"models": []}, True, False, []),
+        (
+            {"models": [{"name": "gemma3:4b"}, {"name": "gpt-oss:120b-cloud"}, {"model": "qwen3-vl:8b"}]},
+            True,
+            True,
+            [
+                {"name": "gemma3:4b", "cloud": False},
+                {"name": "gpt-oss:120b-cloud", "cloud": True},
+                {"name": "qwen3-vl:8b", "cloud": False},
+            ],
+        ),
+    ],
+)
+def test_status_distinguishes_ollama_offline_from_running_without_models(
+    isolated_server, monkeypatch, tags, running, usable, models
+):
+    """Running without a model needs "ollama pull", not "ollama serve"; the
+    UI also needs the installed models for its model picker."""
+    import urllib.error
+    import urllib.request
+
+    def fake_urlopen(request, *args, **kwargs):
+        if tags is None:
+            raise urllib.error.URLError("connection refused")
+        return _TagsResponse(tags)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(tool_server, "_ollama_last_check", 0)
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(port, "GET", "/api/v1/status", headers)
+
+    assert status == 200
+    body = json.loads(payload)
+    assert body["ollamaRunning"] is running
+    assert body["capabilities"]["ollama"] is usable
+    assert body["ollamaModels"] == models
+
+
+def test_local_model_required_names_the_reasons(isolated_server):
+    """Without Ollama, a prompt classified as personal is refused with 409;
+    the reasons let the UI explain why instead of looking broken."""
+    port = isolated_server
+    headers = _authenticated_session(port)
+
+    status, payload = _call(
+        port, "POST", "/api/v1/chat", headers,
+        json.dumps({"messages": [{"role": "user", "text": "Schreib ein Feedback für Max"}]}),
+    )
+
+    assert status == 409
+    error = json.loads(payload)["error"]
+    assert error["code"] == "LOCAL_MODEL_REQUIRED"
+    assert "personal_data:person_name" in error["reasons"]
+
+
+def test_server_refuses_a_port_another_program_is_listening_on():
+    """On Windows, http.server's SO_REUSEADDR let a second server bind a port
+    that is still in use; requests could then reach either process. This
+    runs meaningfully on the Windows CI job."""
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen()
+    try:
+        with pytest.raises(OSError):
+            tool_server._QuietThreadingHTTPServer(("127.0.0.1", holder.getsockname()[1]), tool_server.ToolHandler)
+    finally:
+        holder.close()

@@ -12,12 +12,29 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
+function fetchAndStore(request) {
+  return fetch(request).then(response => {
+    if (response.ok) {
+      // Clone synchronously: once the page starts reading the body,
+      // clone() throws.
+      const copy = response.clone();
+      caches.open(CACHE).then(cache => cache.put(request, copy));
+    }
+    return response;
+  });
+}
+
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
   if (event.request.method !== 'GET') return;
-  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
-    if (response.ok) caches.open(CACHE).then(cache => cache.put(event.request, response.clone()));
-    return response;
-  })));
+  if (url.pathname.startsWith('/assets/')) {
+    // Vite content-hashes every asset name, so a cached URL is never stale.
+    event.respondWith(caches.match(event.request).then(cached => cached || fetchAndStore(event.request)));
+    return;
+  }
+  // Pages and unhashed files: network first, so an update is visible on the
+  // next load. The cache only answers while the local server is stopped.
+  event.respondWith(fetchAndStore(event.request).catch(() =>
+    caches.match(event.request).then(cached => cached || Response.error())));
 });

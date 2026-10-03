@@ -1,0 +1,18 @@
+{
+  "sources": [
+    "api-client.js",
+    "app.jsx",
+    "components.jsx",
+    "index.html",
+    "manifest.json",
+    "ocr-ui.jsx",
+    "package-lock.json",
+    "scripts/generate-service-worker.mjs",
+    "service-worker.js",
+    "src/main.jsx",
+    "teacherassist.ico",
+    "tweaks-panel.jsx",
+    "vite.config.js"
+  ],
+  "fingerprint": "e0b1d9b96427a332609f052c24410bae49eeb8dd17bc365e46465321166c68c2"
+}

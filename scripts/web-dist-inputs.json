@@ -1,0 +1,19 @@
+{
+  "comment": "Everything the Vite build reads. scripts/build-stamp.mjs fingerprints these into web_dist/build-stamp.json; tests/test_web_dist_freshness.py recomputes the fingerprint and fails when web_dist/ is older than its sources.",
+  "files": [
+    "index.html",
+    "app.jsx",
+    "components.jsx",
+    "ocr-ui.jsx",
+    "tweaks-panel.jsx",
+    "api-client.js",
+    "service-worker.js",
+    "manifest.json",
+    "teacherassist.ico",
+    "vite.config.js",
+    "package-lock.json",
+    "scripts/generate-service-worker.mjs"
+  ],
+  "directories": ["src"],
+  "binaryExtensions": [".ico", ".png", ".jpg", ".svg", ".woff2"]
+}
