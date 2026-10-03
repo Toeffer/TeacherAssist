@@ -235,3 +235,26 @@ test('a refused local-only request names the reason', async ({ page }) => {
   await expect(page.getByText(/Grund:.*möglicher Personenname/)).toBeVisible();
   await expect(page.getByText(/Fehler bei der Anfrage/)).toHaveCount(0);
 });
+
+test('a capped scanned curriculum PDF says how many pages were read', async ({ page }) => {
+  await setUpApp(page);
+  await page.route('**/api/v1/download-url', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ saved: ['/tmp/x.pdf'], filename: 'Lehrplan.pdf' }),
+  }));
+  await page.route('**/api/v1/ingest', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, chunks: 40, words: 9000, totalPages: 180, ocrPages: 50, ocrTruncated: true }),
+  }));
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Gespeicherter Chat')).toBeVisible();
+  await page.keyboard.press('Control+,');
+  await page.getByText('Wissensdatenbank (Lehrpläne)').click();
+  const urlInput = page.getByPlaceholder('https://…/lehrplan.pdf').first();
+  await urlInput.fill('https://example.org/lehrplan.pdf');
+  await urlInput.press('Enter');
+  await page.keyboard.press('Control+,');
+
+  await expect(page.getByText(/nur die ersten 50 von 180 Seiten eingelesen/)).toBeVisible();
+});

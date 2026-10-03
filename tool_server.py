@@ -40,7 +40,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
 from teacherassist_core.documents import download_pdf as secure_download_pdf
-from teacherassist_core.documents import extract_pdf_text as secure_extract_pdf_text
+from teacherassist_core.documents import read_pdf_text
 from teacherassist_core.ocr import (
     ApprovalNotReady,
     ApprovalRefused,
@@ -450,9 +450,6 @@ def get_collection():
 # ---------------------------------------------------------------------------
 # PDF-Hilfsfunktionen
 # ---------------------------------------------------------------------------
-def extract_pdf_text(path):
-    return secure_extract_pdf_text(Path(path))
-
 def chunk_text(text, max_chars=900, overlap=150):
     chunks, start = [], 0
     while start < len(text):
@@ -1506,9 +1503,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("NOT_FOUND", "Upload wurde nicht gefunden.", 404)
             return
         try:
-            text = extract_pdf_text(path_obj)
+            pdf = read_pdf_text(path_obj)
+            text = pdf.text
             if not text.strip():
-                self._error("PDF_TEXT_EMPTY", "Aus der PDF konnte kein Text extrahiert werden.", 422)
+                self._error(
+                    "PDF_TEXT_EMPTY",
+                    "Aus der PDF konnte kein Text gelesen werden. Gescannte PDFs brauchen die "
+                    "Texterkennung Tesseract (wird von install.bat installiert).",
+                    422,
+                )
                 return
             chunks = chunk_text(text)
             if not chunks:
@@ -1529,6 +1532,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
                 "classification": classification,
                 "chunks": len(chunks),
                 "words": len(text.split()),
+                "totalPages": pdf.total_pages,
+                "ocrPages": pdf.ocr_pages,
+                "ocrTruncated": pdf.ocr_truncated,
             })
         except Exception:
             logger.exception("Document ingestion failed")

@@ -328,6 +328,15 @@ function privacyReasonLabels(reasons) {
       : PRIVACY_REASON_LABELS[reason] || reason))];
 }
 
+/* ---------- Hinweis für gescannte PDFs (tool_server.py:_ingest) ---------- */
+// Die Texterkennung liest höchstens MAX_OCR_PAGES Seiten (documents.py).
+function ingestOcrNote(data) {
+  if (!data?.ocrPages) return '';
+  return data.ocrTruncated
+    ? `\n\n📷 Gescannte PDF: Per Texterkennung wurden nur die ersten ${data.ocrPages} von ${data.totalPages} Seiten eingelesen. Für den Rest bitte eine PDF mit Textebene verwenden (z. B. vom Bildungsserver).`
+    : `\n\n📷 Gescannte PDF: ${data.ocrPages} Seiten per Texterkennung eingelesen – Texterkennung kann Fehler enthalten.`;
+}
+
 /* ---------- LLM-Chat via Tool-Server (Proxy mit DSGVO-Filter + Skill-Router) ---------- */
 // `ocrJobIds` (Stufe 9): die OCR-Job-IDs, die der aktive Chat bisher referenziert
 // hat. Der Server (tool_server.py:_stream_chat_payload) prüft sie gegen
@@ -1103,7 +1112,7 @@ function App() {
       setRagDocCount(n => n + data.chunks);
       addMessage(activeChatId, {
         role: 'bot',
-        text: `✅ **${sourceName}** wurde eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen – ich finde automatisch den passenden Kontext.`,
+        text: `✅ **${sourceName}** wurde eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter${ingestOcrNote(data)}\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen – ich finde automatisch den passenden Kontext.`,
         ts: Date.now(),
       });
     } catch (err) {
@@ -1203,7 +1212,7 @@ function App() {
       setRagDocCount(n => n + data.chunks);
       addMessage(activeChatId, {
         role: 'bot',
-        text: `✅ **${dlData.filename}** heruntergeladen und eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen.`,
+        text: `✅ **${dlData.filename}** heruntergeladen und eingelesen!\n\n${data.chunks} Abschnitte · ca. ${(data.words || 0).toLocaleString('de-DE')} Wörter${ingestOcrNote(data)}\n\nDu kannst jetzt Fragen zu diesem Lehrplan stellen.`,
         ts: Date.now(),
       });
     } catch (err) {
