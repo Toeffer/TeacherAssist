@@ -1322,6 +1322,7 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
     if (!onTestModel) return 'Modelltest nicht verfügbar';
     if (toolStatus !== 'online') return 'Tool-Server offline';
     if (provider === 'openrouter' && !hasApiKey && !apiKey) return 'API-Key fehlt';
+    if (provider === 'ollama' && ollamaStatus === 'no_models') return 'Kein Ollama-Modell installiert';
     if (provider === 'ollama' && ollamaStatus !== 'online') return 'Ollama offline';
     if (provider === 'custom' && !customEndpoint.trim()) return 'Custom-Endpoint fehlt';
     if (!selectedModelName) return 'Modell fehlt';
@@ -1408,10 +1409,12 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
             <div style={{
               width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-              background: ollamaStatus === 'online' ? '#2a9d5c' : ollamaStatus === 'offline' ? 'var(--danger)' : 'var(--text-tertiary)',
+              background: ollamaStatus === 'online' ? '#2a9d5c' : ollamaStatus === 'no_models' ? '#d9a036' : ollamaStatus === 'offline' ? 'var(--danger)' : 'var(--text-tertiary)',
             }}></div>
             <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
-              {ollamaStatus === 'online' ? 'Ollama aktiv' : ollamaStatus === 'offline' ? 'Ollama nicht erreichbar' : 'Ollama wird geprüft…'}
+              {ollamaStatus === 'online' ? 'Ollama aktiv'
+                : ollamaStatus === 'no_models' ? 'Ollama läuft – noch kein Modell installiert'
+                : ollamaStatus === 'offline' ? 'Ollama nicht erreichbar' : 'Ollama wird geprüft…'}
             </div>
           </div>
           {ollamaStatus === 'offline' && (
@@ -1423,22 +1426,39 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
               <code style={{ fontFamily: 'monospace', fontSize: 12, display: 'inline-block', marginTop: 4 }}>ollama serve</code>
             </div>
           )}
+          {ollamaStatus === 'no_models' && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8, background: 'var(--bg)',
+              fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.65,
+            }}>
+              Ollama läuft, aber es ist noch kein Modell installiert. Lade das eingestellte Modell in der Eingabeaufforderung:<br />
+              <code style={{ fontFamily: 'monospace', fontSize: 12, display: 'inline-block', marginTop: 4 }}>ollama pull {ollamaModel || 'gemma3:4b'}</code>
+            </div>
+          )}
           {ollamaStatus === 'online' && (
             <>
               <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 8 }}>Installiertes Modell</div>
-              {ollamaModels.length > 0 ? (
-                <select value={ollamaModel} onChange={e => onOllamaModelChange(e.target.value)} style={{
-                  width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 12,
-                  border: '1.5px solid var(--border)', background: 'var(--surface-input)',
-                  color: 'var(--text-primary)', fontSize: 14, outline: 'none',
-                  fontFamily: 'inherit', cursor: 'pointer',
-                }}>
-                  {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              ) : (
-                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 12 }}>
-                  Kein Modell gefunden. Lade eines:<br />
-                  <code style={{ fontFamily: 'monospace', fontSize: 12 }}>ollama pull gemma4:e4b</code>
+              <select value={ollamaModel} onChange={e => onOllamaModelChange(e.target.value)} style={{
+                width: '100%', padding: '10px 14px', borderRadius: 10, marginBottom: 12,
+                border: '1.5px solid var(--border)', background: 'var(--surface-input)',
+                color: 'var(--text-primary)', fontSize: 14, outline: 'none',
+                fontFamily: 'inherit', cursor: 'pointer',
+              }}>
+                {/* Keep the configured model selectable even when it is not
+                    installed, so the select never silently shows another one. */}
+                {ollamaModel && !ollamaModels.some(m => m.name === ollamaModel) && (
+                  <option value={ollamaModel}>{ollamaModel} (nicht installiert)</option>
+                )}
+                {ollamaModels.map(m => (
+                  <option key={m.name} value={m.name}>
+                    {m.cloud ? `${m.name} (Cloud – nicht für Schülerdaten)` : m.name}
+                  </option>
+                ))}
+              </select>
+              {ollamaModel && !ollamaModels.some(m => m.name === ollamaModel) && (
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 12 }}>
+                  Das eingestellte Modell ist nicht installiert:{' '}
+                  <code style={{ fontFamily: 'monospace', fontSize: 12 }}>ollama pull {ollamaModel}</code>
                 </div>
               )}
             </>

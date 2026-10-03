@@ -88,3 +88,74 @@ test('tells the teacher to start the server when nothing answers', async ({ page
   await expect(page.getByText(/start\.bat/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Erneut versuchen' })).toBeVisible();
 });
+
+test('the header shows a saved OpenRouter key as online', async ({ page }) => {
+  // The key lives in the Credential Manager (hasApiKey); the header used to
+  // check only the transient input field and showed "API-Key fehlt".
+  await setUpApp(page);
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('Mila · Online')).toBeVisible();
+  await expect(page.getByText('⚠ API-Key fehlt')).toHaveCount(0);
+});
+
+test('Ollama running without a model asks for ollama pull, not ollama serve', async ({ page }) => {
+  // An Ollama-only teacher: with a stored OpenRouter key the app would
+  // (correctly) fall back to OpenRouter instead.
+  await setUpApp(page, {
+    settings: { provider: 'ollama', ollamaModel: 'gemma3:4b', hasApiKey: false },
+    status: { ollamaRunning: true, ollamaModels: [], credentials: { hasApiKey: false, hasCustomApiKey: false } },
+  });
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('⚠ Kein Ollama-Modell')).toBeVisible();
+  const input = page.getByPlaceholder('Nachricht eingeben…');
+  await input.fill('Ideen für einen Einstieg');
+  await input.press('Enter');
+
+  // The send path switches to the settings page and explains the fix there.
+  await expect(page.getByText('Ollama läuft – noch kein Modell installiert')).toBeVisible();
+  await expect(page.getByText('ollama pull gemma3:4b')).toBeVisible();
+  await expect(page.getByText('ollama serve')).toHaveCount(0);
+});
+
+test('the Ollama model picker lists installed models and flags cloud ones', async ({ page }) => {
+  await setUpApp(page, {
+    settings: { provider: 'ollama', ollamaModel: 'llama3.2:3b' },
+    status: {
+      capabilities: { ollama: true },
+      ollamaRunning: true,
+      ollamaModels: [
+        { name: 'gemma3:4b', cloud: false },
+        { name: 'gpt-oss:120b-cloud', cloud: true },
+      ],
+    },
+  });
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Gespeicherter Chat')).toBeVisible();
+  await page.keyboard.press('Control+,');
+
+  // The list used to stay empty ("Kein Modell gefunden") even with models installed.
+  const picker = page.locator('select').filter({ has: page.locator('option', { hasText: 'gemma3:4b' }) });
+  await expect(picker.locator('option')).toHaveText([
+    'llama3.2:3b (nicht installiert)',
+    'gemma3:4b',
+    'gpt-oss:120b-cloud (Cloud – nicht für Schülerdaten)',
+  ]);
+  await expect(picker).toHaveValue('llama3.2:3b');
+  await expect(page.getByText('ollama pull llama3.2:3b')).toBeVisible();
+  await expect(page.getByText('Kein Modell gefunden')).toHaveCount(0);
+});
+
+test('with a stored OpenRouter key, a model-less Ollama falls back and says why', async ({ page }) => {
+  await setUpApp(page, {
+    settings: { provider: 'ollama', ollamaModel: 'gemma3:4b' },
+    status: { ollamaRunning: true, ollamaModels: [] },
+  });
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('⚠ Kein Ollama-Modell · ☁️ OpenRouter Fallback')).toBeVisible();
+});

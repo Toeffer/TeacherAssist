@@ -3,7 +3,7 @@
 
 export const CHAT_ID = '11111111-1111-4111-8111-111111111111';
 
-export function bootstrapPayload({ messages = [] } = {}) {
+export function bootstrapPayload({ messages = [], settings = {} } = {}) {
   return {
     csrfToken: 'browser-test-csrf',
     settings: {
@@ -14,6 +14,7 @@ export function bootstrapPayload({ messages = [] } = {}) {
       customModel: 'gpt-3.5-turbo',
       hasApiKey: true,
       hasCustomApiKey: false,
+      ...settings,
     },
     state: {
       stateRevision: 7,
@@ -23,18 +24,21 @@ export function bootstrapPayload({ messages = [] } = {}) {
   };
 }
 
-export async function setUpApp(page, { messages = [] } = {}) {
+export async function setUpApp(page, { messages = [], settings = {}, status = {} } = {}) {
   const stateWrites = [];
   await page.addInitScript(() => localStorage.setItem('ta_onboarded', 'true'));
   await page.route('**/api/v1/bootstrap', route => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(bootstrapPayload({ messages })),
+    body: JSON.stringify(bootstrapPayload({ messages, settings })),
   }));
   await page.route('**/api/v1/status', route => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
       capabilities: { ollama: false },
       credentials: { hasApiKey: true, hasCustomApiKey: false },
+      ollamaRunning: false,
+      ollamaModels: [],
+      ...status,
     }),
   }));
   await page.route('**/api/v1/collections', route => route.fulfill({

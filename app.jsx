@@ -459,12 +459,6 @@ function App() {
   const [stateRevision, setStateRevision] = useState(bootState.stateRevision);
   const [stateSaveError, setStateSaveError] = useState(null);
   const [stateConflict, setStateConflict] = useState(null);
-  /*
-    // ocrJobIds (Stufe 9): pro Chat, damit sie beim Chat-Wechsel nicht
-    // vermischt werden; ältere persistierte Chats ohne dieses Feld
-    // bekommen hier defensiv eine leere Liste.
-    return initial.map(c => ({ ocrJobIds: [], ...c }));
-  */
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [streamingText, setStreamingText] = useState('');
@@ -507,7 +501,7 @@ function App() {
 
   const effectiveProvider = useMemo(() => {
     if (provider === 'openrouter' && openrouterStatus === 'offline' && ollamaStatus === 'online') return 'ollama';
-    if (provider === 'ollama' && ollamaStatus === 'offline' && (hasApiKey || apiKey) && openrouterStatus === 'online') return 'openrouter';
+    if (provider === 'ollama' && (ollamaStatus === 'offline' || ollamaStatus === 'no_models') && (hasApiKey || apiKey) && openrouterStatus === 'online') return 'openrouter';
     return provider;
   }, [provider, openrouterStatus, ollamaStatus, hasApiKey, apiKey]);
   const isFallbackActive = effectiveProvider !== provider;
@@ -620,7 +614,10 @@ function App() {
         setToolStatus('online');
         setHasApiKey(Boolean(status.credentials?.hasApiKey));
         setHasCustomApiKey(Boolean(status.credentials?.hasCustomApiKey));
-        setOllamaStatus(status.capabilities?.ollama ? 'online' : 'offline');
+        // 'no_models': Ollama answers but has nothing installed yet -- the
+        // teacher needs "ollama pull", not "ollama serve".
+        setOllamaStatus(status.capabilities?.ollama ? 'online' : status.ollamaRunning ? 'no_models' : 'offline');
+        setOllamaModels(Array.isArray(status.ollamaModels) ? status.ollamaModels : []);
         setOpenrouterStatus(status.credentials?.hasApiKey ? 'online' : 'unknown');
         const col = await taFetch('/api/v1/collections').then(r => r.json()).catch(() => ({}));
         if (!cancelled) setRagDocCount(col.chunks || 0);
@@ -747,7 +744,7 @@ function App() {
         if (faqAnswer) {
           addBotMessage(faqAnswer, 700);
           setTimeout(() => addBotMessage(`Zurück zur Einrichtung:\n${step.bot}`, 1500), 1800);
-        } else if (provider === 'ollama' ? ollamaStatus === 'online' : !!apiKey) {
+        } else if (provider === 'ollama' ? ollamaStatus === 'online' : (hasApiKey || !!apiKey)) {
           setIsTyping(true);
           let answer = '';
           try {
@@ -927,7 +924,9 @@ function App() {
       setTimeout(() => {
         addMessage(activeChatId, {
           role: 'bot',
-          text: '⚠️ Ollama ist nicht erreichbar.\n\nStelle sicher, dass Ollama läuft – suche das Ollama-Symbol in der Taskleiste oder starte in der Eingabeaufforderung:\n`ollama serve`',
+          text: ollamaStatus === 'no_models'
+            ? `⚠️ Ollama läuft, aber es ist noch kein Modell installiert.\n\nLade das eingestellte Modell in der Eingabeaufforderung:\n\`ollama pull ${ollamaModel || 'gemma3:4b'}\``
+            : '⚠️ Ollama ist nicht erreichbar.\n\nStelle sicher, dass Ollama läuft – suche das Ollama-Symbol in der Taskleiste oder starte in der Eingabeaufforderung:\n`ollama serve`',
           ts: Date.now(),
         });
         setCurrentView('settings');
@@ -1008,7 +1007,7 @@ function App() {
     if (!aborted) {
       addMessage(activeChatId, { role: 'bot', text: fullText || '(Keine Antwort erhalten)', ts: Date.now() });
     }
-  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
+  }, [inputValue, activeChatId, chats, onboardingDone, onboardingStep, profile, apiKey, hasApiKey, model, isStreaming, isTyping, toolStatus, ragDocCount, addMessage, addBotMessage, provider, ollamaModel, ollamaStatus, openrouterStatus, effectiveProvider, customEndpoint, customApiKey, customModel]);
 
   const handleFileUpload = useCallback(async (file, track) => {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
@@ -1424,19 +1423,21 @@ function App() {
           <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', lineHeight: 1.2 }}>{profile.assistant_name || 'Mila'}</div>
           {(() => {
             const namePrefix = (profile.assistant_name || 'Mila');
-            const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : provider === 'custom' ? !!customEndpoint : !!apiKey);
+            // The key lives in the Credential Manager (hasApiKey); apiKey is only
+            // the not-yet-saved input and is cleared after saving.
+            const isActive = isFallbackActive || (provider === 'ollama' ? ollamaStatus === 'online' : provider === 'custom' ? !!customEndpoint : (hasApiKey || !!apiKey));
             const label = isStreaming ? namePrefix + ' · antwortet…' : isTyping ? namePrefix + ' · schreibt…'
               : isDsgvoRouting
                 ? '🔒 Lokales Modell (DSGVO)'
                 : isFallbackActive
                   ? (provider === 'openrouter'
                       ? '⚠ OpenRouter offline · 🔒 Ollama Fallback'
-                      : '⚠ Ollama offline · ☁️ OpenRouter Fallback')
+                      : (ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline') + ' · ☁️ OpenRouter Fallback')
                   : provider === 'ollama'
-                    ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : '⚠ Ollama offline'
+                    ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline'
                     : provider === 'custom'
                       ? customEndpoint ? namePrefix + ' · Eigener Dienst' : '⚠ Custom-Endpoint fehlt'
-                    : apiKey ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
+                    : (hasApiKey || apiKey) ? namePrefix + ' · Online' : '⚠ API-Key fehlt';
             const dsgvoColor = '#d97706';
             const color = isDsgvoRouting ? dsgvoColor
               : isStreaming || isTyping ? 'var(--text-tertiary)'
