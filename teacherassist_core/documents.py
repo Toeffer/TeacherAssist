@@ -146,7 +146,7 @@ def download_pdf(
         with os.fdopen(fd, "wb") as target, active_opener.open(request, timeout=30) as response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             if content_type not in {"application/pdf", "application/octet-stream"}:
-                raise ValueError("Remote resource is not a PDF")
+                raise ValueError("Unter der Adresse liegt keine PDF-Datei.")
             while True:
                 chunk = response.read(64 * 1024)
                 if not chunk:
@@ -155,12 +155,12 @@ def download_pdf(
                     first = chunk[:8]
                 total += len(chunk)
                 if total > MAX_REMOTE_PDF_BYTES:
-                    raise ValueError("Remote PDF exceeds 50 MB")
+                    raise ValueError("Die PDF ist größer als 50 MB.")
                 target.write(chunk)
             target.flush()
             os.fsync(target.fileno())
         if not first.startswith(b"%PDF"):
-            raise ValueError("Remote resource has no PDF signature")
+            raise ValueError("Die heruntergeladene Datei ist keine gültige PDF.")
         destination = destination_dir / f"document-{os.urandom(12).hex()}.pdf"
         os.replace(temp_name, destination)
         return destination

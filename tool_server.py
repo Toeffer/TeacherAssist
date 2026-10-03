@@ -42,17 +42,20 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import unicodedata
+import urllib.error
 import urllib.request
 import uuid
 import zipfile
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, quote, unquote
 
 from teacherassist_core.documents import download_pdf as secure_download_pdf
 from teacherassist_core.documents import extract_pdf_text as secure_extract_pdf_text
@@ -138,6 +141,10 @@ OCR_JOB_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})$")
 OCR_PAGE_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/pages/(\d{1,4})$")
 OCR_REGION_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/regions/([A-Za-z0-9_-]{1,64})$")
 OCR_APPROVE_RE = re.compile(r"^/api/v1/ocr/jobs/([A-Za-z0-9_-]{1,64})/approve$")
+# Model names reach "ollama pull" as a subprocess argument and HF downloads as
+# a repo id. The first character must not be "-" or ".": "-x" would be parsed
+# as a command-line option, "../x" is a path rather than a model name.
+MODEL_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,99}")
 
 logger = logging.getLogger("tool_server")
 if not logger.handlers:
@@ -218,12 +225,47 @@ def memory_zip_destination(name):
         raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
     return dest, "memory/" + rel
 
+def memory_markdown_path(file_path):
+    """Resolve a client-supplied memory path for the memory editor endpoints.
+
+    Returns None unless it names a .md file inside MEMORY_DIR outside the
+    encrypted student vault (memory/students/, also excluded from backups)."""
+    if not isinstance(file_path, str):
+        return None
+    file_path = file_path.strip()
+    if not file_path.endswith(".md"):
+        return None
+    root = MEMORY_DIR.resolve()
+    target = (root / file_path).resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError:
+        return None
+    # casefold: Windows paths are case-insensitive, "Students" is the vault too.
+    if relative.parts and relative.parts[0].casefold() == "students":
+        return None
+    return target
+
 def safe_export_name(title, fmt):
     base = (title or "teacherassist-export").strip().lower()
     base = re.sub(r"[^\wäöüÄÖÜß-]+", "_", base, flags=re.I)
     base = re.sub(r"_+", "_", base).strip("_")[:60] or "teacherassist-export"
     stamp = time.strftime("%Y%m%d_%H%M%S")
     return f"{stamp}_{base}.{fmt}"
+
+def content_disposition(filename):
+    """Attachment header that survives any Unicode filename.
+
+    http.server encodes headers as Latin-1, so a Greek or Japanese export
+    title used to raise inside send_header() after the 200 status line had
+    gone out. Browsers prefer the RFC 6266 filename* form; the plain
+    filename is an ASCII fallback."""
+    fallback = filename
+    for umlaut, replacement in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue"), ("ß", "ss")):
+        fallback = fallback.replace(umlaut, replacement)
+    fallback = unicodedata.normalize("NFKD", fallback).encode("ascii", "ignore").decode("ascii")
+    fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", fallback).strip("_") or "teacherassist-export"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 def markdown_to_export_html(content, title="TeacherAssist Export"):
     text = html.escape(content or "")
@@ -282,6 +324,10 @@ STATIC_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
     ".ico": "image/x-icon",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
     ".md": "text/markdown; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
 }
@@ -564,7 +610,9 @@ def check_ollama():
             return _ollama_online
     online = False
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        # 127.0.0.1 like every other Ollama call here: on Windows "localhost"
+        # resolves to ::1 first, while Ollama only listens on IPv4 by default.
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read())
             online = bool(data.get("models"))
@@ -599,6 +647,62 @@ def route_model(skill_name: str, user_preferred_model: str) -> str:
 # ---------------------------------------------------------------------------
 # LLM-Call (Streaming) – serverseitiger Proxy
 # ---------------------------------------------------------------------------
+class ProviderStreamError(RuntimeError):
+    """The provider reported an error inside an otherwise successful stream."""
+
+
+def provider_error_message(exc, provider, model="", default="Der Modellaufruf ist fehlgeschlagen."):
+    """Translate a failed provider call into an actionable German message.
+
+    HTTP error bodies stay in the server log. A mid-stream error message is
+    passed through (truncated) because it is the provider's only explanation."""
+    label = {"ollama": "Ollama", "custom": "Der Custom-Endpoint"}.get(provider, "OpenRouter")
+    if isinstance(exc, ProviderStreamError):
+        detail = str(exc).strip()
+        return f"{label} hat die Antwort mit einem Fehler abgebrochen" + (f": {detail}" if detail else ".")
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        if code in (401, 403):
+            return f"{label} hat den API-Key abgelehnt. Bitte den Schlüssel in den Einstellungen prüfen."
+        if code == 402:
+            return f"Das Guthaben bei {label} ist aufgebraucht. Bitte beim Anbieter aufladen."
+        if code == 404:
+            return f"Das Modell „{model}“ wurde bei {label} nicht gefunden. Bitte den Modellnamen in den Einstellungen prüfen."
+        if code == 429:
+            return f"{label} meldet zu viele Anfragen. Bitte kurz warten und erneut versuchen."
+        if code in (408, 504):
+            return f"{label} hat nicht rechtzeitig geantwortet. Bitte erneut versuchen."
+        if 400 <= code < 500:
+            return f"{label} hat die Anfrage abgelehnt (HTTP {code}). Bitte Modell und Einstellungen prüfen."
+        return f"{label} ist gerade gestört (HTTP {code}). Bitte später erneut versuchen."
+    if isinstance(exc, (TimeoutError, socket.timeout)) or isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)):
+        return f"{label} hat nicht rechtzeitig geantwortet. Bitte erneut versuchen."
+    if isinstance(exc, urllib.error.URLError):
+        if provider == "ollama":
+            return "Ollama ist nicht erreichbar. Bitte prüfen, ob Ollama läuft."
+        return f"{label} ist nicht erreichbar. Bitte Internetverbindung bzw. Endpoint prüfen."
+    return default
+
+
+def _stream_delta_text(parsed):
+    """Content of one OpenAI-style stream chunk, tolerating chunks without
+    choices (OpenRouter's trailing usage chunk, Azure's prompt-filter chunk)."""
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    delta = choices[0].get("delta")
+    content = delta.get("content") if isinstance(delta, dict) else None
+    return content if isinstance(content, str) else ""
+
+
+def _stream_error_detail(parsed):
+    error = parsed.get("error")
+    if not error:
+        return None
+    message = error.get("message") if isinstance(error, dict) else error
+    return str(message or "")[:200]
+
+
 def stream_llm(
     messages,
     profile,
@@ -739,9 +843,10 @@ def stream_llm(
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
                     line = line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data: "):
+                    # The SSE spec makes the space after "data:" optional.
+                    if not line.startswith("data:"):
                         continue
-                    raw = line[6:].strip()
+                    raw = line[5:].strip()
                     if raw == "[DONE]":
                         _send_sse(wfile, {"type": "done"})
                         done_sent = True
@@ -750,15 +855,24 @@ def stream_llm(
                         parsed = json.loads(raw)
                     except ValueError:
                         continue
-                    content = parsed.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if not isinstance(parsed, dict):
+                        continue
+                    error_detail = _stream_error_detail(parsed)
+                    if error_detail is not None:
+                        raise ProviderStreamError(error_detail)
+                    content = _stream_delta_text(parsed)
                     if content:
                         full_text.append(content)
                         _send_sse(wfile, {"type": "chunk", "text": content})
                     if parsed.get("usage"):
                         _send_sse(wfile, {"type": "usage", "usage": parsed["usage"]})
-    except Exception:
+    except Exception as exc:
         logger.exception("Provider request failed provider=%s", effective_provider)
-        _send_sse(wfile, {"type": "error", "code": "PROVIDER_ERROR", "message": "Der Modellaufruf ist fehlgeschlagen."})
+        _send_sse(wfile, {
+            "type": "error",
+            "code": "PROVIDER_ERROR",
+            "message": provider_error_message(exc, effective_provider, body.get("model", "")),
+        })
     finally:
         if not done_sent:
             _send_sse(wfile, {"type": "done"})
@@ -821,6 +935,11 @@ def _stream_ollama_pull(wfile, model):
 # ---------------------------------------------------------------------------
 class RequestTooLarge(ValueError):
     pass
+
+
+# Returned by ToolHandler._storage_error() after it has already sent an error
+# response, so callers can tell that apart from a legitimate None result.
+STORAGE_FAILED = object()
 
 
 class ToolHandler(http.server.BaseHTTPRequestHandler):
@@ -911,6 +1030,33 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _dist_asset(self, relative):
+        """Serve a hashed Vite build asset from web_dist/assets/ only.
+
+        Unlike _static() there is deliberately no repo-root fallback: with
+        one, a raw request for /assets/../tool_server.py (browsers normalise
+        dot segments, raw HTTP clients do not) resolved inside BASE_DIR and
+        served any file in the checkout, including a legacy settings.json."""
+        assets_root = (BASE_DIR / "web_dist" / "assets").resolve()
+        path = (assets_root / relative).resolve()
+        try:
+            path.relative_to(assets_root)
+        except ValueError:
+            self.send_error(404)
+            return
+        if not path.is_file():
+            self.send_error(404)
+            return
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        # Vite puts a content hash in every asset filename, so a changed file
+        # always gets a new URL and the old one can be cached indefinitely.
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         route = parsed.path
@@ -919,7 +1065,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         if route in STATIC_FILES:
             self._static(STATIC_FILES[route])
         elif route.startswith("/assets/"):
-            self._static(route.lstrip("/"))
+            self._dist_asset(route[len("/assets/"):])
         elif route == "/api/v1/health":
             self._json({"status": "ok", "version": "2.0"})
         elif route == "/api/v1/bootstrap":
@@ -1183,6 +1329,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         )
 
     def _storage_error(self, action):
+        """Run a state-store action; on failure send the error response and
+        return STORAGE_FAILED. Callers must compare against that sentinel,
+        not against None: get_chat() legitimately returns None for an
+        unknown chat, and that case still needs its own 404 response."""
         try:
             return action()
         except StateConflict as exc:
@@ -1199,7 +1349,9 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except RuntimeError:
             logger.exception("Encrypted state operation failed")
             self._error("PERSISTENCE_ERROR", "Verschlüsselte Speicherung ist fehlgeschlagen.", 500)
-        return None
+        except ValueError:
+            self._error("INVALID_STATE", "Ungültige Daten.", 400)
+        return STORAGE_FAILED
 
     def _replace_state(self):
         try:
@@ -1211,7 +1363,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data.get("profile", {}), data.get("chats", []),
             expected_revision=data.get("expectedRevision"),
         ))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"state": result})
 
     def _import_browser_state(self):
@@ -1224,12 +1376,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data.get("profile", {}), data.get("chats", []),
             expected_revision=data.get("expectedRevision"),
         ))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json(result)
 
     def _list_chats(self):
         result = self._storage_error(STATE_STORE.list_chats)
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"chats": result})
 
     def _create_chat(self):
@@ -1237,19 +1389,27 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             data = self._read_json()
         except ValueError:
             data = {}
-        result = self._storage_error(lambda: STATE_STORE.create_chat(data.get("title", "Neuer Chat"), data.get("messages")))
-        if result is not None:
+        title = data.get("title")
+        messages = data.get("messages")
+        result = self._storage_error(lambda: STATE_STORE.create_chat(
+            title if isinstance(title, str) else "Neuer Chat",
+            messages if isinstance(messages, list) else None,
+        ))
+        if result is not STORAGE_FAILED:
             self._json(result, 201)
 
     def _get_chat(self, chat_id):
         result = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
-        if result is None:
+        if result is STORAGE_FAILED:
             return
-        self._json(result) if result else self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+        if result is None:
+            self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+            return
+        self._json(result)
 
     def _delete_chat(self, chat_id):
         result = self._storage_error(lambda: STATE_STORE.delete_chat(chat_id))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"success": bool(result)})
 
     def _chat_message(self, chat_id):
@@ -1259,9 +1419,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("INVALID_REQUEST", "Ungültige Chat-Anfrage.", 400)
             return
         chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
-        if not chat:
-            if chat is not None:
-                self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+        if chat is STORAGE_FAILED:
+            return
+        if chat is None:
+            self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
             return
         content = data.get("content", "")
         if not isinstance(content, str) or not content.strip():
@@ -1287,15 +1448,21 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         )
         if decision.local_required:
             chat["privacyMode"] = "local_required"
-        self._storage_error(lambda: STATE_STORE.save_chat(chat))
+        if self._storage_error(lambda: STATE_STORE.save_chat(chat)) is STORAGE_FAILED:
+            return
         answer = self._stream_chat_payload({**payload, "profile": STATE_STORE.get_profile()}, chat)
         if answer:
             chat["messages"].append({"role": "bot", "text": answer, "ts": int(time.time() * 1000)})
-            self._storage_error(lambda: STATE_STORE.save_chat(chat))
+            # The SSE response is already complete, so a failure here can no
+            # longer become an HTTP error response; log it instead.
+            try:
+                STATE_STORE.save_chat(chat)
+            except Exception:
+                logger.exception("Saving the assistant answer failed chat=%s", chat.get("id"))
 
     def _get_profile(self):
         result = self._storage_error(STATE_STORE.get_profile)
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"profile": result})
 
     def _set_profile(self):
@@ -1306,17 +1473,21 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             self._error("INVALID_JSON", "Ungültiges Profil.", 400)
             return
         result = self._storage_error(lambda: STATE_STORE.set_profile(profile))
-        if result is not None:
+        if result is not STORAGE_FAILED:
             self._json({"profile": result})
 
     def _chat_summary(self, chat_id):
         chat = self._storage_error(lambda: STATE_STORE.get_chat(chat_id))
-        if chat:
-            self._summarize_messages(
-                chat.get("messages", []),
-                chat.get("privacyMode", "auto"),
-                {"ocrJobIds": chat.get("ocrJobIds", []), "profile": STATE_STORE.get_profile()},
-            )
+        if chat is STORAGE_FAILED:
+            return
+        if chat is None:
+            self._error("NOT_FOUND", "Chat nicht gefunden.", 404)
+            return
+        self._summarize_messages(
+            chat.get("messages", []),
+            chat.get("privacyMode", "auto"),
+            {"ocrJobIds": chat.get("ocrJobIds", []), "profile": STATE_STORE.get_profile()},
+        )
 
     # ---- Bestehende Endpunkte (unverändert) ---------------------------------
     def _upload(self):
@@ -1490,7 +1661,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Content-Disposition", content_disposition(path.name))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1757,10 +1929,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
-        content = data.get("content", "").strip()
-        fach    = data.get("fach", "").strip()
-        klasse  = data.get("klasse", "").strip()
-        thema   = data.get("thema", "").strip()
+        content, fach, klasse, thema = (
+            value.strip() if isinstance(value, str) else ""
+            for value in (data.get(key) for key in ("content", "fach", "klasse", "thema"))
+        )
         if not (fach and klasse and thema):
             self._json({"error": "fach, klasse und thema erforderlich"}, 400)
             return
@@ -1891,13 +2063,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _read_memory_file(self, file_path):
         try:
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
+            target = memory_markdown_path(file_path)
+            if target is None:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
-            if not target.exists():
+            if not target.is_file():
                 self._json({"error": "Datei nicht gefunden"}, 404)
                 return
             self._json({"content": target.read_text(encoding="utf-8"), "path": file_path})
@@ -1906,16 +2076,18 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _write_memory_file(self):
         try:
-            data = json.loads(self._body().decode("utf-8"))
-            file_path = data.get("path", "").strip()
+            data = self._read_json()
+            file_path = data.get("path", "")
             content   = data.get("content", "")
-            if not file_path.endswith(".md"):
+            if not isinstance(file_path, str) or not file_path.strip().endswith(".md"):
                 self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
                 return
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
+            if not isinstance(content, str):
+                self._json({"error": "Inhalt muss Text sein"}, 400)
+                return
+            file_path = file_path.strip()
+            target = memory_markdown_path(file_path)
+            if target is None:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1939,10 +2111,8 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _list_versions(self, file_path):
         import datetime
         try:
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
+            target = memory_markdown_path(file_path)
+            if target is None:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             versions = []
@@ -1962,25 +2132,30 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
     def _restore_version(self):
         try:
-            data = json.loads(self._body().decode("utf-8"))
-            file_path = data.get("path", "").strip()
-            version = int(data.get("version", 0))
-            if not file_path.endswith(".md") or version not in (1, 2, 3):
+            data = self._read_json()
+            file_path = data.get("path", "")
+            try:
+                version = int(data.get("version", 0))
+            except (TypeError, ValueError):
+                version = 0
+            if not isinstance(file_path, str) or not file_path.strip().endswith(".md") or version not in (1, 2, 3):
                 self._json({"error": "Ungültige Anfrage"}, 400)
                 return
-            target = (MEMORY_DIR / file_path).resolve()
-            try:
-                target.relative_to(MEMORY_DIR.resolve())
-            except ValueError:
+            target = memory_markdown_path(file_path)
+            if target is None:
                 self._json({"error": "Zugriff verweigert"}, 403)
                 return
             bak = Path(str(target) + f'.bak{version}')
             if not bak.exists():
                 self._json({"error": "Version nicht gefunden"}, 404)
                 return
+            # Read before rotating: _rotate_backups() shifts .bak1 -> .bak2 ->
+            # .bak3, which overwrote the chosen version before it was copied
+            # (restoring version 1 silently restored the current content).
+            restored = bak.read_bytes()
             self._rotate_backups(target)
-            shutil.copy2(str(bak), str(target))
-            self._json({"success": True, "content": target.read_text(encoding="utf-8")})
+            target.write_bytes(restored)
+            self._json({"success": True, "content": restored.decode("utf-8")})
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
@@ -2075,15 +2250,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
     def _ollama_pull(self):
         """Lädt ein Ollama-Modell herunter und streamt den Fortschritt per SSE."""
         try:
-            data = json.loads(self._body().decode("utf-8"))
-        except Exception:
+            data = self._read_json()
+        except ValueError:
             self._json({"error": "Ungültiges JSON"}, 400)
             return
-        model = data.get("model", "").strip()
+        model = str(data.get("model") or "").strip()
         if not model:
             self._json({"error": "Kein Modellname angegeben"}, 400)
             return
-        if not re.match(r'^[a-zA-Z0-9_./:@-]{1,100}$', model):
+        if not MODEL_NAME_RE.fullmatch(model):
             self._json({"error": "Ungültiger Modellname"}, 400)
             return
 
@@ -2111,11 +2286,11 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         angestossen werden.
         """
         try:
-            data = json.loads(self._body().decode("utf-8"))
-        except Exception:
+            data = self._read_json()
+        except ValueError:
             self._json({"error": "Ungültiges JSON"}, 400)
             return
-        engine_name = (data.get("engine") or "").strip()
+        engine_name = str(data.get("engine") or "").strip()
         factory = ENGINE_FACTORIES.get(engine_name)
         if factory is None:
             self._json({"error": "Unbekannte OCR-Engine"}, 400)
@@ -2129,7 +2304,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # "ollama pull" -- ein Subprozessaufruf) -- daher dieselbe strenge
         # Pruefung wie bei _ollama_pull's Modellnamen, statt der
         # Konfiguration blind zu vertrauen.
-        if not re.match(r'^[a-zA-Z0-9_./:@-]{1,100}$', model_id):
+        if not MODEL_NAME_RE.fullmatch(model_id):
             self._json({"error": "Ungültige Modell-ID"}, 400)
             return
 
@@ -2263,16 +2438,23 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             + "\n".join(f"- {text}" for text in user_texts[-20:])
         )
         body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
+        summary_provider = "ollama" if decision.local_required else (settings.get("provider") or "openrouter")
         try:
             request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(request, timeout=60) as response:
                 result = json.loads(response.read())
-            summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            choices = result.get("choices") if isinstance(result, dict) else None
+            first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            message = first.get("message") if isinstance(first.get("message"), dict) else {}
+            summary = str(message.get("content") or "").strip()
             if not summary:
                 raise ValueError("empty summary")
-        except Exception:
+        except Exception as exc:
             logger.exception("Session summary provider request failed")
-            self._error("SUMMARY_FAILED", "Zusammenfassung konnte nicht erstellt werden.", 502)
+            reason = provider_error_message(
+                exc, summary_provider, model, default="Zusammenfassung konnte nicht erstellt werden."
+            )
+            self._error("SUMMARY_FAILED", reason, 502)
             return
         timestamp = time.strftime("%d.%m.%Y %H:%M")
         target = MEMORY_DIR / "vergangene_stunden.md"
