@@ -46,6 +46,38 @@ jobs:
         run: python -m pytest -q -rs
         env:
           TEACHERASSIST_DATA_DIR: ${{ runner.temp }}/teacherassist-data
+      - name: Smoke-test start.bat on a non-default port
+        # Runs the real launcher: venv check, health probe, server start and
+        # wait loop. The venv reuses the packages installed above.
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          NOBROWSER: "1"
+          TEACHERASSIST_PORT: "8790"
+          TEACHERASSIST_DATA_DIR: ${{ runner.temp }}\teacherassist-smoke
+        run: |
+          python -m venv --system-site-packages tools\.venv
+          call start.bat < NUL
+          if errorlevel 1 exit /b 1
+          powershell -NoProfile -Command "$r = Invoke-WebRequest -Uri 'http://localhost:8790/' -UseBasicParsing; if ($r.Content -notmatch 'TeacherAssist') { exit 1 }"
+      - name: start.bat leaves a foreign program on its port alone
+        # A non-Python program holds the port: start.bat must not kill it, and
+        # the server must refuse the busy port instead of sharing it.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NOBROWSER: "1"
+          TEACHERASSIST_PORT: "8791"
+          TEACHERASSIST_DATA_DIR: ${{ runner.temp }}\teacherassist-foreign
+        run: |
+          $listener = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '$l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8791); $l.Start(); Start-Sleep -Seconds 900'
+          Start-Sleep -Seconds 5
+          cmd /c "start.bat < NUL"
+          $code = $LASTEXITCODE
+          if ($listener.HasExited) { throw 'start.bat killed a program that is not TeacherAssist' }
+          if ($code -eq 0) { throw 'start.bat reported success although the port is taken' }
+          Write-Host "start.bat failed as expected (exit $code); the foreign listener is still running."
+          Stop-Process -Id $listener.Id -Force
 
   frontend:
     name: lint, build, browser tests

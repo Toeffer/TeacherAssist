@@ -1531,12 +1531,6 @@ function SettingsView({ dark, onToggleDark, apiKey, hasApiKey = false, onApiKeyC
           <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 3, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span>OpenRouter API-Key</span>
             {!hasApiKey && !apiKey && <span style={{ color: 'var(--accent)', fontWeight: 400, fontSize: 13 }}>– Pflichtfeld</span>}
-            {openrouterStatus === 'offline' && (
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }}></span>
-                nicht erreichbar
-              </span>
-            )}
             {openrouterStatus === 'online' && (hasApiKey || apiKey) && (
               <span style={{ marginLeft: 'auto', fontSize: 12, color: '#2a9d5c', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#2a9d5c', display: 'inline-block' }}></span>

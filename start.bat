@@ -7,6 +7,12 @@ echo.
 echo  Starte TeacherAssist...
 echo.
 
+:: Port wie in tool_server.py (TEACHERASSIST_PORT, Standard 8789).
+if not defined TEACHERASSIST_PORT set "TEACHERASSIST_PORT=8789"
+:: Das Server-Log liegt im Laufzeit-Datenverzeichnis, nicht im Programmordner.
+set "LOG_FILE=%LOCALAPPDATA%\TeacherAssist\logs\tool_server.log"
+if defined TEACHERASSIST_DATA_DIR set "LOG_FILE=%TEACHERASSIST_DATA_DIR%\logs\tool_server.log"
+
 :: Python AUSSCHLIESSLICH aus venv (von install.bat angelegt).
 :: Kein System-Python-Fallback, weil dort die Abhaengigkeiten fehlen
 :: und der Server beim ersten Request haengen bleibt (Port belegt, /health Timeout).
@@ -30,24 +36,27 @@ if not exist "%~dp0index.html" (
 
 :: HTTP /health pruefen (nicht nur TCP) - TCP allein erkennt Zombie-Prozesse nicht.
 echo  Pruefe Tool-Server...
-powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:%TEACHERASSIST_PORT%/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
     echo  Tool-Server laeuft bereits.
     goto open_browser
 )
 
-:: /health antwortet nicht. Falls jemand auf Port 8789 lauscht: haengender Prozess, beenden.
-powershell -NoProfile -Command "$c = Get-NetTCPConnection -LocalPort 8789 -State Listen -ErrorAction SilentlyContinue; if ($c) { foreach ($x in $c) { Write-Host '  Beende haengende Instanz PID' $x.OwningProcess; Stop-Process -Id $x.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800 }"
+:: /health antwortet nicht. Lauscht trotzdem ein Python-Prozess auf dem Port, ist
+:: es eine haengende TeacherAssist-Instanz: beenden. Andere Programme bleiben
+:: unangetastet - dann stattdessen TEACHERASSIST_PORT auf einen freien Port setzen.
+powershell -NoProfile -Command "$c = Get-NetTCPConnection -LocalPort %TEACHERASSIST_PORT% -State Listen -ErrorAction SilentlyContinue; foreach ($x in $c) { $p = Get-Process -Id $x.OwningProcess -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -match '^pythonw?$') { Write-Host '  Beende haengende Instanz PID' $x.OwningProcess; Stop-Process -Id $x.OwningProcess -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 800 } elseif ($p) { Write-Host ('  Port %TEACHERASSIST_PORT% ist von ' + $p.ProcessName + ' belegt. Bitte TEACHERASSIST_PORT auf einen freien Port setzen.') } }"
 
 echo  Starte Tool-Server...
 start "TeacherAssist Tool" /min "%PYTHON%" "%~dp0tool_server.py"
 
 :: Auf /health warten - HTTP, nicht TCP. ChromaDB/Torch-Import dauert beim ersten Start.
+:: Start-Sleep statt "timeout": timeout bricht ohne interaktive Konsole sofort
+:: ab (z. B. in der CI), dann liefe die Schleife ohne zu warten durch.
 echo  Warte auf Tool-Server...
 set "TOOL_OK="
 for /l %%I in (1,1,30) do (
-    timeout /t 1 /nobreak >nul
-    powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8789/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+    powershell -NoProfile -Command "Start-Sleep -Seconds 1; try { $r = Invoke-WebRequest -Uri 'http://localhost:%TEACHERASSIST_PORT%/api/v1/health' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
     if not errorlevel 1 (
         set "TOOL_OK=1"
         goto tool_ready
@@ -55,21 +64,22 @@ for /l %%I in (1,1,30) do (
 )
 
 :tool_ready
-if not defined TOOL_OK (
-    echo.
-    echo  PROBLEM: Tool-Server antwortet nicht auf http://localhost:8789/api/v1/health
-    echo  Log pruefen: %~dp0logs\tool_server.log
-    echo.
-    pause
-    exit /b 1
-)
+:: Bewusst ohne ( ... )-Block: Pfade wie %LOG_FILE% werden in Bloecken schon
+:: beim Einlesen eingesetzt, und eine ")" im Benutzernamen beendete den Block.
+if defined TOOL_OK goto open_browser
+echo.
+echo  PROBLEM: Tool-Server antwortet nicht auf http://localhost:%TEACHERASSIST_PORT%/api/v1/health
+echo  Log pruefen: %LOG_FILE%
+echo.
+pause
+exit /b 1
 
 :open_browser
 if defined NOBROWSER (
     echo  Tool-Server bereit ^(Browser nicht geoeffnet wegen NOBROWSER=%NOBROWSER%^).
 ) else (
     echo  Oeffne Browser...
-    start "" "http://localhost:8789/"
+    start "" "http://localhost:%TEACHERASSIST_PORT%/"
 )
 
 echo.

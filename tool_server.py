@@ -185,6 +185,20 @@ def referenced_ocr_classifications(data, jobs):
         jobs[job_id].classification if job_id in jobs else "unknown" for job_id in job_ids
     ]
 
+DEFAULT_PORT = 8789
+
+
+def server_port(environ=os.environ):
+    """Port from TEACHERASSIST_PORT (start.bat reads the same variable), so a
+    machine where 8789 is taken can still run TeacherAssist."""
+    raw = (environ.get("TEACHERASSIST_PORT") or "").strip()
+    if not raw:
+        return DEFAULT_PORT
+    if not raw.isdigit() or not 1024 <= int(raw) <= 65535:
+        raise ValueError(f"TEACHERASSIST_PORT muss eine Zahl zwischen 1024 und 65535 sein, nicht {raw!r}.")
+    return int(raw)
+
+
 def requested_privacy_mode(data):
     """Explicit per-request privacy mode. Every route accepts both spellings:
     a route that read only one of them let an API client's "local_required"
@@ -1590,12 +1604,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
 
         fmt = (data.get("format") or "").strip().lower()
         if fmt not in {"md", "txt", "html"}:
-            self._json({"error": "Format muss md, txt oder html sein"}, 400)
+            self._error("INVALID_FORMAT", "Format muss md, txt oder html sein.", 400)
             return
 
         content = (data.get("content") or "").strip()
         if not content:
-            self._json({"error": "Kein Inhalt zum Exportieren"}, 400)
+            self._error("EMPTY_CONTENT", "Kein Inhalt zum Exportieren.", 400)
             return
 
         title = (data.get("title") or "TeacherAssist Export").strip()
@@ -1909,7 +1923,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
             for value in (data.get(key) for key in ("content", "fach", "klasse", "thema"))
         )
         if not (fach and klasse and thema):
-            self._json({"error": "fach, klasse und thema erforderlich"}, 400)
+            self._error("MISSING_FIELDS", "Fach, Klasse und Thema sind erforderlich.", 400)
             return
         slug = f"{fach}_{klasse}_{thema}".lower()
         slug = re.sub(r"[^\w]", "_", slug)
@@ -2040,10 +2054,10 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             target = memory_markdown_path(file_path)
             if target is None:
-                self._json({"error": "Zugriff verweigert"}, 403)
+                self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
                 return
             if not target.is_file():
-                self._json({"error": "Datei nicht gefunden"}, 404)
+                self._error("NOT_FOUND", "Datei nicht gefunden.", 404)
                 return
             self._json({"content": target.read_text(encoding="utf-8"), "path": file_path})
         except Exception:
@@ -2054,20 +2068,20 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             data = self._read_json()
         except ValueError:
-            self._json({"error": "Ungültige Anfrage"}, 400)
+            self._error("INVALID_REQUEST", "Ungültige Anfrage.", 400)
             return
         file_path = data.get("path", "")
         content   = data.get("content", "")
         if not isinstance(file_path, str) or not file_path.strip().endswith(".md"):
-            self._json({"error": "Nur .md-Dateien erlaubt"}, 400)
+            self._error("INVALID_PATH", "Nur .md-Dateien erlaubt.", 400)
             return
         if not isinstance(content, str):
-            self._json({"error": "Inhalt muss Text sein"}, 400)
+            self._error("INVALID_CONTENT", "Inhalt muss Text sein.", 400)
             return
         file_path = file_path.strip()
         target = memory_markdown_path(file_path)
         if target is None:
-            self._json({"error": "Zugriff verweigert"}, 403)
+            self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
             return
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -2095,7 +2109,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             target = memory_markdown_path(file_path)
             if target is None:
-                self._json({"error": "Zugriff verweigert"}, 403)
+                self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
                 return
             versions = []
             for i in range(1, 4):
@@ -2117,7 +2131,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             data = self._read_json()
         except ValueError:
-            self._json({"error": "Ungültige Anfrage"}, 400)
+            self._error("INVALID_REQUEST", "Ungültige Anfrage.", 400)
             return
         file_path = data.get("path", "")
         try:
@@ -2125,15 +2139,15 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             version = 0
         if not isinstance(file_path, str) or not file_path.strip().endswith(".md") or version not in (1, 2, 3):
-            self._json({"error": "Ungültige Anfrage"}, 400)
+            self._error("INVALID_REQUEST", "Ungültige Anfrage.", 400)
             return
         target = memory_markdown_path(file_path)
         if target is None:
-            self._json({"error": "Zugriff verweigert"}, 403)
+            self._error("PATH_BLOCKED", "Zugriff verweigert.", 403)
             return
         bak = Path(str(target) + f'.bak{version}')
         if not bak.exists():
-            self._json({"error": "Version nicht gefunden"}, 404)
+            self._error("NOT_FOUND", "Version nicht gefunden.", 404)
             return
         try:
             # Read before rotating: _rotate_backups() shifts .bak1 -> .bak2 ->
@@ -2241,14 +2255,14 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             data = self._read_json()
         except ValueError:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
         model = str(data.get("model") or "").strip()
         if not model:
-            self._json({"error": "Kein Modellname angegeben"}, 400)
+            self._error("MODEL_REQUIRED", "Kein Modellname angegeben.", 400)
             return
         if not MODEL_NAME_RE.fullmatch(model):
-            self._json({"error": "Ungültiger Modellname"}, 400)
+            self._error("INVALID_MODEL", "Ungültiger Modellname.", 400)
             return
 
         self.send_response(200)
@@ -2277,12 +2291,12 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         try:
             data = self._read_json()
         except ValueError:
-            self._json({"error": "Ungültiges JSON"}, 400)
+            self._error("INVALID_JSON", "Ungültiges JSON.", 400)
             return
         engine_name = str(data.get("engine") or "").strip()
         factory = ENGINE_FACTORIES.get(engine_name)
         if factory is None:
-            self._json({"error": "Unbekannte OCR-Engine"}, 400)
+            self._error("UNKNOWN_ENGINE", "Unbekannte OCR-Engine.", 400)
             return
 
         settings = load_settings()
@@ -2294,7 +2308,7 @@ class ToolHandler(http.server.BaseHTTPRequestHandler):
         # Pruefung wie bei _ollama_pull's Modellnamen, statt der
         # Konfiguration blind zu vertrauen.
         if not MODEL_NAME_RE.fullmatch(model_id):
-            self._json({"error": "Ungültige Modell-ID"}, 400)
+            self._error("INVALID_MODEL", "Ungültige Modell-ID.", 400)
             return
 
         self.send_response(200)
@@ -2466,6 +2480,13 @@ class _QuietThreadingHTTPServer(http.server.ThreadingHTTPServer):
     """Unterdrueckt das laute stderr-Traceback bei harmlosen Client-Disconnects
     (WinError 10053 / 10054 / Broken Pipe). Browser, der das Tab schliesst
     waehrend Server gerade /health beantwortet, ist kein Server-Fehler."""
+
+    # http.server sets SO_REUSEADDR. On Windows that lets a second socket bind
+    # a port another process is still listening on, after which it is
+    # undefined which one receives connections -- a hung earlier instance (or
+    # another program) could keep answering. Fail with "port in use" instead.
+    # Elsewhere it only allows rebinding a port in TIME_WAIT, which we keep.
+    allow_reuse_address = sys.platform != "win32"
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
@@ -2481,7 +2502,12 @@ if __name__ == "__main__":
         print(msg, flush=True)
         logger.warning(msg)
 
-    port = 8789
+    try:
+        port = server_port()
+    except ValueError as exc:
+        print(f"PROBLEM: {exc}", flush=True)
+        logger.error("%s", exc)
+        sys.exit(1)
     migration = SETTINGS_STORE.migrate_legacy(LEGACY_SETTINGS_FILE)
     purged_ocr_jobs = OCR_JOBS.purge_expired(SETTINGS_STORE.load().get("ocrRetentionDays", 7))
     logger.info(

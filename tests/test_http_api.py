@@ -242,10 +242,12 @@ def test_start_bat_health_probe_matches_versioned_route():
     the startup health check. Fail loudly if that divergence ever comes back."""
     start_bat = (REPO_ROOT / "start.bat").read_text(encoding="utf-8")
 
-    assert "localhost:8789/health'" not in start_bat
-    assert "localhost:8789/api/v1/health" in start_bat
+    assert "/health'" not in start_bat.replace("/api/v1/health'", "")
     # Both probe occurrences (the "already running" check and the startup wait loop).
-    assert start_bat.count("localhost:8789/api/v1/health") >= 2
+    assert start_bat.count("localhost:%TEACHERASSIST_PORT%/api/v1/health'") >= 2
+    # start.bat and tool_server.py must agree on the default port.
+    assert f'set "TEACHERASSIST_PORT={tool_server.DEFAULT_PORT}"' in start_bat
+    assert "8789" not in start_bat.replace(f'set "TEACHERASSIST_PORT={tool_server.DEFAULT_PORT}"', "").replace("Standard 8789", "")
 
 
 def test_tool_server_still_defines_the_versioned_health_route():
@@ -652,3 +654,17 @@ def test_local_model_required_names_the_reasons(isolated_server):
     error = json.loads(payload)["error"]
     assert error["code"] == "LOCAL_MODEL_REQUIRED"
     assert "personal_data:person_name" in error["reasons"]
+
+
+def test_server_refuses_a_port_another_program_is_listening_on():
+    """On Windows, http.server's SO_REUSEADDR let a second server bind a port
+    that is still in use; requests could then reach either process. This
+    runs meaningfully on the Windows CI job."""
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen()
+    try:
+        with pytest.raises(OSError):
+            tool_server._QuietThreadingHTTPServer(("127.0.0.1", holder.getsockname()[1]), tool_server.ToolHandler)
+    finally:
+        holder.close()

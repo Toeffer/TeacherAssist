@@ -546,7 +546,6 @@ function App() {
   const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
 
   const effectiveProvider = useMemo(() => {
-    if (provider === 'openrouter' && openrouterStatus === 'offline' && ollamaStatus === 'online') return 'ollama';
     if (provider === 'ollama' && (ollamaStatus === 'offline' || ollamaStatus === 'no_models') && (hasApiKey || apiKey) && openrouterStatus === 'online') return 'openrouter';
     return provider;
   }, [provider, openrouterStatus, ollamaStatus, hasApiKey, apiKey]);
@@ -914,7 +913,7 @@ function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(window.taApi.errorMessage(await res.json().catch(() => ({})), `Server-Fehler ${res.status}`));
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -1502,9 +1501,7 @@ function App() {
               : isDsgvoRouting
                 ? '🔒 Lokales Modell (DSGVO)'
                 : isFallbackActive
-                  ? (provider === 'openrouter'
-                      ? '⚠ OpenRouter offline · 🔒 Ollama Fallback'
-                      : (ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline') + ' · ☁️ OpenRouter Fallback')
+                  ? (ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline') + ' · ☁️ OpenRouter Fallback'
                   : provider === 'ollama'
                     ? ollamaStatus === 'online' ? '🔒 Lokal · ' + namePrefix : ollamaStatus === 'no_models' ? '⚠ Kein Ollama-Modell' : '⚠ Ollama offline'
                     : provider === 'custom'

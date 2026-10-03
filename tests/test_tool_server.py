@@ -284,3 +284,24 @@ def test_both_privacy_mode_spellings_are_honoured(key):
     local for the next message."""
     assert tool_server.requested_privacy_mode({key: "local_required"}) == "local_required"
     assert tool_server.requested_privacy_mode({}) == "auto"
+
+
+@pytest.mark.parametrize("value, expected", [(None, 8789), ("", 8789), (" 8790 ", 8790), ("65535", 65535)])
+def test_server_port_comes_from_the_environment(value, expected):
+    environ = {} if value is None else {"TEACHERASSIST_PORT": value}
+    assert tool_server.server_port(environ) == expected
+
+
+@pytest.mark.parametrize("value", ["80", "70000", "abc", "-1", "8789x"])
+def test_invalid_server_ports_are_rejected_with_a_german_message(value):
+    with pytest.raises(ValueError, match="TEACHERASSIST_PORT"):
+        tool_server.server_port({"TEACHERASSIST_PORT": value})
+
+
+def test_every_error_response_uses_the_structured_shape():
+    """{"error": "text"} and {"error": {code, message}} used to be mixed;
+    the frontend reads both, but new handlers should use _error()."""
+    from pathlib import Path
+
+    source = Path(tool_server.__file__).read_text(encoding="utf-8")
+    assert source.count('self._json({"error": ') == 1  # the one inside _error()

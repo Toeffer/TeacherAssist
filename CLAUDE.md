@@ -17,8 +17,9 @@ Nimmt Lehrern Routinearbeit ab: Unterrichtsplanung, Bewertungserstellung, Korrek
 ## Architektur (v5)
 
 **Ein einziger Prozess.** `tool_server.py` (Python-Stdlib-`http.server`, kein Framework)
-liefert auf Port **8789** sowohl die statischen Frontend-Dateien als auch alle
-`/api/v1/*`-Endpunkte aus. Es gibt keinen zweiten Webserver und kein OpenClaw-Gateway
+liefert auf Port **8789** (änderbar per Umgebungsvariable `TEACHERASSIST_PORT`, die
+`start.bat` und `tool_server.py: server_port()` gleichermaßen lesen) sowohl die
+statischen Frontend-Dateien als auch alle `/api/v1/*`-Endpunkte aus. Es gibt keinen zweiten Webserver und kein OpenClaw-Gateway
 mehr – beide sind aus früheren Versionen entfernt.
 
 ```
@@ -133,6 +134,8 @@ Regressionstest: `tests/test_http_api.py::test_new_ocr_settings_survive_round_tr
 | LLM-Provider | OpenRouter (Cloud) / Ollama (lokal, `:11434`) / Custom-Endpoint | Modellwahl in den Einstellungen |
 | Tests | `pytest` | `tests/*.py`, Venv unter `tools/.venv` |
 | Browser-Tests | Playwright | `tests/browser/*.spec.mjs` (`npm run test:browser`, gemocktes Backend über `tests/browser/fixtures.mjs`) |
+| Lint | ESLint 9 + react-hooks | `npm run lint` (`eslint.config.js` liest die gemeinsamen window-Globals aus den `Object.assign(window, …)`-Blöcken) |
+| CI | GitHub Actions | `.github/workflows/ci.yml`: pytest auf Windows + Linux (Python 3.12), `start.bat`-Smoke-Test auf Windows, Lint, Build, Browser-Tests |
 
 **Kein Anthropic-API-Key-Feld.** Provider sind OpenRouter, Ollama oder ein
 selbst konfigurierter Custom-Endpoint (OpenAI-kompatibel).
@@ -356,6 +359,8 @@ sich über `profile.style_formality` (`locker`/`formal`) und `profile.style_deta
 ```bat
 :: 1. Erstinstallation
 install.bat
+:: Braucht Python 3.12 oder 3.13 (numpy/scipy-Pins im Lock gibt es erst ab 3.12);
+:: installiert bei Bedarf Python 3.12 per winget.
 :: Legt tools\.venv an, installiert requirements.txt + Tesseract,
 :: baut das Frontend NUR falls web_dist\index.html noch fehlt (sonst
 :: übersprungen – Node.js dann nicht nötig), erstellt Desktop-Verknüpfung.
@@ -432,7 +437,9 @@ ESM-Komponenten ist offene technische Schuld, aber keine akute Baustelle.
   Path-Traversal prüfen (`.resolve()` + `.relative_to()`), siehe bestehende
   Handler als Vorlage.
 - Neue HTTP-Handler: JSON-Body immer über `self._read_json()` lesen (liefert
-  einheitliche `ValueError`/`RequestTooLarge`-Fehlerbehandlung).
+  einheitliche `ValueError`/`RequestTooLarge`-Fehlerbehandlung) und Fehler immer
+  über `self._error(code, message, status)` senden – nie `{"error": "Text"}`
+  (Test: `test_every_error_response_uses_the_structured_shape`).
 - Memory-Editor-Endpunkte (`memory-read`/`-write`/`-versions`/`-restore-version`)
   lösen Pfade nur über `memory_markdown_path()` auf: nur `.md`, nur unter
   `<root>/memory/`, nie im Schülertresor `students/`.
@@ -465,11 +472,19 @@ ESM-Komponenten ist offene technische Schuld, aber keine akute Baustelle.
 - `web_dist/` muss nach jeder Änderung an `app.jsx`/`components.jsx`/
   `tweaks-panel.jsx`/`src/main.jsx` neu gebaut (`npm run build`) und committed
   werden – der Server bevorzugt `web_dist/` gegenüber den Repo-Root-Quellen.
+  `tests/test_web_dist_freshness.py` schlägt fehl, wenn das vergessen wurde
+  (Fingerabdruck der Build-Eingaben in `web_dist/build-stamp.json`, Liste in
+  `scripts/web-dist-inputs.json`, Zeilenenden-unabhängig). Neue Frontend-Dateien
+  dort eintragen.
 - Vite 8 verlangt Node.js ≥ 20.19 oder ≥ 22.12; ältere 20.x-Patch-Versionen bauen
   mit einer Warnung, aber funktionieren.
-- Kein Inline-`<script>` in `index.html`: Die CSP des Servers (`script-src 'self'`)
-  blockiert es. Der Service Worker wird deshalb aus `src/main.jsx` registriert
-  (nur im Production-Build); Seiten lädt er network-first, gehashte `/assets/`
+- Kein Inline-`<script>` in `index.html` und keine Inline-Handler (`onclick="…"`)
+  in per `document.write` erzeugtem HTML (z. B. Druckfenster): Die CSP des Servers
+  (`script-src 'self'`) blockiert beides, auch im geöffneten Fenster. Handler vom
+  Opener aus per `addEventListener` setzen. Die Browser-Tests laufen ohne CSP
+  (Vite-Dev-Server) – `tests/test_csp_compat.py` prüft das statisch. Der
+  Service Worker wird deshalb aus `src/main.jsx` registriert (nur im
+  Production-Build); Seiten lädt er network-first, gehashte `/assets/`
   cache-first.
 
 **Secrets**
