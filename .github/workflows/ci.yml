@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the primary target (install.bat/start.bat).
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # install.bat installs 3.12; the pinned numpy/scipy need >= 3.12.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/requirements*.txt
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          # Pinned versions from requirements.txt (kept equal to the lock by
+          # tests/test_requirements_consistency.py). chromadb and
+          # sentence-transformers (which pulls in torch) are left out to keep
+          # CI fast; the tests that need them skip without them. numpy,
+          # huggingface_hub and pytest come transitively in a real install,
+          # so their versions are taken from the lock.
+          grep -viE '^(chromadb|sentence-transformers)==' tools/requirements.txt > ci-requirements.txt
+          grep -iE '^(numpy|huggingface[-_]hub|pytest)==' tools/requirements.lock >> ci-requirements.txt
+          cat ci-requirements.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r ci-requirements.txt
+      - name: pytest
+        run: python -m pytest -q -rs
+        env:
+          TEACHERASSIST_DATA_DIR: ${{ runner.temp }}/teacherassist-data
+
+  frontend:
+    name: lint, build, browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          # Vite 8 needs Node >= 20.19 or >= 22.12.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - name: Build
+        # Must succeed; whether the committed web_dist/ is current is
+        # checked by tests/test_web_dist_freshness.py in the pytest job.
+        run: npm run build
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:browser
+        env:
+          CI: "1"
