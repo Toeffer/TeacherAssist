@@ -180,7 +180,8 @@ TeacherAssist/
 │   ├── student_store.py            ← Schülerdaten-Verwaltung
 │   ├── document_export.py          ← DOCX/PDF-Export
 │   ├── usage_tracker.py            ← Token-/Kosten-Tracking
-│   ├── requirements.txt            ← Pip-Abhängigkeiten (ungepinnt-kompatibel)
+│   ├── requirements.txt            ← Pip-Abhängigkeiten (gepinnt, identisch mit
+│   │                                  requirements.lock – Test: test_requirements_consistency.py)
 │   ├── requirements.lock           ← Pip-Freeze der aktuellen .venv (für repair.bat)
 │   └── .venv/                      ← Projekt-Venv (gitignored, von install.bat angelegt)
 │
@@ -222,6 +223,7 @@ und blockiert Cross-Site-Requests (`Sec-Fetch-Site: cross-site`).
 | GET | `/`, `/index.html`, `/app.jsx`, `/components.jsx`, `/tweaks-panel.jsx`, `/api-client.js`, `/manifest.json`, `/service-worker.js`, `/favicon.ico`, `/teacherassist.ico`, `/assets/*` | Statische Frontend-Dateien (bevorzugt aus `web_dist/`; `/assets/*` ausschließlich aus `web_dist/assets/`, ohne Repo-Root-Fallback) |
 | GET | `/api/v1/health` | Status-Check (öffentlich) |
 | GET | `/api/v1/bootstrap` | Session/CSRF erstellen, Settings/Capabilities/Skills/State liefern (öffentlich) |
+| GET | `/api/v1/status` | Capabilities, Credential-Status, Ollama (`ollamaRunning`, `ollamaModels` mit `cloud`-Flag), OCR-Engines – vom Frontend alle 30 s abgefragt |
 | GET | `/api/v1/settings` | Öffentliche Settings (ohne Secrets) |
 | GET | `/api/v1/collections` | Anzahl ChromaDB-Chunks |
 | GET | `/api/v1/backup` | Memory-Verzeichnis als ZIP |
@@ -291,6 +293,13 @@ def decide_privacy(*, messages, profile=None, skill_id=None,
 - Regex-Treffer (`PERSONAL_PATTERNS`: E-Mail, Telefon, Geburtsdatum,
   Schüler-Kontextwörter, Namen-Muster, Schülerkennungen) in Nachrichten, Profil
   oder RAG-Kontext.
+- Namen-Muster immer über `person_name_matches()` auswerten, nie über das rohe
+  Pattern: Nach den schwachen Hinweisen „für"/„von" zählen reine
+  Schul-Substantive (`_SCHOOL_NOUNS`, z. B. „Klasse", „Mathematik") nicht als
+  Name – sonst erzwang fast jede Planungsanfrage lokal. Jedes unbekannte
+  großgeschriebene Wort zählt weiterhin (fail-closed); Wörter, die auch
+  Vornamen sind (August, Mai, April …), gehören nicht in die Liste.
+  Regressionstests: `tests/test_privacy_classification.py`.
 
 Bei `local_required=True`: Server routet auf Ollama (`:11434`) oder einen als
 loopback validierten Custom-Endpoint. Ist keins davon erreichbar, wird **kein**
